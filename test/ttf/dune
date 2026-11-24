@@ -1,0 +1,8 @@
+(test
+ (name ttf_test)
+ (package sdl3-ttf)
+ (libraries sdl3 sdl3-ttf)
+ (modes exe byte)
+ (deps
+  tiny.bdf
+  (package sdl3-ttf)))

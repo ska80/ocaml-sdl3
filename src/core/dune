@@ -1,0 +1,23 @@
+(library
+ (name sdl3)
+ (public_name sdl3)
+ (install_c_headers sdl3_stubs)
+ (foreign_stubs
+  (language c)
+  (names core_stubs event_stubs)
+  (flags
+   (:standard
+    (:include c_flags.sexp))))
+ (c_library_flags
+  (:include c_library_flags.sexp)))
+
+(rule
+ (targets c_flags.sexp c_library_flags.sexp)
+ (deps
+  (env_var PKG_CONFIG)
+  (env_var PKG_CONFIG_PATH)
+  (env_var PKG_CONFIG_LIBDIR)
+  (env_var PKG_CONFIG_SYSROOT_DIR)
+  (env_var PKG_CONFIG_ARGN))
+ (action
+  (run %{exe:../../config/discover.exe} --package sdl3)))

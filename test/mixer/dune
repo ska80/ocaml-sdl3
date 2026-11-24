@@ -1,0 +1,12 @@
+(test
+ (name mixer_test)
+ (package sdl3-mixer)
+ (libraries sdl3 sdl3-mixer)
+ (modes exe byte)
+ (deps
+  (package sdl3-mixer))
+ (action
+  (setenv
+   SDL_AUDIO_DRIVER
+   dummy
+   (run %{test}))))

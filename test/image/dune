@@ -1,0 +1,7 @@
+(test
+ (name image_test)
+ (package sdl3-image)
+ (libraries sdl3 sdl3-image)
+ (modes exe byte)
+ (deps
+  (package sdl3-image)))

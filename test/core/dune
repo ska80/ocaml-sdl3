@@ -1,0 +1,31 @@
+(test
+ (name core_test)
+ (package sdl3)
+ (libraries sdl3 threads)
+ (modes exe byte_complete)
+ (foreign_stubs
+  (language c)
+  (names push_events)
+  (flags
+   (:standard
+    (:include ../../src/core/c_flags.sexp))))
+ (action
+  (setenv
+   SDL_VIDEO_DRIVER
+   dummy
+   (setenv
+    SDL_AUDIO_DRIVER
+    dummy
+    (run %{test})))))
+
+(rule
+ (alias runtest)
+ (package sdl3)
+ (action
+  (setenv
+   SDL_VIDEO_DRIVER
+   dummy
+   (setenv
+    SDL_AUDIO_DRIVER
+    dummy
+    (run ./core_test.bc.exe)))))
