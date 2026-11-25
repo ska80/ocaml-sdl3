@@ -133,8 +133,34 @@ that does not use SDL resources. Timer and version calls can run on other thread
 buffer from another domain while SDL reads or writes it.
 
 Drawing calls pass small values directly to C. Audio and in-memory image calls take bigarrays, which
-hold data outside the OCaml heap. `Audio.queue` copies the samples into SDL, but the binding adds no
-copy.
+hold data outside the OCaml heap. SDL copies audio samples directly between its stream and the
+bigarray. The binding adds no copy.
+
+## Play and record audio
+
+Start SDL with `Audio`. Use `Audio.Device.list_playback` or `Audio.Device.list_recording` to find
+connected devices. Use `Audio.Device.name` to show a device name. A device ID can become invalid
+when the device disconnects. Do not save IDs for later runs.
+
+Omit `~device` to let SDL use the system default. To select a device, pass its ID to
+`Audio.open_playback`, `Audio.open_recording`, or `Sdl3_mixer.Mixer.create_device`. The ID must
+match the stream direction. The mixer accepts only playback devices.
+
+Core streams start paused. Call `Audio.resume` to start playback or recording. Use `Audio.queue` to
+send samples to playback. Use `Audio.read` to copy recorded samples into a reusable bigarray.  The
+read returns the number of bytes copied without waiting for more samples. It returns whole frames
+only. A frame contains one sample per channel.
+
+Read regularly while recording. SDL keeps unread samples in memory. To finish a recording, pause it,
+call `Audio.flush`, and read the remaining data. Use `Audio.clear` to discard pending data.  Close
+the stream with `Audio.close` before you quit SDL. No audio thread calls OCaml.
+
+For mixer tracks, pass `~start_frame` or `~fade_in_frames` to `Track.play`. To discard samples SDL
+already decoded, call `Track.stop` with no fade before restarting. Read the current frame with
+`Track.position`. If the audio decoder supports seeking, use `Track.seek` to change it.
+
+Change remaining repeats with `Track.set_loops`. Use `Track.set_frequency_ratio` to change speed and
+pitch together. Pass `~fade_frames` to `Track.stop` to fade to silence before stopping.
 
 ## Use file and memory streams
 
@@ -258,8 +284,9 @@ The tests below passed on Linux with OCaml 5.5.2 and Dune 3.25.0. For the SDL ve
 [TODO.md](TODO.md#done).
 
 Run `dune runtest` for native and bytecode tests. These tests use SDL's dummy video and audio
-drivers, so they need no display or speakers. The core tests need SDL's virtual joystick support,
-not a physical gamepad. The image tests need PNG and JPEG support in SDL3_image.
+drivers. They need no display, speakers, or microphone. The core tests need SDL's virtual joystick
+support, not a physical gamepad. The image tests need PNG and JPEG support in SDL3_image. The
+mixer tests need WAV support in SDL3_mixer.
 
 Run `dune build --force @runtest-gpu` on a system with a working SDL GPU driver. On Linux with
 offscreen Vulkan support, set `SDL_VIDEO_DRIVER=offscreen` to run without a display.

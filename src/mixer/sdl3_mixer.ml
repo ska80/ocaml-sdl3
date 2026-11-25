@@ -13,8 +13,11 @@ module Mixer = struct
   type offline
   type 'output t
 
-  external create_device : ?spec:Sdl3.Audio.spec -> context -> device t
-    = "osdl_mixer_create_device"
+  external create_device :
+    ?device:Sdl3.Audio.playback Sdl3.Audio.Device.id ->
+    ?spec:Sdl3.Audio.spec ->
+    context ->
+    device t = "osdl_mixer_create_device"
 
   external create : context -> Sdl3.Audio.spec -> offline t
     = "osdl_mixer_create"
@@ -49,11 +52,23 @@ module Track = struct
   external set_audio : t -> Audio.t option -> unit
     = "osdl_mixer_track_set_audio"
 
-  external play : ?loops:int -> t -> unit = "osdl_mixer_track_play"
+  external play :
+    ?loops:int -> ?start_frame:int64 -> ?fade_in_frames:int64 -> t -> unit
+    = "osdl_mixer_track_play"
+
   external stop : ?fade_frames:int64 -> t -> unit = "osdl_mixer_track_stop"
   external pause : t -> unit = "osdl_mixer_track_pause"
   external resume : t -> unit = "osdl_mixer_track_resume"
   external is_playing : t -> bool = "osdl_mixer_track_playing"
   external is_paused : t -> bool = "osdl_mixer_track_paused"
+  external position : t -> int64 = "osdl_mixer_track_position"
+  external seek : t -> int64 -> unit = "osdl_mixer_track_seek"
+  external loops : t -> int = "osdl_mixer_track_loops"
+  external set_loops : t -> int -> unit = "osdl_mixer_track_set_loops"
+  external fade_frames : t -> int64 = "osdl_mixer_track_fade_frames"
   external set_gain : t -> float -> unit = "osdl_mixer_track_set_gain"
+  external frequency_ratio : t -> float = "osdl_mixer_track_frequency_ratio"
+
+  external set_frequency_ratio : t -> float -> unit
+    = "osdl_mixer_track_set_frequency_ratio"
 end

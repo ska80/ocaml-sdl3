@@ -29,8 +29,8 @@ CAMLprim value osdl_mixer_quit(value context) {
 
 /* Mixers. */
 
-CAMLprim value osdl_mixer_create_device(value spec, value context) {
-    CAMLparam2(spec, context);
+CAMLprim value osdl_mixer_create_device(value device, value spec, value context) {
+    CAMLparam3(device, spec, context);
     CAMLlocal1(handle);
 
     handle = osdl_new_handle(context);
@@ -43,7 +43,8 @@ CAMLprim value osdl_mixer_create_device(value spec, value context) {
         requested = &format;
     }
 
-    MIX_Mixer* mixer = MIX_CreateMixerDevice(SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK, requested);
+    SDL_AudioDeviceID id = osdl_audio_device_or_default(device, SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK);
+    MIX_Mixer*        mixer = MIX_CreateMixerDevice(id, requested);
     CAMLreturn(osdl_publish(handle, mixer, "MIX_CreateMixerDevice"));
 }
 
@@ -135,12 +136,42 @@ CAMLprim value osdl_mixer_track_set_audio(value track, value audio) {
     return Val_unit;
 }
 
-CAMLprim value osdl_mixer_track_play(value loops, value track) {
-    MIX_Track* t     = osdl_live(track);
-    int        count = Is_long(loops) ? 0 : osdl_int(Some_val(loops));
+static int mixer_loop_count(value loops) {
+    int count = osdl_int(loops);
     if (count < -1) caml_invalid_argument("SDL_mixer loop count must be at least -1");
+    return count;
+}
 
-    if (count == 0) {
+static Sint64 mixer_frame_position(MIX_Track* track, value frame) {
+    Sint64 position = Int64_val(frame);
+    if (position < 0) caml_invalid_argument("SDL_mixer position must not be negative");
+    if (position > 0) {
+        MIX_Audio* audio = MIX_GetTrackAudio(track);
+        if (audio) {
+            Sint64 duration = MIX_GetAudioDuration(audio);
+            if (duration >= 0 && position > duration)
+                caml_invalid_argument("SDL_mixer position is past the end of the audio");
+        }
+    }
+    return position;
+}
+
+static Sint64 mixer_fade_length(value frames) {
+    Sint64 fade = Int64_val(frames);
+    /* SDL_mixer uses int counters when applying the fade. */
+    if (fade < 0 || fade > INT_MAX)
+        caml_invalid_argument("SDL_mixer fade length must be between 0 and 2147483647 frames");
+    return fade;
+}
+
+CAMLprim value osdl_mixer_track_play(value loops, value start_frame, value fade_in_frames,
+                                     value track) {
+    MIX_Track* t        = osdl_live(track);
+    int        count    = Is_long(loops) ? 0 : mixer_loop_count(Some_val(loops));
+    Sint64     position = Is_long(start_frame) ? 0 : mixer_frame_position(t, Some_val(start_frame));
+    Sint64     fade     = Is_long(fade_in_frames) ? 0 : mixer_fade_length(Some_val(fade_in_frames));
+
+    if (count == 0 && position == 0 && fade == 0) {
         osdl_check(MIX_PlayTrack(t, 0), "MIX_PlayTrack");
         return Val_unit;
     }
@@ -149,7 +180,10 @@ CAMLprim value osdl_mixer_track_play(value loops, value track) {
     if (!props) osdl_fail("SDL_CreateProperties");
 
     const char* failure = NULL;
-    if (!SDL_SetNumberProperty(props, MIX_PROP_PLAY_LOOPS_NUMBER, count))
+    if ((count != 0 && !SDL_SetNumberProperty(props, MIX_PROP_PLAY_LOOPS_NUMBER, count)) ||
+        (position != 0 &&
+         !SDL_SetNumberProperty(props, MIX_PROP_PLAY_START_FRAME_NUMBER, position)) ||
+        (fade != 0 && !SDL_SetNumberProperty(props, MIX_PROP_PLAY_FADE_IN_FRAMES_NUMBER, fade)))
         failure = "SDL_SetNumberProperty";
     else if (!MIX_PlayTrack(t, props))
         failure = "MIX_PlayTrack";
@@ -165,9 +199,10 @@ CAMLprim value osdl_mixer_track_play(value loops, value track) {
 }
 
 CAMLprim value osdl_mixer_track_stop(value frames, value track) {
-    Sint64 fade = Is_long(frames) ? 0 : Int64_val(Some_val(frames));
-    if (fade < 0) caml_invalid_argument("SDL_mixer fade length must not be negative");
-    osdl_check(MIX_StopTrack(osdl_live(track), fade), "MIX_StopTrack");
+    MIX_Track* t    = osdl_live(track);
+    Sint64     fade = Is_long(frames) ? 0 : mixer_fade_length(Some_val(frames));
+
+    osdl_check(MIX_StopTrack(t, fade), "MIX_StopTrack");
     return Val_unit;
 }
 
@@ -180,6 +215,52 @@ CAMLprim value osdl_mixer_track_playing(value track) {
 
 CAMLprim value osdl_mixer_track_paused(value track) {
     return Val_bool(MIX_TrackPaused(osdl_live(track)));
+}
+
+CAMLprim value osdl_mixer_track_position(value track) {
+    Sint64 position = MIX_GetTrackPlaybackPosition(osdl_live(track));
+    if (position < 0) osdl_fail("MIX_GetTrackPlaybackPosition");
+    return caml_copy_int64(position);
+}
+
+CAMLprim value osdl_mixer_track_seek(value track, value frame) {
+    MIX_Track* t        = osdl_live(track);
+    Sint64     position = mixer_frame_position(t, frame);
+
+    osdl_check(MIX_SetTrackPlaybackPosition(t, position), "MIX_SetTrackPlaybackPosition");
+    return Val_unit;
+}
+
+CAMLprim value osdl_mixer_track_loops(value track) {
+    return osdl_val_int(MIX_GetTrackLoops(osdl_live(track)));
+}
+
+CAMLprim value osdl_mixer_track_set_loops(value track, value loops) {
+    MIX_Track* t     = osdl_live(track);
+    int        count = mixer_loop_count(loops);
+
+    osdl_check(MIX_SetTrackLoops(t, count), "MIX_SetTrackLoops");
+    return Val_unit;
+}
+
+CAMLprim value osdl_mixer_track_fade_frames(value track) {
+    return caml_copy_int64(MIX_GetTrackFadeFrames(osdl_live(track)));
+}
+
+CAMLprim value osdl_mixer_track_frequency_ratio(value track) {
+    float ratio = MIX_GetTrackFrequencyRatio(osdl_live(track));
+    if (ratio <= 0.0f) osdl_fail("MIX_GetTrackFrequencyRatio");
+    return caml_copy_double(ratio);
+}
+
+CAMLprim value osdl_mixer_track_set_frequency_ratio(value track, value ratio) {
+    MIX_Track* t = osdl_live(track);
+    float      r = osdl_float(Double_val(ratio));
+    if (r < 0.01f || r > 100.0f)
+        caml_invalid_argument("SDL_mixer frequency ratio must be between 0.01 and 100");
+
+    osdl_check(MIX_SetTrackFrequencyRatio(t, r), "MIX_SetTrackFrequencyRatio");
+    return Val_unit;
 }
 
 CAMLprim value osdl_mixer_track_set_gain(value track, value gain) {

@@ -774,19 +774,49 @@ module Event = struct
 end
 
 module Audio = struct
-  type t
+  type playback
+  type recording
+  type 'direction stream
+  type t = playback stream
   type format = U8 | S16 | S32 | F32
   type spec = { format : format; channels : int; frequency : int }
   type buffer = byte_buffer
 
-  external open_playback : context -> spec -> t = "osdl_audio_open_playback"
-  external close : t -> unit = "osdl_audio_close"
-  external pause : t -> unit = "osdl_audio_pause"
-  external resume : t -> unit = "osdl_audio_resume"
-  external clear : t -> unit = "osdl_audio_clear"
-  external flush : t -> unit = "osdl_audio_flush"
+  module Device = struct
+    type 'direction id = int32
+
+    external playback_snapshot : context -> Snapshot.t -> playback id list
+      = "osdl_audio_playback_devices"
+
+    external recording_snapshot : context -> Snapshot.t -> recording id list
+      = "osdl_audio_recording_devices"
+
+    let list_playback context = Snapshot.read (playback_snapshot context)
+    let list_recording context = Snapshot.read (recording_snapshot context)
+
+    external name : context -> 'direction id -> string
+      = "osdl_audio_device_name"
+  end
+
+  external open_playback : ?device:playback Device.id -> context -> spec -> t
+    = "osdl_audio_open_playback"
+
+  external open_recording :
+    ?device:recording Device.id -> context -> spec -> recording stream
+    = "osdl_audio_open_recording"
+
+  external close : 'direction stream -> unit = "osdl_audio_close"
+  external pause : 'direction stream -> unit = "osdl_audio_pause"
+  external resume : 'direction stream -> unit = "osdl_audio_resume"
+  external clear : 'direction stream -> unit = "osdl_audio_clear"
+  external flush : 'direction stream -> unit = "osdl_audio_flush"
   external queue : t -> buffer -> unit = "osdl_audio_queue"
   external queued_bytes : t -> int = "osdl_audio_queued_bytes"
+
+  external available_bytes : recording stream -> int
+    = "osdl_audio_available_bytes"
+
+  external read : recording stream -> buffer -> int = "osdl_audio_read"
 end
 
 module Timer = struct

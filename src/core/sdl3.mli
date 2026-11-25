@@ -1022,25 +1022,69 @@ module Event : sig
 end
 
 module Audio : sig
-  type t
+  (** Start SDL with [Audio] to list devices and open streams. *)
+
+  type playback
+  type recording
+  type 'direction stream
+  type t = playback stream
   type format = U8 | S16 | S32 | F32
+
   type spec = { format : format; channels : int; frequency : int }
+  (** A frame contains one sample per channel. [channels] is between 1 and 8.
+      [frequency] is the number of frames per second. Multi-byte samples use
+      native byte order. *)
+
   type buffer = byte_buffer
 
-  val open_playback : context -> spec -> t
-  (** Open a paused stream on the default device. Use the [Audio] subsystem. *)
+  module Device : sig
+    type 'direction id
+    (** A device ID can become invalid if the device disconnects. Do not save
+        IDs for later runs. *)
 
-  val close : t -> unit
-  val pause : t -> unit
-  val resume : t -> unit
-  val clear : t -> unit
-  val flush : t -> unit
+    val list_playback : context -> playback id list
+    val list_recording : context -> recording id list
+    val name : context -> 'direction id -> string
+  end
+
+  val open_playback : ?device:playback Device.id -> context -> spec -> t
+  (** Open a paused playback stream. The device defaults to the system's
+      playback device. [spec] describes the samples that you queue. *)
+
+  val open_recording :
+    ?device:recording Device.id -> context -> spec -> recording stream
+  (** Open a paused recording stream. The device defaults to the system's
+      recording device. SDL converts the recorded samples to [spec]. *)
+
+  val close : 'direction stream -> unit
+  (** Close the stream and its device connection. *)
+
+  val pause : 'direction stream -> unit
+  val resume : 'direction stream -> unit
+
+  val clear : 'direction stream -> unit
+  (** Drop pending data. *)
+
+  val flush : 'direction stream -> unit
+  (** Tell SDL to finish converting any buffered input. Use this at the end of
+      playback, or after pausing a recording to read the remaining data. *)
+
   val queued_bytes : t -> int
 
   val queue : t -> buffer -> unit
-  (** Copy samples into the stream. Multi-byte samples use native byte order.
-      Use [Bigarray.Array1.sub] to queue part of a buffer without a slice copy.
-  *)
+  (** Copy samples into the stream. Use [Bigarray.Array1.sub] to queue part of a
+      buffer without a slice copy. *)
+
+  val available_bytes : recording stream -> int
+  (** Number of converted bytes ready to read. SDL can add more before the next
+      call to [read]. *)
+
+  val read : recording stream -> buffer -> int
+  (** Copy available data into the buffer without waiting for more samples.
+      Return the number of bytes written in whole frames, or zero if none fit or
+      none are ready. Leave the rest of the buffer unchanged. You can pass a
+      bigarray slice. Its address must be a multiple of the sample size in
+      bytes. *)
 end
 
 module Timer : sig

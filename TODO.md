@@ -23,15 +23,17 @@
 - [x] Font loading, metrics, UTF-8 text measurement, and solid or blended text rendering.
 - [x] Typed file and memory streams, with stream input for BMP, images, audio, and fonts.  Stream
       output for BMP, PNG, and JPEG.
+- [x] Audio device discovery and selection, queued recording, and mixer track seeking, fades, loop
+      control, and playback speed.
 - [x] Native and bytecode tests on Linux with OCaml 5.4.1 and 5.5.2 (Dune 3.25.0).
 
 The full suite uses SDL 3.4.16, SDL3_image 3.4.6, SDL3_mixer 3.2.4, and SDL3_ttf 3.2.2. The core
 also builds and passes its tests with SDL 3.2.0 and no add-ons. The GPU tests passed on both SDL
-versions with offscreen Vulkan. Separate installation of each add-on also passed.
+versions with offscreen Vulkan. The mixer tests also passed with SDL3_mixer 3.2.0 on SDL 3.4.16.
+Separate installation of each add-on also passed.
 
 ## Next
 
-- [ ] Add audio device selection, audio capture, and more mixer playback controls.
 - [ ] Add SDL3_image animation and SDL3_ttf text engine support.
 - [ ] Plan how to dispatch audio and event callbacks before allowing native threads to call OCaml.
 - [ ] Test the oldest supported add-on releases. Add macOS and Windows builds.

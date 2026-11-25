@@ -260,12 +260,21 @@ static inline value osdl_version_value(int version) {
 
 /* Audio data shared by SDL and SDL_mixer. */
 
+static inline SDL_AudioDeviceID osdl_audio_device_or_default(value             device,
+                                                             SDL_AudioDeviceID fallback) {
+    /* Sdl3.Audio.Device.id is an abstract int32. */
+    return Is_long(device) ? fallback : (SDL_AudioDeviceID)Int32_val(Some_val(device));
+}
+
 static inline SDL_AudioSpec osdl_audio_spec(value v) {
     /* Sdl3.Audio.spec and Sdl3.Audio.format. */
     static const SDL_AudioFormat formats[] = {SDL_AUDIO_U8, SDL_AUDIO_S16, SDL_AUDIO_S32,
                                               SDL_AUDIO_F32};
+    intnat                       channels  = Long_val(Field(v, 1));
+    if (channels < 1 || channels > 8)
+        caml_invalid_argument("SDL audio needs between 1 and 8 channels");
     return (SDL_AudioSpec){.format   = formats[Int_val(Field(v, 0))],
-                           .channels = osdl_positive_int(Field(v, 1)),
+                           .channels = (int)channels,
                            .freq     = osdl_positive_int(Field(v, 2))};
 }
 

@@ -1070,19 +1070,65 @@ CAMLprim value osdl_gamepad_name(value gamepad) {
     return caml_copy_string(name);
 }
 
-/* Queued audio. */
+/* Audio devices and queued streams. */
 
-CAMLprim value osdl_audio_open_playback(value context, value spec) {
-    CAMLparam2(context, spec);
+static void osdl_require_audio_context(value context) {
+    osdl_require_subsystem(context, SDL_INIT_AUDIO, "Start SDL with Audio to use audio devices");
+}
+
+static value osdl_audio_devices(value context, value snapshot, bool recording) {
+    CAMLparam2(context, snapshot);
+
+    osdl_require_audio_context(context);
+
+    int                count;
+    SDL_AudioDeviceID* ids =
+        recording ? SDL_GetAudioRecordingDevices(&count) : SDL_GetAudioPlaybackDevices(&count);
+    osdl_publish(snapshot, ids,
+                 recording ? "SDL_GetAudioRecordingDevices" : "SDL_GetAudioPlaybackDevices");
+    CAMLreturn(osdl_id_list(ids, count));
+}
+
+CAMLprim value osdl_audio_playback_devices(value context, value snapshot) {
+    return osdl_audio_devices(context, snapshot, false);
+}
+
+CAMLprim value osdl_audio_recording_devices(value context, value snapshot) {
+    return osdl_audio_devices(context, snapshot, true);
+}
+
+CAMLprim value osdl_audio_device_name(value context, value id) {
+    osdl_require_audio_context(context);
+
+    const char* name = SDL_GetAudioDeviceName((SDL_AudioDeviceID)Int32_val(id));
+    if (!name) osdl_fail("SDL_GetAudioDeviceName");
+    return caml_copy_string(name);
+}
+
+static value osdl_audio_open(value device, value context, value spec, bool recording) {
+    CAMLparam3(device, context, spec);
     CAMLlocal1(handle);
 
-    handle = osdl_new_handle(context);
-    osdl_live(context);
+    osdl_require_audio_context(context);
+    SDL_AudioSpec     format = osdl_audio_spec(spec);
+    SDL_AudioDeviceID id     = osdl_audio_device_or_default(
+        device, recording ? SDL_AUDIO_DEVICE_DEFAULT_RECORDING : SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK);
 
-    SDL_AudioSpec    format = osdl_audio_spec(spec);
-    SDL_AudioStream* stream =
-        SDL_OpenAudioDeviceStream(SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK, &format, NULL, NULL);
+    /* Remember the output sample alignment without a stream query on each read. */
+    handle = recording
+               ? osdl_new_attached_handle(context, Val_int(SDL_AUDIO_BYTESIZE(format.format)))
+               : osdl_new_handle(context);
+
+    SDL_AudioStream* stream = SDL_OpenAudioDeviceStream(id, &format, NULL, NULL);
     CAMLreturn(osdl_publish(handle, stream, "SDL_OpenAudioDeviceStream"));
+}
+
+CAMLprim value osdl_audio_open_playback(value device, value context, value spec) {
+    return osdl_audio_open(device, context, spec, false);
+}
+
+CAMLprim value osdl_audio_open_recording(value device, value context, value spec) {
+    return osdl_audio_open(device, context, spec, true);
 }
 
 OSDL_DESTROY(osdl_audio_close, SDL_AudioStream, SDL_DestroyAudioStream)
@@ -1104,6 +1150,26 @@ CAMLprim value osdl_audio_queued_bytes(value stream) {
     int size = SDL_GetAudioStreamQueued(osdl_live(stream));
     if (size < 0) osdl_fail("SDL_GetAudioStreamQueued");
     return osdl_val_int(size);
+}
+
+CAMLprim value osdl_audio_available_bytes(value stream) {
+    int size = SDL_GetAudioStreamAvailable(osdl_live(stream));
+    if (size < 0) osdl_fail("SDL_GetAudioStreamAvailable");
+    return osdl_val_int(size);
+}
+
+CAMLprim value osdl_audio_read(value stream, value buffer) {
+    SDL_AudioStream* s    = osdl_live(stream);
+    int              size = osdl_audio_buffer_length(buffer);
+    if (!size) return Val_int(0);
+
+    void* dst = Caml_ba_data_val(buffer);
+    if ((uintptr_t)dst % Int_val(osdl_attachment(stream)))
+        caml_invalid_argument("SDL recording buffer must align to its sample size");
+
+    int bytes_read = SDL_GetAudioStreamData(s, dst, size);
+    if (bytes_read < 0) osdl_fail("SDL_GetAudioStreamData");
+    return osdl_val_int(bytes_read);
 }
 
 /* Timers. */

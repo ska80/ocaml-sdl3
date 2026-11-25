@@ -1,0 +1,15 @@
+(test
+ (name audio_test)
+ (package sdl3)
+ (libraries sdl3)
+ (modes exe byte)
+ (deps
+  (package sdl3))
+ (action
+  (setenv
+   SDL_AUDIO_DRIVER
+   dummy
+   (setenv
+    SDL_AUDIO_DEVICE_SAMPLE_FRAMES
+    256
+    (run %{test})))))

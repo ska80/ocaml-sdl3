@@ -16,8 +16,14 @@ module Mixer : sig
   type offline
   type 'output t
 
-  val create_device : ?spec:Sdl3.Audio.spec -> context -> device t
-  (** Send audio to the default playback device. *)
+  val create_device :
+    ?device:Sdl3.Audio.playback Sdl3.Audio.Device.id ->
+    ?spec:Sdl3.Audio.spec ->
+    context ->
+    device t
+  (** Send audio to the selected playback device. If you omit [device], use the
+      system default. [spec] requests a format for the device. SDL can choose a
+      different format. *)
 
   val create : context -> Sdl3.Audio.spec -> offline t
   (** Mix audio into a memory buffer instead of playing it on a device. *)
@@ -57,17 +63,52 @@ module Track : sig
   val destroy : t -> unit
   val set_audio : t -> Audio.t option -> unit
 
-  val play : ?loops:int -> t -> unit
-  (** Start or restart playback. [0] plays once and [-1] loops forever. A
-      positive number gives the number of extra plays. The default is [0]. *)
+  val play :
+    ?loops:int -> ?start_frame:int64 -> ?fade_in_frames:int64 -> t -> unit
+  (** Start or restart playback. All options default to zero. [loops] counts
+      extra plays. Use [-1] to loop forever. [start_frame] follows the same
+      position rules as [seek]. [fade_in_frames] is the number of input frames
+      to fade from silence to full volume. The fade limit is 2,147,483,647
+      frames.
+
+      If you restart a playing or paused track, SDL can mix samples it already
+      decoded at the old position. To discard that input, call [stop] with no
+      fade before you restart. *)
 
   val stop : ?fade_frames:int64 -> t -> unit
-  (** Stop after the given number of frames from the input. The default is [0].
-  *)
+  (** Fade to silence over the given number of input frames, then stop. The
+      default is zero, which stops at once. The same fade limit applies. *)
 
   val pause : t -> unit
   val resume : t -> unit
   val is_playing : t -> bool
   val is_paused : t -> bool
+
+  val position : t -> int64
+  (** Current position in input frames. If playback pauses or stops, return the
+      position where it halted. *)
+
+  val seek : t -> int64 -> unit
+  (** Move to a nonnegative position in the input. If the duration is known, the
+      position must not exceed it. The decoder must support seeking. A later
+      call to [play] resets the position. *)
+
+  val loops : t -> int
+  (** Number of extra plays left, or [-1] for an infinite loop. Return zero if
+      the track is stopped. *)
+
+  val set_loops : t -> int -> unit
+  (** Set the number of extra plays left on a playing or paused track. Use [0]
+      to end after the current play or [-1] to loop forever. *)
+
+  val fade_frames : t -> int64
+  (** Number of input frames left in a fade. The count is positive for a
+      fade-in, negative for a fade-out, and zero if there is no fade. *)
+
   val set_gain : t -> float -> unit
+  val frequency_ratio : t -> float
+
+  val set_frequency_ratio : t -> float -> unit
+  (** Change playback speed and pitch. The ratio must be between [0.01] and
+      [100.0]. A ratio of [1.0] is normal speed. *)
 end
