@@ -12,6 +12,12 @@ draw interface elements. Use `Window.display_scale` for the scale of a specific 
 A request to move, minimize, maximize, or restore a window can take effect later. Read
 `Event.Window` to learn what changed.
 
+## File drops
+
+Poll for `Event.Drop` to read drag and drop events. Collect `File` paths in order between `Begin`
+and `Complete`. SDL can also report dropped text and pointer positions. A drop can have no target
+window. The paths and text are OCaml strings that you can keep after polling again.
+
 ## Touch
 
 Start SDL with `[Sdl3.Video]`. Use `Touch.devices` to list known touch devices. Use `Touch.fingers`

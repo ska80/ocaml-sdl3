@@ -54,6 +54,10 @@ module Audio : sig
 
   val destroy : t -> unit
   val duration : t -> duration
+
+  val title : t -> string option
+  (** Copy the title from the file's metadata. Return [None] if the decoder
+      reports no title or an empty title. *)
 end
 
 module Track : sig

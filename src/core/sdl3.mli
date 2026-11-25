@@ -231,6 +231,12 @@ module Surface : sig
   val size : t -> int * int
   val fill : ?rect:Rect.t -> t -> Color.t -> unit
   val read_pixel : t -> x:int -> y:int -> Color.t
+
+  val read_rgba : t -> byte_buffer -> unit
+  (** Copy the whole surface into the buffer in red, green, blue, alpha byte
+      order. Rows have no padding. SDL converts other pixel formats to RGBA.
+      Raise [Invalid_argument] if the buffer holds fewer than
+      [4 * width * height] bytes. Bytes after the image stay unchanged. *)
 end
 
 module Blend_mode : sig
@@ -952,6 +958,16 @@ module Event : sig
 
   type touch_change = Down | Up | Motion | Canceled
 
+  type drop_change =
+    | Begin
+    | File of string
+    | Text of string
+    | Complete
+    | Position of { x : float; y : float }
+        (** SDL uses [Begin] and [Complete] to group items in one drop. [File]
+            and [Text] hold copies of the path and text. [Position] uses window
+            coordinates. *)
+
   type kind =
     | Quit
     | Window of { window : Window.id; change : window_change }
@@ -1012,6 +1028,8 @@ module Event : sig
       }
         (** [window] is [None] when SDL reports no window under the finger. [dx]
             and [dy] use the same scale as the finger's coordinates. *)
+    | Drop of { window : Window.id option; change : drop_change }
+        (** [window] is [None] when SDL reports no target window. *)
     | Other of int32
 
   type t = { timestamp_ns : int64; kind : kind }

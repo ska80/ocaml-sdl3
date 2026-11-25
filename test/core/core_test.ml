@@ -115,10 +115,33 @@ let events context window =
       check (gone = added && Gamepad.id_to_int32 added = 123l) "Gamepad ID";
       sdl_error "SDL_OpenGamepad" (fun () -> Gamepad.open_ context added)
   | _ -> failwith "Gamepad events");
-  (match (next ()).kind with Other _ -> () | _ -> failwith "Unbound event");
+  check
+    ((next ()).kind = Drop { window = Some id; change = Begin })
+    "Begin drop";
+  check
+    ((next ()).kind
+    = Drop { window = Some id; change = Position { x = 8.5; y = 12.25 } })
+    "Drop position";
+  let path =
+    match (next ()).kind with
+    | Drop { window = Some window; change = File path } ->
+        check (window = id) "File drop window ID";
+        path
+    | _ -> failwith "File drop event"
+  in
+  check
+    ((next ()).kind = Drop { window = None; change = Text "Dropped text" })
+    "Text drop with no window";
+  check
+    ((next ()).kind = Drop { window = Some id; change = Complete })
+    "Complete drop";
+  (match (next ()).kind with
+  | Other _ -> ()
+  | _ -> failwith "Unbound event");
   check ((next ()).kind = Quit) "Quit event";
   check (poll context = None) "Empty queue";
-  check (text = "é") "UTF-8 text after more polls"
+  check (text = "é") "UTF-8 text after more polls";
+  check (path = "a b/é.wav") "UTF-8 file path after more polls"
 
 let displays context window =
   let primary = Display.primary context in
@@ -587,6 +610,47 @@ let render_target renderer other_renderer output =
       invalid select;
       Renderer.present renderer)
 
+let surface_rgba context =
+  let test format expected_alpha =
+    using Surface.destroy (Surface.create ~format context ~w:3 ~h:2)
+      (fun surface ->
+        let output =
+          Bigarray.Array1.create Bigarray.int8_unsigned Bigarray.c_layout 32
+        in
+        Bigarray.Array1.fill output 42;
+        Surface.fill surface (Color.rgba 7 101 222 13);
+        Surface.fill
+          ~rect:(Rect.make ~x:0 ~y:1 ~w:3 ~h:1)
+          surface (Color.rgba 19 23 31 13);
+        invalid (fun () ->
+            Surface.read_rgba surface (Bigarray.Array1.sub output 0 23));
+        check (output.{0} = 42) "Short RGBA buffer stays unchanged";
+        Surface.read_rgba surface (Bigarray.Array1.sub output 4 28);
+        let pixel i =
+          (output.{i}, output.{i + 1}, output.{i + 2}, output.{i + 3})
+        in
+        for x = 0 to 2 do
+          check
+            (pixel (4 + (4 * x)) = (7, 101, 222, expected_alpha))
+            "RGBA first row";
+          check
+            (pixel (16 + (4 * x)) = (19, 23, 31, expected_alpha))
+            "RGBA second row"
+        done;
+        check (pixel 0 = (42, 42, 42, 42)) "RGBA slice starts at its offset";
+        check
+          (pixel 28 = (42, 42, 42, 42))
+          "RGBA copy leaves trailing bytes unchanged";
+        Domain.join
+          (Domain.spawn (fun () ->
+               invalid (fun () -> Surface.read_rgba surface output)));
+        Surface.destroy surface;
+        invalid (fun () -> Surface.read_rgba surface output))
+  in
+  test Rgba32 13;
+  test Bgra32 13;
+  test Rgb24 255
+
 let render context window =
   sdl_error "SDL_CreateRenderer" (fun () ->
       Renderer.create ~driver:"missing-renderer" window);
@@ -696,6 +760,7 @@ let () =
   with_init [ Video; Audio; Gamepad ] (fun context ->
       invalid (fun () -> init []);
       invalid (fun () -> Surface.create context ~w:0 ~h:1);
+      surface_rgba context;
       invalid (fun () ->
           Window.create context ~title:"embedded\000NUL" ~w:1 ~h:1);
       using Window.destroy

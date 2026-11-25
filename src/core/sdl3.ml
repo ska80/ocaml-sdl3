@@ -212,6 +212,8 @@ module Surface = struct
 
   external read_pixel : t -> x:int -> y:int -> Color.t
     = "osdl_surface_read_pixel"
+
+  external read_rgba : t -> byte_buffer -> unit = "osdl_surface_read_rgba"
 end
 
 module Blend_mode = struct
@@ -708,6 +710,13 @@ module Event = struct
 
   type touch_change = Down | Up | Motion | Canceled
 
+  type drop_change =
+    | Begin
+    | File of string
+    | Text of string
+    | Complete
+    | Position of { x : float; y : float }
+
   type kind =
     | Quit
     | Window of { window : Window.id; change : window_change }
@@ -766,6 +775,7 @@ module Event = struct
         dx : float;
         dy : float;
       }
+    | Drop of { window : Window.id option; change : drop_change }
     | Other of int32
 
   type t = { timestamp_ns : int64; kind : kind }

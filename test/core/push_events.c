@@ -84,6 +84,21 @@ CAMLprim value test_push_events(value window) {
         .gdevice = {.type = SDL_EVENT_GAMEPAD_REMOVED, .which = 123}
     });
 
+    push((SDL_Event){
+        .drop = {.type = SDL_EVENT_DROP_BEGIN, .windowID = id}
+    });
+    push((SDL_Event){
+        .drop = {.type = SDL_EVENT_DROP_POSITION, .windowID = id, .x = 8.5f, .y = 12.25f}
+    });
+    push((SDL_Event){
+        .drop = {.type = SDL_EVENT_DROP_FILE, .windowID = id, .data = "a b/\xc3\xa9.wav"}
+    });
+    push((SDL_Event){
+        .drop = {.type = SDL_EVENT_DROP_TEXT, .data = "Dropped text"}
+    });
+    push((SDL_Event){
+        .drop = {.type = SDL_EVENT_DROP_COMPLETE, .windowID = id}
+    });
     push((SDL_Event){.type = SDL_EVENT_USER});
     push((SDL_Event){.type = SDL_EVENT_QUIT});
 

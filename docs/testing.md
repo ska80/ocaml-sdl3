@@ -34,3 +34,4 @@ done
 ```
 
 The Aurora Tunnel example has a [separate short test](../examples/aurora_tunnel/README.md#run-a-short-test).
+The [Music Player tests](../examples/music_player/README.md#run-the-tests) also include a GPU test.

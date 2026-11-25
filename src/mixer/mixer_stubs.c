@@ -118,6 +118,19 @@ CAMLprim value osdl_mixer_audio_duration(value audio) {
     return caml_alloc_1(0, caml_copy_int64(frames));
 }
 
+CAMLprim value osdl_mixer_audio_title(value audio) {
+    CAMLparam1(audio);
+    CAMLlocal1(title);
+
+    SDL_PropertiesID properties = MIX_GetAudioProperties(osdl_live(audio));
+    if (!properties) osdl_fail("MIX_GetAudioProperties");
+
+    const char* text = SDL_GetStringProperty(properties, MIX_PROP_METADATA_TITLE_STRING, NULL);
+    if (!text || !*text) CAMLreturn(Val_none);
+    title = caml_copy_string(text);
+    CAMLreturn(caml_alloc_some(title));
+}
+
 /* Tracks. */
 
 CAMLprim value osdl_mixer_track_create(value mixer) {

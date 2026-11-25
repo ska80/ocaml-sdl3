@@ -18,6 +18,7 @@
 - [x] GPU vertex and index buffers, upload commands, and indexed drawing.
 - [x] GPU uniform data, sampled 2D textures, and samplers.
 - [x] Aurora Tunnel example with GPU mesh copies, a color texture, and interactive animation.
+- [x] Music Player example with file drops, mixer titles, GPU text, and an FFTW spectrum.
 - [x] Image loading from a file or memory, texture loading, and PNG and JPEG output.
 - [x] Mixer and track playback, looping, gain, and mixing to a device or memory.
 - [x] Font loading, metrics, UTF-8 text measurement, and solid or blended text rendering.

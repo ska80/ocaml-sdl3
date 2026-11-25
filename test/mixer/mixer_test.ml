@@ -18,14 +18,21 @@ let using destroy handle f =
 
 let spec = Sdl3.Audio.{ format = S16; channels = 1; frequency = 48_000 }
 
-let write_wav path frames =
+let write_wav ?title path frames =
   let length = frames * 2 in
-  let data = Bytes.make (44 + length) '\000' in
+  let title_bytes =
+    match title with
+    | None -> 0
+    | Some text -> String.length text + 1
+  in
+  let title_padded = title_bytes + (title_bytes mod 2) in
+  let list_size = if title_bytes = 0 then 0 else 20 + title_padded in
+  let data = Bytes.make (44 + length + list_size) '\000' in
   let str pos s = Bytes.blit_string s 0 data pos (String.length s) in
   let i16 = Bytes.set_int16_le data
   and i32 pos n = Bytes.set_int32_le data pos (Int32.of_int n) in
   str 0 "RIFF";
-  i32 4 (36 + length);
+  i32 4 (36 + length + list_size);
   str 8 "WAVEfmt ";
   i32 16 16;
   (* PCM format chunk length *)
@@ -41,7 +48,33 @@ let write_wav path frames =
   for i = 0 to frames - 1 do
     i16 (44 + (i * 2)) (if i < frames / 2 then 4096 else 8192)
   done;
+  Option.iter
+    (fun title ->
+      let offset = 44 + length in
+      str offset "LIST";
+      i32 (offset + 4) (12 + title_padded);
+      str (offset + 8) "INFOINAM";
+      i32 (offset + 16) title_bytes;
+      str (offset + 20) title)
+    title;
   Out_channel.with_open_bin path (fun ch -> Out_channel.output_bytes ch data)
+
+let audio_title context =
+  using Sys.remove (Filename.temp_file "sdl3-mixer-title" ".wav") (fun path ->
+      write_wav ~title:"Étude" path 96;
+      let title =
+        using Audio.destroy (Audio.load context path) (fun audio ->
+            Domain.join
+              (Domain.spawn (fun () -> invalid (fun () -> Audio.title audio)));
+            let title = Audio.title audio in
+            Audio.destroy audio;
+            invalid (fun () -> Audio.title audio);
+            title)
+      in
+      check (title = Some "Étude") "Copy the WAV title before the audio closes";
+      write_wav ~title:"" path 96;
+      using Audio.destroy (Audio.load context path) (fun audio ->
+          check (Audio.title audio = None) "Empty WAV title"))
 
 let selected_device () =
   let old_id =
@@ -138,6 +171,7 @@ let () =
   Sdl3.with_init [] (fun sdl ->
       with_init sdl (fun context ->
           invalid (fun () -> Sdl3.quit sdl);
+          audio_title context;
           using Mixer.destroy (Mixer.create_device context) (fun device ->
               Mixer.set_gain device 0.5);
           using Sys.remove (Filename.temp_file "sdl3-mixer" ".wav") (fun path ->
@@ -145,7 +179,8 @@ let () =
               let module Io = Sdl3.Io in
               using Audio.destroy (Audio.load ~predecode:true context path)
                 (fun audio ->
-                  check (Audio.duration audio = Frames 96L) "WAV file duration");
+                  check (Audio.duration audio = Frames 96L) "WAV file duration";
+                  check (Audio.title audio = None) "No WAV title");
               let closed = Io.with_file sdl ~mode:Read path Fun.id in
               invalid (fun () -> Audio.load_io context closed);
               using Mixer.destroy (Mixer.create context spec) (fun mixer ->

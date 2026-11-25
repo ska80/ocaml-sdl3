@@ -41,6 +41,7 @@ module Audio = struct
 
   external destroy : t -> unit = "osdl_mixer_audio_destroy"
   external duration : t -> duration = "osdl_mixer_audio_duration"
+  external title : t -> string option = "osdl_mixer_audio_title"
 end
 
 module Track = struct

@@ -154,6 +154,7 @@ enum {
     K_GAMEPAD_BUTTON,
     K_DISPLAY,
     K_TOUCH,
+    K_DROP,
     K_OTHER,
 };
 
@@ -257,6 +258,38 @@ static value touch_event_value(const SDL_TouchFingerEvent* event, int change) {
     CAMLreturn(caml_alloc_6(K_TOUCH, window, device, finger, Val_int(change), dx, dy));
 }
 
+static value drop_event_value(const SDL_DropEvent* event) {
+    CAMLparam0();
+    CAMLlocal4(window, change, x, y);
+
+    /* SDL owns the event data. Copy it before another poll can free it. */
+    switch (event->type) {
+    case SDL_EVENT_DROP_BEGIN:
+        change = Val_int(0);
+        break;
+    case SDL_EVENT_DROP_COMPLETE:
+        change = Val_int(1);
+        break;
+    case SDL_EVENT_DROP_FILE:
+    case SDL_EVENT_DROP_TEXT:
+        if (!event->data) CAMLreturn(caml_alloc_1(K_OTHER, caml_copy_int32((int32_t)event->type)));
+        change =
+            caml_alloc_1(event->type == SDL_EVENT_DROP_FILE ? 0 : 1, caml_copy_string(event->data));
+        break;
+    case SDL_EVENT_DROP_POSITION:
+        x      = caml_copy_double(event->x);
+        y      = caml_copy_double(event->y);
+        change = caml_alloc_2(2, x, y);
+        break;
+    default:
+        CAMLreturn(caml_alloc_1(K_OTHER, caml_copy_int32((int32_t)event->type)));
+    }
+
+    window =
+        event->windowID ? caml_alloc_some(caml_copy_int32((int32_t)event->windowID)) : Val_none;
+    CAMLreturn(caml_alloc_2(K_DROP, window, change));
+}
+
 static value event_kind_value(const SDL_Event* event) {
     if (event->type >= SDL_EVENT_WINDOW_FIRST && event->type <= SDL_EVENT_WINDOW_LAST)
         return window_event_value(&event->window);
@@ -353,6 +386,13 @@ static value event_kind_value(const SDL_Event* event) {
         CAMLreturn(touch_event_value(&event->tfinger, 2));
     case SDL_EVENT_FINGER_CANCELED:
         CAMLreturn(touch_event_value(&event->tfinger, 3));
+
+    case SDL_EVENT_DROP_BEGIN:
+    case SDL_EVENT_DROP_COMPLETE:
+    case SDL_EVENT_DROP_FILE:
+    case SDL_EVENT_DROP_TEXT:
+    case SDL_EVENT_DROP_POSITION:
+        CAMLreturn(drop_event_value(&event->drop));
 
     default:
         break;

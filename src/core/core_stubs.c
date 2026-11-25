@@ -428,6 +428,36 @@ CAMLprim value osdl_surface_read_pixel(value surface, value x, value y) {
     return caml_alloc_4(0, Val_int(c.r), Val_int(c.g), Val_int(c.b), Val_int(c.a));
 }
 
+CAMLprim value osdl_surface_read_rgba(value surface, value buffer) {
+    SDL_Surface* s = osdl_live(surface);
+    if (!s->w || !s->h) return Val_unit;
+    size_t capacity = (size_t)Caml_ba_array_val(buffer)->dim[0];
+    if ((size_t)s->w > capacity / 4 / (size_t)s->h)
+        caml_invalid_argument("SDL RGBA buffer is too small for the surface");
+
+    SDL_Surface* pixels = s;
+    if (s->format != SDL_PIXELFORMAT_RGBA32 || SDL_SurfaceHasColorKey(s)) {
+        pixels = SDL_ConvertSurface(s, SDL_PIXELFORMAT_RGBA32);
+        if (!pixels) osdl_fail("SDL_ConvertSurface");
+    }
+
+    bool locked = SDL_MUSTLOCK(pixels);
+    if (locked && !SDL_LockSurface(pixels)) {
+        char message[1024];
+        osdl_error_message(message, sizeof(message), "SDL_LockSurface");
+        if (pixels != s) SDL_DestroySurface(pixels);
+        osdl_raise_error(message);
+    }
+    size_t       row = (size_t)pixels->w * 4;
+    const Uint8* src = pixels->pixels;
+    Uint8*       dst = Caml_ba_data_val(buffer);
+    for (int y = 0; y < pixels->h; ++y)
+        memcpy(dst + (size_t)y * row, src + (size_t)y * (size_t)pixels->pitch, row);
+    if (locked) SDL_UnlockSurface(pixels);
+    if (pixels != s) SDL_DestroySurface(pixels);
+    return Val_unit;
+}
+
 /* Renderers. */
 
 static SDL_Texture* osdl_texture_unlocked(value texture) {

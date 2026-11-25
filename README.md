@@ -71,8 +71,9 @@ Use `Sdl3.with_init` to start and stop SDL. Pass `[Sdl3.Video]` for a window or 
 core audio stream. Pass `[]` if you do not need a subsystem. SDL3_image needs no separate setup.
 Use `Sdl3_mixer.with_init` and `Sdl3_ttf.with_init` inside the SDL context.
 
-Try [Bunnymark](docs/rendering.md#bunnymark) for sprite batches or
-[Aurora Tunnel](docs/gpu.md#aurora-tunnel) for GPU drawing.
+Try [Bunnymark](docs/rendering.md#bunnymark) for sprite batches,
+[Aurora Tunnel](docs/gpu.md#aurora-tunnel) for GPU drawing, or the
+[Music Player](examples/music_player/README.md) for playlists and a live spectrum.
 
 ## Resource rules
 
@@ -104,3 +105,4 @@ call reports a failure, the binding raises `Sdl3.Error` with the function name a
 
 This project uses the [MIT License](LICENSE). The [Bunnymark port](examples/bunnymark/bunnymark.LICENSE)
 and the [bunny image](examples/bunnymark/assets/LICENSE.md) keep their existing licenses.
+The Music Player font comes with its [own license](examples/music_player/assets/LICENSE.md).

@@ -1,0 +1,61 @@
+(library
+ (name music_player_support)
+ (modules scope spectrum playback)
+ (optional)
+ (libraries sdl3 sdl3-mixer fftw3))
+
+(executable
+ (name music_player)
+ (modules music_player view)
+ (enabled_if
+  (and
+   %{lib-available:fftw3}
+   %{lib-available:sdl3-mixer}
+   %{lib-available:sdl3-ttf}))
+ (libraries music_player_support sdl3 sdl3-ttf fftw3)
+ (link_deps
+  assets/DejaVuSans.ttf
+  shaders/player.vert.spv
+  shaders/player.frag.spv))
+
+(test
+ (name music_player_test)
+ (modules music_player_test)
+ (build_if
+  (and %{lib-available:fftw3} %{lib-available:sdl3-mixer}))
+ (libraries music_player_support sdl3 sdl3-mixer)
+ (action
+  (setenv
+   SDL_AUDIO_DRIVER
+   dummy
+   (setenv
+    SDL_AUDIO_DEVICE_SAMPLE_FRAMES
+    256
+    (run %{test})))))
+
+(rule
+ (target tone.wav)
+ (enabled_if
+  (and %{lib-available:fftw3} %{lib-available:sdl3-mixer}))
+ (action
+  (run %{exe:music_player_test.exe} --write-tone %{target})))
+
+(rule
+ (alias runtest-music-player)
+ (enabled_if
+  (and
+   %{lib-available:fftw3}
+   %{lib-available:sdl3-mixer}
+   %{lib-available:sdl3-ttf}))
+ (deps
+  assets/DejaVuSans.ttf
+  shaders/player.vert.spv
+  shaders/player.frag.spv
+  tone.wav)
+ (action
+  (setenv
+   SDL_AUDIO_DRIVER
+   dummy
+   (progn
+    (run %{exe:music_player.exe} --frames 5)
+    (run %{exe:music_player.exe} --frames 12 tone.wav)))))

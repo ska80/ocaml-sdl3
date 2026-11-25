@@ -33,4 +33,8 @@ with no fade before restarting. Read the current frame with `Track.position`. If
 supports seeking, use `Track.seek` to change the position.
 
 Change remaining repeats with `Track.set_loops`. Use `Track.set_frequency_ratio` to change speed and
-pitch together. Pass `~fade_frames` to `Track.stop` to fade to silence before stopping.
+pitch together. Pass `~fade_frames` to `Track.stop` to fade to silence before stopping.  Use
+`Sdl3_mixer.Audio.title` to copy a title from the file's metadata if the decoder reports one.
+
+The [Music Player example](../examples/music_player/README.md) mixes to memory for playback and
+frequency analysis.
