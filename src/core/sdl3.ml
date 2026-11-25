@@ -200,11 +200,25 @@ module Gpu = struct
   type swapchain
   type command_buffer
   type render_pass
+  type copy_pass
   type fence
   type vertex
   type fragment
   type 'stage shader
   type graphics_pipeline
+  type index
+  type 'kind buffer
+  type upload_buffer
+  type index_format = Uint16 | Uint32
+  type vertex_format = Float32 | Float32x2 | Float32x3 | Float32x4 | Unorm8x4
+
+  type vertex_attribute = {
+    location : int;
+    format : vertex_format;
+    offset : int;
+  }
+
+  type vertex_layout = { stride : int; attributes : vertex_attribute list }
 
   type _ shader_stage =
     | Vertex : vertex shader_stage
@@ -266,6 +280,7 @@ module Gpu = struct
   external release_shader : 'stage shader -> unit = "osdl_gpu_release_shader"
 
   external create_swapchain_pipeline :
+    ?vertex_layout:vertex_layout ->
     swapchain ->
     vertex:vertex shader ->
     fragment:fragment shader ->
@@ -274,6 +289,24 @@ module Gpu = struct
 
   external release_graphics_pipeline : graphics_pipeline -> unit
     = "osdl_gpu_release_graphics_pipeline"
+
+  external create_vertex_buffer : device -> size:int -> vertex buffer
+    = "osdl_gpu_create_vertex_buffer"
+
+  external create_index_buffer :
+    device -> format:index_format -> size:int -> index buffer
+    = "osdl_gpu_create_index_buffer"
+
+  external release_buffer : 'kind buffer -> unit = "osdl_gpu_release_buffer"
+
+  external create_upload_buffer : device -> size:int -> upload_buffer
+    = "osdl_gpu_create_upload_buffer"
+
+  external write_upload_buffer : upload_buffer -> byte_buffer -> unit
+    = "osdl_gpu_write_upload_buffer"
+
+  external release_upload_buffer : upload_buffer -> unit
+    = "osdl_gpu_release_upload_buffer"
 
   external acquire_command_buffer : device -> command_buffer
     = "osdl_gpu_acquire_command_buffer"
@@ -291,6 +324,21 @@ module Gpu = struct
   external wait_fence : fence -> unit = "osdl_gpu_wait_fence"
   external release_fence : fence -> unit = "osdl_gpu_release_fence"
 
+  external begin_copy_pass : command_buffer -> copy_pass
+    = "osdl_gpu_begin_copy_pass"
+
+  external upload_to_buffer :
+    ?src_offset:int ->
+    ?dst_offset:int ->
+    ?cycle:bool ->
+    copy_pass ->
+    src:upload_buffer ->
+    dst:'kind buffer ->
+    size:int ->
+    unit = "osdl_gpu_upload_to_buffer_byte" "osdl_gpu_upload_to_buffer"
+
+  external end_copy_pass : copy_pass -> unit = "osdl_gpu_end_copy_pass"
+
   external begin_swapchain_render_pass :
     command_buffer -> swapchain -> clear:Color.t -> render_pass option
     = "osdl_gpu_begin_swapchain_render_pass"
@@ -298,9 +346,21 @@ module Gpu = struct
   external bind_graphics_pipeline : render_pass -> graphics_pipeline -> unit
     = "osdl_gpu_bind_graphics_pipeline"
 
+  external bind_vertex_buffer :
+    ?offset:int -> render_pass -> vertex buffer -> unit
+    = "osdl_gpu_bind_vertex_buffer"
+
+  external bind_index_buffer :
+    ?offset:int -> render_pass -> index buffer -> unit
+    = "osdl_gpu_bind_index_buffer"
+
   external draw_primitives :
     ?instances:int -> render_pass -> vertices:int -> unit
     = "osdl_gpu_draw_primitives"
+
+  external draw_indexed_primitives :
+    ?instances:int -> ?first_index:int -> render_pass -> indices:int -> unit
+    = "osdl_gpu_draw_indexed_primitives"
 
   external end_render_pass : render_pass -> unit = "osdl_gpu_end_render_pass"
 

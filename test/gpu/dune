@@ -1,12 +1,23 @@
 (executable
  (name gpu_test)
  (libraries sdl3)
- (modes exe byte_complete))
+ (modes exe byte_complete)
+ (foreign_stubs
+  (language c)
+  (names buffer_readback)
+  (include_dirs ../../src/core)
+  (flags
+   (:standard
+    (:include ../../src/core/c_flags.sexp)))))
 
 (rule
  (alias runtest-gpu)
  (package sdl3)
- (deps shaders/triangle.vert.spv shaders/triangle.frag.spv)
+ (deps
+  shaders/triangle.vert.spv
+  shaders/triangle.frag.spv
+  shaders/mesh.vert.spv
+  shaders/mesh.frag.spv)
  (action
   (progn
    (run %{exe:gpu_test.exe})

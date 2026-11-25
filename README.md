@@ -131,13 +131,23 @@ fence at submission. Call `Gpu.wait_fence` to wait for completion. Release the f
 `Gpu.release_fence` when you no longer need it.
 
 A shader is a program that runs on the GPU. Use `Gpu.create_shader` to load vertex and fragment
-code. The shaders must not need buffers, textures, or samplers. A graphics pipeline pairs the
-shaders with the drawing state. Create one with `Gpu.create_swapchain_pipeline`. You can release the
-shader handles after you create the pipeline.
+code. The shaders can read vertex data, but cannot use uniform or storage buffers, textures, or
+samplers. A graphics pipeline pairs the shaders with the drawing state. Create one with
+`Gpu.create_swapchain_pipeline`. You can release the shader handles after you create the pipeline.
 
 In each pass, call `Gpu.bind_graphics_pipeline` before `Gpu.draw_primitives`. If the window image
-changes to a different pixel format, create a pipeline for the new format. See the [GPU
-test](test/gpu/gpu_test.ml) for a complete example.
+changes to a different pixel format, create a pipeline for the new format.
+
+A vertex buffer holds the points and other data for a shape. An index buffer holds the order in
+which to draw those points. Use `Gpu.write_upload_buffer` to copy a bigarray into a reusable upload
+buffer. Buffer sizes, copy offsets, and copy lengths must be multiples of four bytes.
+
+Call `Gpu.begin_copy_pass` to group transfers in the command buffer. Record each transfer with
+`Gpu.upload_to_buffer`. Call `Gpu.end_copy_pass` before you start a render pass.
+
+If the vertex shader reads vertex data, pass `~vertex_layout` when you create the pipeline. Bind the
+vertex buffer after you bind that pipeline. For indexed drawing, bind the index buffer and call
+`Gpu.draw_indexed_primitives`. For a complete example, see the [GPU test](test/gpu/gpu_test.ml).
 
 ## Run the tests
 
@@ -153,11 +163,10 @@ offscreen Vulkan support, set `SDL_VIDEO_DRIVER=offscreen` to run without a disp
 
 The drawing tests use SPIR-V, a shader format that Vulkan accepts. They skip drawing on devices that
 do not accept SPIR-V. The repository includes compiled shaders, so the tests do not need a shader
-compiler. If you edit the [triangle shaders](test/gpu/shaders), rebuild the test files:
+compiler. If you edit the [test shaders](test/gpu/shaders), rebuild the test files:
 
 ```sh
-for stage in vert frag; do
-  shader="test/gpu/shaders/triangle.$stage"
+for shader in test/gpu/shaders/*.vert test/gpu/shaders/*.frag; do
   glslangValidator -V --target-env vulkan1.0 -g0 "$shader" -o "$shader.spv"
 done
 ```

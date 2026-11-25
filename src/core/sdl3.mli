@@ -238,6 +238,9 @@ module Gpu : sig
   type render_pass
   (** A group of rendering operations that share the same target image. *)
 
+  type copy_pass
+  (** A group of GPU copy operations in a command buffer. *)
+
   type fence
   (** A handle that signals completion of submitted GPU work. *)
 
@@ -253,6 +256,41 @@ module Gpu : sig
 
   type graphics_pipeline
   (** The shaders and drawing state for a render pass. *)
+
+  type index
+
+  type 'kind buffer
+  (** GPU memory for vertex data or indices. *)
+
+  type upload_buffer
+  (** Temporary memory that holds bytes to copy to the GPU. *)
+
+  type index_format =
+    | Uint16
+    | Uint32  (** The width of each unsigned integer in an index buffer. *)
+
+  type vertex_format =
+    | Float32
+    | Float32x2
+    | Float32x3
+    | Float32x4
+    | Unorm8x4
+        (** An attribute's data format. [Unorm8x4] maps four unsigned bytes to
+            four values in the range 0 to 1. *)
+
+  type vertex_attribute = {
+    location : int;
+    format : vertex_format;
+    offset : int;
+  }
+  (** A value read by the vertex shader. Use a unique shader input [location]
+      from 0 to 15. The [offset] is in bytes from the start of the vertex and
+      must be a multiple of four. *)
+
+  type vertex_layout = { stride : int; attributes : vertex_attribute list }
+  (** The layout of one vertex buffer. The [stride] is the byte distance between
+      vertices. It must be a positive multiple of four, up to 2048. Supply at
+      least one attribute. Each attribute must fit in the stride. *)
 
   type shader_format = Spirv | Dxbc | Dxil | Msl | Metallib
 
@@ -284,8 +322,8 @@ module Gpu : sig
       selects the driver. Set [debug] to [true] to enable SDL GPU validation. *)
 
   val destroy_device : device -> unit
-  (** Close the device. Release its claims, fences, shaders, and pipelines
-      first. Submit or cancel any open command buffers. *)
+  (** Close the device. Release its claims, fences, shaders, pipelines, and data
+      buffers first. Submit or cancel any open command buffers. *)
 
   val driver : device -> string
   val shader_formats : device -> shader_format list
@@ -319,24 +357,27 @@ module Gpu : sig
     string ->
     'stage shader
   (** Create a shader from code in [format]. Pass valid code for [stage] and a
-      format the device supports. The entry point defaults to ["main"]. Use a
-      shader that does not need buffers, textures, or samplers. The binding does
-      not inspect the code for resource use. *)
+      format the device supports. The entry point defaults to ["main"]. The
+      shader can read vertex attributes, but must not use uniform or storage
+      buffers, textures, or samplers. The binding does not inspect the code for
+      resource use. *)
 
   val release_shader : 'stage shader -> unit
   (** Release the shader. Existing pipelines can still use it. Calling this
       again on a released shader does nothing. *)
 
   val create_swapchain_pipeline :
+    ?vertex_layout:vertex_layout ->
     swapchain ->
     vertex:vertex shader ->
     fragment:fragment shader ->
     primitive:primitive ->
     graphics_pipeline
   (** Create a pipeline for the claim's current pixel format. Both shaders must
-      belong to the device that claimed the window. The vertex shader must not
-      expect vertex buffers. The pipeline uses one color target, with no
-      blending, depth test, or face culling.
+      belong to the device that claimed the window. If the vertex shader has
+      attributes, pass its layout for one vertex buffer. Otherwise omit
+      [vertex_layout]. The pipeline uses one color target, with no blending,
+      depth test, or face culling.
 
       The pipeline belongs to the device, not the claim. Use it with any
       swapchain on that device that has the same pixel format. If a change to
@@ -349,21 +390,51 @@ module Gpu : sig
       before drawing again. Calling this again on a released pipeline does
       nothing. *)
 
+  val create_vertex_buffer : device -> size:int -> vertex buffer
+  (** Allocate space for vertex data. Pass a positive byte size that is a
+      multiple of four and fits in an unsigned 32-bit integer. Upload data
+      before drawing. *)
+
+  val create_index_buffer :
+    device -> format:index_format -> size:int -> index buffer
+  (** Allocate space for vertex indices. The same byte size rules apply as for
+      [create_vertex_buffer]. Pad an odd number of 16-bit indices with two
+      bytes. Pass only the actual index count to the draw call. *)
+
+  val release_buffer : 'kind buffer -> unit
+  (** Release a vertex or index buffer. SDL keeps already recorded commands
+      valid. Calling this again on a released buffer does nothing. *)
+
+  val create_upload_buffer : device -> size:int -> upload_buffer
+  (** Allocate memory for uploads. The same byte size rules apply as for
+      [create_vertex_buffer]. *)
+
+  val write_upload_buffer : upload_buffer -> byte_buffer -> unit
+  (** Copy a nonempty bigarray to the start of the upload buffer. The array must
+      fit in the buffer. Only the bytes written by this call are valid for new
+      copies. SDL can use separate storage if a recorded copy still uses the
+      previous bytes. The bigarray can be reused after this call. *)
+
+  val release_upload_buffer : upload_buffer -> unit
+  (** Release the upload buffer. SDL keeps already recorded copies valid.
+      Calling this again on a released buffer does nothing. *)
+
   val acquire_command_buffer : device -> command_buffer
   (** Start recording GPU work. Submit or cancel the buffer when finished. *)
 
   val submit_command_buffer : command_buffer -> unit
-  (** Queue the recorded work and present any acquired window image. End the
-      render pass first. Once SDL receives the buffer, the binding closes it
-      even if SDL reports an error. *)
+  (** Queue the recorded work and present any acquired window image. End any
+      open pass first. Once SDL receives the buffer, the binding closes it even
+      if SDL reports an error. *)
 
   val submit_and_acquire_fence : command_buffer -> fence
   (** Submit and return a fence for the work. The same rules apply as for
       [submit_command_buffer]. Release the fence when you no longer need it. *)
 
   val cancel_command_buffer : command_buffer -> unit
-  (** Discard recorded work. If the buffer holds a window image, submit it
-      instead. Calling this on a closed buffer does nothing. *)
+  (** Discard recorded work. End any open pass first. If the buffer holds a
+      window image, submit it instead. Calling this on a closed buffer does
+      nothing. *)
 
   val fence_signaled : fence -> bool
   (** Return [true] if the GPU finished the work for this fence. *)
@@ -374,11 +445,37 @@ module Gpu : sig
   val release_fence : fence -> unit
   (** Release the fence. Calling this again on a released fence does nothing. *)
 
+  val begin_copy_pass : command_buffer -> copy_pass
+  (** Start a pass for uploads. End any open pass on the command buffer first.
+  *)
+
+  val upload_to_buffer :
+    ?src_offset:int ->
+    ?dst_offset:int ->
+    ?cycle:bool ->
+    copy_pass ->
+    src:upload_buffer ->
+    dst:'kind buffer ->
+    size:int ->
+    unit
+  (** Record a copy from the written bytes in [src] to [dst]. Both buffers must
+      belong to the pass's device. Offsets default to zero. Each offset and the
+      positive byte size must be a multiple of four.
+
+      With [cycle:true], replace the whole destination. SDL can use separate
+      storage if a recorded command still uses the previous bytes. If you cancel
+      a buffer with a cycling upload, upload again before drawing. Without
+      cycling, the copy updates the existing storage in GPU command order. *)
+
+  val end_copy_pass : copy_pass -> unit
+  (** End the copy pass. Calling this again on an ended pass does nothing. *)
+
   val begin_swapchain_render_pass :
     command_buffer -> swapchain -> clear:Color.t -> render_pass option
-  (** Wait for a window image and start a pass that clears it. The claim and
-      command buffer must belong to the same device. If this returns [None], no
-      image was available and you can still cancel the buffer.
+  (** Wait for a window image and start a pass that clears it. End any open pass
+      on the command buffer first. The claim and command buffer must belong to
+      the same device. If this returns [None], no image was available and you
+      can still cancel the buffer.
 
       If this returns a pass, end the pass before submitting the buffer. The
       claim stays busy until submission. Do not acquire another image in the
@@ -387,12 +484,34 @@ module Gpu : sig
       Otherwise, it submits the buffer to return the image to SDL. *)
 
   val bind_graphics_pipeline : render_pass -> graphics_pipeline -> unit
-  (** Bind a live pipeline that matches the pass's device and pixel format. *)
+  (** Bind a live pipeline that matches the pass's device and pixel format. If
+      the pipeline uses a vertex buffer, bind that buffer after this call. *)
+
+  val bind_vertex_buffer : ?offset:int -> render_pass -> vertex buffer -> unit
+  (** Select the vertex data for the current pipeline. The pipeline must have a
+      vertex layout. The buffer must belong to the pass's device. The byte
+      offset defaults to zero and must be a multiple of four. Leave room for at
+      least one vertex. *)
+
+  val bind_index_buffer : ?offset:int -> render_pass -> index buffer -> unit
+  (** Select indices for later draws in this pass. The buffer must belong to the
+      pass's device. The byte offset defaults to zero and must be a multiple of
+      the index width. Leave room for at least one index. *)
 
   val draw_primitives : ?instances:int -> render_pass -> vertices:int -> unit
   (** Draw with the pipeline bound to this pass. Counts must be positive and no
       greater than [4_294_967_295]. The instance count defaults to 1. Vertex and
-      instance indices start at 0. *)
+      instance indices start at 0. If the pipeline reads vertex data, bind a
+      live vertex buffer with room for the requested vertices. *)
+
+  val draw_indexed_primitives :
+    ?instances:int -> ?first_index:int -> render_pass -> indices:int -> unit
+  (** Draw with the current pipeline and index buffer. The index and instance
+      counts have the same limits as in [draw_primitives]. [first_index] is
+      relative to the bound index buffer offset and defaults to zero. The index
+      range must fit in the buffer. If the pipeline reads vertex data, bind a
+      live vertex buffer and supply indices into its vertex data. The binding
+      does not inspect the index values. *)
 
   val end_render_pass : render_pass -> unit
   (** End the pass. Calling this again on an ended pass does nothing. *)
