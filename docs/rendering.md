@@ -34,25 +34,5 @@ groups the copies into batches for SDL.
 
 ## Bunnymark
 
-[Bunnymark](../examples/bunnymark/bunnymark.ml) measures the frame rate while moving and drawing
-copies of one texture. It uses the [bunny image](../examples/bunnymark/assets/LICENSE.md) from
-[Raylib's Bunnymark](https://www.raylib.com/examples/textures/loader.html?name=textures_bunnymark).
-Install SDL3_image with PNG support. Run the example from the repository root:
-
-```sh
-dune exec --profile release ./examples/bunnymark/bunnymark.exe
-```
-
-Hold the left mouse button to add 100 bunnies per frame, up to 80,000. Press P to pause or resume
-movement. Press Escape or close the window to exit. The window title shows the count and frames per
-second. The example disables synchronization with the display refresh rate.
-
-For a fixed workload, set the initial count and the number of frames. The example prints the mean
-frames per second when it exits.
-
-```sh
-dune exec --profile release ./examples/bunnymark/bunnymark.exe -- --bunnies 10000 --frames 300
-```
-
-The example reuses arrays for positions, speeds, and colors. It submits all bunnies in one
-`Texture.draw_sprites` call. It does not allocate a rectangle or color per bunny per frame.
+The [Bunnymark example](../examples/bunnymark/README.md) moves many bunnies and draws them with
+`Texture.draw_sprites`. It displays the frame rate.

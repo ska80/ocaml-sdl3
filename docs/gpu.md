@@ -64,16 +64,5 @@ texture uploads, and indexed drawing, see the [GPU test](../test/gpu/gpu_test.ml
 
 ## Aurora Tunnel
 
-[Aurora Tunnel](../examples/aurora_tunnel/aurora_tunnel.ml) draws a twisting tunnel of light. Move
-the mouse to steer. Click to send a pulse through the tunnel. Press Space to pause or resume. Press
-Escape or close the window to exit.
-
-The example needs Vulkan support in SDL3 and a Vulkan driver. It includes compiled shaders, so you
-do not need a shader compiler to run it. Run it from the repository root:
-
-```sh
-dune exec --profile release ./examples/aurora_tunnel/aurora_tunnel.exe
-```
-
-See the [example notes](../examples/aurora_tunnel/README.md) for a preview, the draw sequence, and
-test and build commands.
+The [Aurora Tunnel example](../examples/aurora_tunnel/README.md) draws a twisting tunnel of light
+with one indexed draw per frame.

@@ -71,8 +71,8 @@ Use `Sdl3.with_init` to start and stop SDL. Pass `[Sdl3.Video]` for a window or 
 core audio stream. Pass `[]` if you do not need a subsystem. SDL3_image needs no separate setup.
 Use `Sdl3_mixer.with_init` and `Sdl3_ttf.with_init` inside the SDL context.
 
-Try [Bunnymark](docs/rendering.md#bunnymark) for sprite batches,
-[Aurora Tunnel](docs/gpu.md#aurora-tunnel) for GPU drawing, or the
+Try [Bunnymark](examples/bunnymark/README.md) for sprite batches,
+[Aurora Tunnel](examples/aurora_tunnel/README.md) for GPU drawing, or the
 [Music Player](examples/music_player/README.md) for playlists and a live spectrum.
 
 ## Resource rules

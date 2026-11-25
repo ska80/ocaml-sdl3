@@ -2,19 +2,34 @@
 
 ![Glowing bands wind around the tunnel.](preview.webp)
 
+## Run the example
+
+The example needs Vulkan support in SDL3 and a Vulkan driver. It includes compiled shaders. It does
+not need any SDL add-ons or a shader compiler.
+
+From the repository root, run:
+
+```sh
+dune exec --profile release ./examples/aurora_tunnel/aurora_tunnel.exe
+```
+
+Move the mouse to steer. Press the left mouse button to send a pulse through the tunnel. Press
+`Space` to pause or resume. Press `Esc` or close the window to exit.
+
+## How it draws
+
 The GPU uses one ring mesh to draw the tunnel. A mesh describes points and the triangles that join
 them.  The vertex shader bends 96 copies of the ring into place. The fragment shader lights the
 walls and reads colors from a texture that the OCaml code makes.
 
-The OCaml code uploads the mesh and color texture in one copy pass. It waits on a fence, which
-signals when the GPU finishes the upload. Each frame, it sends the time, view, and pulse depth to
-both shaders, then draws all the rings with one indexed draw. An indexed draw uses a list of vertex
-numbers to reuse points across triangles.
+The [OCaml code](aurora_tunnel.ml) uploads the mesh and color texture in one copy pass. It waits on
+a fence, which signals when the GPU finishes the upload. For each frame, the code sends the time,
+view, and pulse depth to both shaders. It draws all the rings with one indexed draw. An indexed draw
+uses a list of vertex numbers to reuse points across triangles.
 
 ## Run a short test
 
-The example uses Vulkan. It does not need any SDL add-ons. Run three frames from the repository
-root:
+Run three frames from the repository root:
 
 ```sh
 dune build --force @runtest-aurora
