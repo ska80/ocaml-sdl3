@@ -25,16 +25,18 @@
       output for BMP, PNG, and JPEG.
 - [x] Audio device discovery and selection, queued recording, and mixer track seeking, fades, loop
       control, and playback speed.
+- [x] SDL3_image animation loading and SDL3_ttf text engines for surfaces and renderers.
 - [x] Native and bytecode tests on Linux with OCaml 5.4.1 and 5.5.2 (Dune 3.25.0).
+- [x] Runtime tests on Linux with the oldest supported add-on releases.
 
 The full suite uses SDL 3.4.16, SDL3_image 3.4.6, SDL3_mixer 3.2.4, and SDL3_ttf 3.2.2. The core
 also builds and passes its tests with SDL 3.2.0 and no add-ons. The GPU tests passed on both SDL
-versions with offscreen Vulkan. The mixer tests also passed with SDL3_mixer 3.2.0 on SDL 3.4.16.
-Separate installation of each add-on also passed.
+versions with offscreen Vulkan. The image tests passed with SDL3_image 3.2.0 on SDL 3.2.0. The
+mixer and font tests passed with SDL3_mixer and SDL3_ttf 3.2.0 on SDL 3.4.16. Separate installation
+of each add-on also passed.
 
 ## Next
 
-- [ ] Add SDL3_image animation and SDL3_ttf text engine support.
 - [ ] Plan how to dispatch audio and event callbacks before allowing native threads to call OCaml.
-- [ ] Test the oldest supported add-on releases. Add macOS and Windows builds.
+- [ ] Add macOS and Windows builds.
 - [ ] Select release metadata and a license before publishing the opam packages.

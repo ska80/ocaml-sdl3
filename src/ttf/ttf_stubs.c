@@ -145,3 +145,142 @@ CAMLprim value osdl_ttf_font_render(value mode, value wrap_width, value font, va
     CAMLreturn(osdl_publish(handle, TTF_RenderText_Blended_Wrapped(f, s, length, rgba, width),
                             "TTF_RenderText_Blended_Wrapped"));
 }
+
+/* Text engines are children of the TTF context. A renderer engine also
+ * keeps its renderer open until the engine releases its textures. */
+
+CAMLprim value osdl_ttf_engine_create_surface(value context) {
+    CAMLparam1(context);
+    CAMLlocal1(handle);
+
+    handle = osdl_new_attached_handle(context, Val_unit);
+    osdl_live(context);
+
+    TTF_TextEngine* engine = TTF_CreateSurfaceTextEngine();
+    CAMLreturn(osdl_publish(handle, engine, "TTF_CreateSurfaceTextEngine"));
+}
+
+CAMLprim value osdl_ttf_engine_create_renderer(value context, value renderer) {
+    CAMLparam2(context, renderer);
+    CAMLlocal1(handle);
+
+    handle = osdl_new_attached_handle(context, renderer);
+    osdl_live(context);
+    SDL_Renderer* r = osdl_live(renderer);
+
+    TTF_TextEngine* engine = TTF_CreateRendererTextEngine(r);
+    osdl_publish(handle, engine, "TTF_CreateRendererTextEngine");
+    ++osdl_cell_val(renderer)->children;
+    CAMLreturn(handle);
+}
+
+CAMLprim value osdl_ttf_engine_destroy(value engine) {
+    TTF_TextEngine* ptr = osdl_take(engine);
+    if (!ptr) return Val_unit;
+
+    value renderer = osdl_attachment(engine);
+    if (renderer == Val_unit) {
+        TTF_DestroySurfaceTextEngine(ptr);
+    } else {
+        TTF_DestroyRendererTextEngine(ptr);
+        --osdl_cell_val(renderer)->children;
+        osdl_forget_attachment(engine);
+    }
+    return Val_unit;
+}
+
+/* Text belongs to its engine and retains the font as a second dependency. */
+
+static size_t ttf_text_length(value string) {
+    size_t length = caml_string_length(string);
+    if (length > INT_MAX) caml_invalid_argument("SDL_ttf text has too many bytes");
+    return length;
+}
+
+CAMLprim value osdl_ttf_text_create(value engine, value font, value string) {
+    CAMLparam3(engine, font, string);
+    CAMLlocal1(handle);
+
+    handle                 = osdl_new_attached_handle(engine, font);
+    TTF_TextEngine* e      = osdl_live(engine);
+    TTF_Font*       f      = osdl_live(font);
+    size_t          length = ttf_text_length(string);
+    const char*     s      = osdl_cstring(string);
+
+    TTF_Text* text = TTF_CreateText(e, f, s, length);
+    osdl_publish(handle, text, "TTF_CreateText");
+    ++osdl_cell_val(font)->children;
+    CAMLreturn(handle);
+}
+
+CAMLprim value osdl_ttf_text_destroy(value text) {
+    TTF_Text* ptr = osdl_take(text);
+    if (ptr) {
+        TTF_DestroyText(ptr);
+        --osdl_cell_val(osdl_attachment(text))->children;
+        osdl_forget_attachment(text);
+    }
+    return Val_unit;
+}
+
+CAMLprim value osdl_ttf_text_set_string(value text, value string) {
+    TTF_Text*   ptr    = osdl_live(text);
+    size_t      length = ttf_text_length(string);
+    const char* s      = osdl_cstring(string);
+
+    osdl_check(TTF_SetTextString(ptr, s, length), "TTF_SetTextString");
+    return Val_unit;
+}
+
+CAMLprim value osdl_ttf_text_set_color(value text, value color) {
+    TTF_Text* ptr  = osdl_live(text);
+    SDL_Color rgba = osdl_color(color);
+
+    osdl_check(TTF_SetTextColor(ptr, rgba.r, rgba.g, rgba.b, rgba.a), "TTF_SetTextColor");
+    return Val_unit;
+}
+
+CAMLprim value osdl_ttf_text_set_wrap_width(value text, value width) {
+    TTF_Text* ptr = osdl_live(text);
+    int       w   = osdl_nonnegative_int(width);
+
+    osdl_check(TTF_SetTextWrapWidth(ptr, w), "TTF_SetTextWrapWidth");
+    return Val_unit;
+}
+
+CAMLprim value osdl_ttf_text_size(value text) {
+    int w, h;
+    osdl_check(TTF_GetTextSize(osdl_live(text), &w, &h), "TTF_GetTextSize");
+    return osdl_int_pair(w, h);
+}
+
+OSDL_ACTION(osdl_ttf_text_update, TTF_UpdateText)
+
+CAMLprim value osdl_ttf_text_draw_surface(value text, value surface, value x, value y) {
+    TTF_Text*    ptr = osdl_live(text);
+    SDL_Surface* s   = osdl_live(surface);
+    int          dx  = osdl_int(x);
+    int          dy  = osdl_int(y);
+    if (dx >= s->w || dy >= s->h) return Val_unit;
+
+    /* The surface engine adds the origin to the glyph rectangles in C ints. */
+    int w, h;
+    osdl_check(TTF_GetTextSize(ptr, &w, &h), "TTF_GetTextSize");
+    Sint64 right  = (Sint64)dx + w;
+    Sint64 bottom = (Sint64)dy + h;
+    if (right <= 0 || bottom <= 0) return Val_unit;
+    if (right > INT_MAX || bottom > INT_MAX)
+        caml_invalid_argument("SDL text bounds are outside the C int range");
+
+    osdl_check(TTF_DrawSurfaceText(ptr, dx, dy, s), "TTF_DrawSurfaceText");
+    return Val_unit;
+}
+
+CAMLprim value osdl_ttf_text_draw_renderer(value text, value x, value y) {
+    TTF_Text* ptr = osdl_live(text);
+    float     dx  = osdl_float(Double_val(x));
+    float     dy  = osdl_float(Double_val(y));
+
+    osdl_check(TTF_DrawRendererText(ptr, dx, dy), "TTF_DrawRendererText");
+    return Val_unit;
+}

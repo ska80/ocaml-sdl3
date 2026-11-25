@@ -4,4 +4,5 @@
  (libraries sdl3 sdl3-image)
  (modes exe byte)
  (deps
+  two_frames.gif
   (package sdl3-image)))

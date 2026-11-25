@@ -79,16 +79,101 @@ let stream_images context =
               Texture.draw renderer t;
               Renderer.present renderer)))
 
+let animations context =
+  let module A = Sdl3_image.Animation in
+  (* A fixture made for this test. Each 3 by 2 frame has a different color. *)
+  let file = "two_frames.gif" in
+  let red = Color.rgb 255 0 0 and green = Color.rgb 0 255 0 in
+  let read surface = Surface.read_pixel surface ~x:0 ~y:0 in
+  let check_frames animation =
+    check (A.size animation = (3, 2)) "Animation size";
+    check (A.frame_count animation = 2) "Frame count";
+    check (A.frame_delay_ms animation ~index:0 = 70) "First frame delay";
+    check (A.frame_delay_ms animation ~index:1 = 130) "Second frame delay"
+  in
+  using A.destroy (A.load context file) (fun animation ->
+      check_frames animation;
+      invalid (fun () -> quit context);
+      Domain.join
+        (Domain.spawn (fun () ->
+             invalid (fun () -> A.frame_count animation);
+             invalid (fun () -> A.destroy animation)));
+      List.iter
+        (fun index ->
+          invalid (fun () -> A.frame_delay_ms animation ~index);
+          invalid (fun () -> A.copy_frame animation ~index))
+        [ -1; 2; max_int ];
+      using Surface.destroy (A.copy_frame animation ~index:0) (fun copy ->
+          check (read copy = red) "First frame pixels";
+          Surface.fill copy (Color.rgb 0 0 0);
+          using Surface.destroy (A.copy_frame animation ~index:0)
+            (fun original ->
+              check
+                (read original = red)
+                "Changing a copy leaves the frame unchanged"));
+      using Surface.destroy (A.copy_frame animation ~index:0) (fun copy ->
+          using Surface.destroy (Surface.create context ~w:3 ~h:2)
+            (fun target ->
+              using Renderer.destroy (Renderer.create_software target)
+                (fun renderer ->
+                  invalid (fun () ->
+                      A.frame_texture renderer animation ~index:2);
+                  using Texture.destroy
+                    (A.frame_texture renderer animation ~index:1)
+                    (fun texture ->
+                      A.destroy animation;
+                      invalid (fun () -> A.size animation);
+                      invalid (fun () -> A.copy_frame animation ~index:0);
+                      check (read copy = red) "Copied frame outlives animation";
+                      check
+                        (Texture.size texture = (3., 2.))
+                        "Frame texture size";
+                      invalid (fun () -> Renderer.destroy renderer);
+                      Texture.draw renderer texture;
+                      Renderer.present renderer;
+                      check
+                        (read target = green)
+                        "Frame texture outlives animation")))));
+  let data = bytes_from_file file in
+  let length = Bigarray.Array1.dim data in
+  let prefixed = buffer (length + 2) in
+  prefixed.{0} <- 0;
+  prefixed.{1} <- 0;
+  Bigarray.Array1.blit data (Bigarray.Array1.sub prefixed 2 length);
+  using Io.close (Io.of_memory context prefixed) (fun io ->
+      check (Io.seek io ~from:Start 2L = 2L) "Seek to animation data";
+      using A.destroy (A.load_io io) (fun animation ->
+          check
+            (Io.size io = Int64.of_int (length + 2))
+            "Animation leaves stream open";
+          Io.close io;
+          check_frames animation));
+  let bad = buffer 16 in
+  Bigarray.Array1.fill bad 0;
+  using Io.close (Io.of_memory context bad) (fun io ->
+      sdl_error "IMG_LoadAnimation_IO" (fun () -> A.load_io io |> A.destroy);
+      check (Io.size io = 16L) "Animation load failure leaves stream open";
+      Io.close io;
+      invalid (fun () -> A.load_io io));
+  sdl_error "IMG_LoadAnimation" (fun () ->
+      A.load context "sdl3-test-missing-animation.gif" |> A.destroy)
+
 let () =
   check ((Sdl3_image.version ()).major = 3) "SDL_image version";
   with_init [] (fun context ->
       stream_images context;
+      animations context;
       using Sys.remove (Filename.temp_file "sdl3-image" ".png") (fun path ->
           using Surface.destroy (Surface.create context ~w:9 ~h:7)
             (fun surface ->
               let pixel = Color.rgba 28 12 99 177 in
               Surface.fill surface pixel;
               Sdl3_image.save_png surface path;
+              using Sdl3_image.Animation.destroy
+                (Sdl3_image.Animation.load context path) (fun animation ->
+                  check
+                    (Sdl3_image.Animation.frame_count animation = 1)
+                    "Still image gives one frame");
               let check_image loaded =
                 check (Surface.size loaded = (9, 7)) "Loaded PNG size";
                 check

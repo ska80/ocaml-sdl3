@@ -51,6 +51,119 @@ let stream_fonts sdl context =
       Io.close io;
       invalid (fun () -> Font.open_io context io ~ptsize:8.))
 
+let black = Sdl3.Color.rgb 0 0 0
+let white = Sdl3.Color.rgb 255 255 255
+let red = Sdl3.Color.rgb 255 0 0
+let green = Sdl3.Color.rgb 0 255 0
+
+let count_color surface ~x ~y ~w ~h color =
+  let count = ref 0 in
+  for py = y to y + h - 1 do
+    for px = x to x + w - 1 do
+      if Sdl3.Surface.read_pixel surface ~x:px ~y:py = color then incr count
+    done
+  done;
+  !count
+
+let surface_text sdl context =
+  let module Surface = Sdl3.Surface in
+  using Text_engine.destroy (Text_engine.create_surface context) (fun engine ->
+      invalid (fun () -> quit context);
+      using Font.close (Font.open_ context "tiny.bdf" ~ptsize:8.) (fun font ->
+          invalid (fun () -> Text.create engine font "A\000A");
+          using Text.destroy (Text.create engine font "A") (fun text ->
+              invalid (fun () -> Text_engine.destroy engine);
+              invalid (fun () -> Font.close font);
+              Domain.join
+                (Domain.spawn (fun () ->
+                     invalid (fun () -> Text.size text);
+                     invalid (fun () -> Text.destroy text)));
+              Gc.full_major ();
+              let w, h = Text.size text in
+              check (w > 0 && h > 0) "Text has a size";
+              using Surface.destroy (Surface.create sdl ~w:40 ~h:32)
+                (fun target ->
+                  Surface.fill target black;
+                  Text.draw_surface text target ~x:4 ~y:2;
+                  check
+                    (count_color target ~x:4 ~y:2 ~w ~h white > 0)
+                    "Surface text draws in white by default";
+                  check
+                    (count_color target ~x:0 ~y:0 ~w:4 ~h black = 4 * h)
+                    "Surface text respects the draw position";
+                  invalid (fun () -> Text.set_string text "A\000A");
+                  check
+                    (Text.size text = (w, h))
+                    "Invalid string leaves text unchanged";
+                  Text.set_string text "A é";
+                  check
+                    (fst (Text.size text) > w)
+                    "Changing text updates its size";
+                  invalid (fun () -> Text.set_wrap_width text (-1));
+                  Text.set_wrap_width text w;
+                  Text.update text;
+                  let wrapped = Text.size text in
+                  check (snd wrapped > h) "Text wraps to the next line";
+                  Text.set_wrap_width text 0;
+                  Text.set_string text "A\né";
+                  check (Text.size text = wrapped) "Text wraps at newlines";
+                  Text.set_color text red;
+                  Surface.fill target black;
+                  Text.draw_surface text target ~x:(-2) ~y:2;
+                  check
+                    (count_color target ~x:0 ~y:2 ~w ~h red > 0)
+                    "Surface text clips at a negative position";
+                  let line = Font.line_skip font in
+                  check
+                    (count_color target ~x:0 ~y:(2 + line) ~w ~h red > 0)
+                    "Surface text draws the second line in the new color";
+                  Text.set_string text "";
+                  check (Text.size text = (0, 0)) "Empty text has no size";
+                  Surface.fill target black;
+                  Text.draw_surface text target ~x:4 ~y:2;
+                  check
+                    (count_color target ~x:0 ~y:0 ~w:40 ~h:32 black = 40 * 32)
+                    "Empty text does not draw";
+                  Surface.destroy target;
+                  invalid (fun () -> Text.draw_surface text target ~x:0 ~y:0));
+              Text.destroy text;
+              invalid (fun () -> Text.update text));
+          Text_engine.destroy engine;
+          invalid (fun () -> Text.create engine font "A")))
+
+let renderer_text sdl context =
+  let module Renderer = Sdl3.Renderer in
+  let module Surface = Sdl3.Surface in
+  using Surface.destroy (Surface.create sdl ~w:40 ~h:24) (fun target ->
+      using Renderer.destroy (Renderer.create_software target) (fun renderer ->
+          using Text_engine.destroy
+            (Text_engine.create_renderer context renderer) (fun engine ->
+              invalid (fun () -> Renderer.destroy renderer);
+              using Font.close (Font.open_ context "tiny.bdf" ~ptsize:8.)
+                (fun font ->
+                  using Text.destroy (Text.create engine font "A") (fun text ->
+                      invalid (fun () -> Text_engine.destroy engine);
+                      invalid (fun () -> Font.close font);
+                      invalid (fun () -> Text.draw_renderer text ~x:nan ~y:0.);
+                      invalid (fun () ->
+                          Text.draw_renderer text ~x:0. ~y:infinity);
+                      Renderer.set_draw_color renderer black;
+                      Renderer.clear renderer;
+                      Text.set_color text red;
+                      Text.draw_renderer text ~x:3. ~y:4.;
+                      Text.set_color text green;
+                      Text.set_string text "é";
+                      Text.draw_renderer text ~x:20. ~y:4.;
+                      Renderer.present renderer;
+                      check
+                        (count_color target ~x:3 ~y:4 ~w:8 ~h:8 red > 0)
+                        "Renderer text draws the first color";
+                      check
+                        (count_color target ~x:20 ~y:4 ~w:8 ~h:8 green > 0)
+                        "Renderer text draws changed text and color")));
+          Renderer.destroy renderer;
+          invalid (fun () -> Text_engine.create_renderer context renderer)))
+
 let () =
   check ((version ()).major = 3) "SDL_ttf version";
   Sdl3.with_init [] (fun sdl ->
@@ -58,6 +171,8 @@ let () =
         with_init sdl (fun context ->
             invalid (fun () -> Sdl3.quit sdl);
             stream_fonts sdl context;
+            surface_text sdl context;
+            renderer_text sdl context;
             (match
                Font.open_ context "sdl3-test-missing-font.ttf" ~ptsize:8.
              with
@@ -78,7 +193,6 @@ let () =
                 let _, wrapped_h = Font.measure ~wrap_width:0 font "A\né" in
                 check (wrapped_h > h) "Wrapped text size";
                 invalid (fun () -> Font.measure font "A\000A");
-                let white = Sdl3.Color.rgb 255 255 255 in
                 using Sdl3.Surface.destroy
                   (Font.render ~mode:Solid ~wrap_width:0 font "A\né" white)
                   (fun surface ->

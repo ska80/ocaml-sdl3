@@ -24,3 +24,22 @@ external save_png_io : Sdl3.Surface.t -> [> `Write ] Sdl3.Io.t -> unit
 external save_jpg_io :
   ?quality:int -> Sdl3.Surface.t -> [> `Write ] Sdl3.Io.t -> unit
   = "osdl_image_save_jpg_io"
+
+module Animation = struct
+  type t
+
+  external load : Sdl3.context -> string -> t = "osdl_image_animation_load"
+  external load_io : [> `Read ] Sdl3.Io.t -> t = "osdl_image_animation_load_io"
+  external destroy : t -> unit = "osdl_image_animation_destroy"
+  external size : t -> int * int = "osdl_image_animation_size"
+  external frame_count : t -> int = "osdl_image_animation_frame_count"
+
+  external frame_delay_ms : t -> index:int -> int
+    = "osdl_image_animation_frame_delay_ms"
+
+  external copy_frame : t -> index:int -> Sdl3.Surface.t
+    = "osdl_image_animation_copy_frame"
+
+  external frame_texture : Sdl3.Renderer.t -> t -> index:int -> Sdl3.Texture.t
+    = "osdl_image_animation_frame_texture"
+end

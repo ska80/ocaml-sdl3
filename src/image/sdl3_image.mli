@@ -30,3 +30,36 @@ val save_jpg_io :
   ?quality:int -> Sdl3.Surface.t -> [> `Write ] Sdl3.Io.t -> unit
 (** Write JPEG data to the stream. The stream stays open. The quality range and
     default match [save_jpg]. *)
+
+module Animation : sig
+  (** An animation owns its decoded frames. Frame indices start at zero. *)
+
+  type t
+
+  val load : Sdl3.context -> string -> t
+  (** Decode all frames of an image such as an animated GIF. The supported
+      formats depend on the SDL_image build. *)
+
+  val load_io : [> `Read ] Sdl3.Io.t -> t
+  (** Decode all frames from the current position in a seekable stream. The
+      stream stays open and the animation does not retain it. *)
+
+  val destroy : t -> unit
+  (** Free the animation and its decoded frames. Frame copies and textures stay
+      open. *)
+
+  val size : t -> int * int
+  val frame_count : t -> int
+
+  val frame_delay_ms : t -> index:int -> int
+  (** Return SDL_image's display time for the frame in milliseconds. *)
+
+  val copy_frame : t -> index:int -> Sdl3.Surface.t
+  (** Copy a frame into a new surface. You can change the pixels and keep the
+      surface after destroying the animation. Call [Sdl3.Surface.destroy] when
+      done. *)
+
+  val frame_texture : Sdl3.Renderer.t -> t -> index:int -> Sdl3.Texture.t
+  (** Upload a frame directly to a new texture. The texture belongs to the
+      renderer, not the animation. Call [Sdl3.Texture.destroy] when done. *)
+end

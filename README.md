@@ -6,9 +6,9 @@ SDL3 functions, not the full C API. See [TODO.md](TODO.md) for the remaining wor
 | Dune library and opam package | OCaml module | What it covers |
 | --- | --- | --- |
 | `sdl3` | [`Sdl3`](src/core/sdl3.mli) | Windows, displays, 2D and GPU drawing, textures, surfaces, touch and other input, gamepads, queued audio, and timers |
-| `sdl3-image` | [`Sdl3_image`](src/image/sdl3_image.mli) | Load images from files or memory, load textures, and save PNG and JPEG files |
+| `sdl3-image` | [`Sdl3_image`](src/image/sdl3_image.mli) | Load images, textures, and animations, and save PNG and JPEG files |
 | `sdl3-mixer` | [`Sdl3_mixer`](src/mixer/sdl3_mixer.mli) | Load sounds, play audio tracks, and mix to a device or a memory buffer |
-| `sdl3-ttf` | [`Sdl3_ttf`](src/ttf/sdl3_ttf.mli) | Open fonts, measure UTF-8 text, and render text to surfaces |
+| `sdl3-ttf` | [`Sdl3_ttf`](src/ttf/sdl3_ttf.mli) | Open fonts, measure UTF-8 text, and draw reusable text to surfaces or renderers |
 
 A surface is a pixel buffer in memory. A texture is an image that a renderer can draw. Image loading
 and text rendering return core SDL types.
@@ -17,7 +17,7 @@ and text rendering return core SDL types.
 
 Use OCaml 5.4 or later and Dune 3.25 or later. Install a C compiler and `pkg-config`, which finds
 the SDL headers and libraries. Install SDL3 3.2.0 or later and version 3.2.0 or later of each add-on
-you want to use.
+you want to use. Some add-ons require a newer version of SDL3.
 
 If you use `opam`, install the build tools in the active switch, which is the selected OCaml
 installation:
@@ -182,6 +182,36 @@ let load_bmp context path =
   Sdl3.Io.with_file context ~mode:Read path Sdl3.Surface.load_bmp_io
 ```
 
+## Load animated images
+
+Use `Sdl3_image.Animation.load` for a file or `Animation.load_io` for a readable, seekable stream.
+SDL_image decodes all frames during the call. You can close the stream after the call. The available
+formats depend on the SDL_image build.
+
+Read the image size with `Animation.size` and the number of frames with `Animation.frame_count`.
+Frame indices start at zero. Use `Animation.frame_delay_ms` to get each frame's display time in
+milliseconds. Your program chooses when to advance to the next frame.
+
+Use `Animation.copy_frame` if you need a surface or `Animation.frame_texture` if you need a texture.
+Both results can outlive the animation. For repeated drawing, upload each frame once and reuse the
+textures. Call `Animation.destroy` to free the decoded frames. Destroy the copies and textures
+separately.
+
+## Draw reusable text
+
+A text engine prepares character images for drawing. Use `Sdl3_ttf.Text_engine.create_surface` to
+draw to surfaces or `Text_engine.create_renderer` to draw with one renderer. Use `Text.create` with
+the engine, a font, and a UTF-8 string. The engine determines which draw function you can call.
+
+Keep the text object across frames. Change its contents with `Text.set_string`. Use `Text.set_color`
+to change its color and `Text.set_wrap_width` to set the line width in pixels.  `Text.size` measures
+the text. Use `Text.draw_surface` to draw to a surface or `Text.draw_renderer` to draw to the
+renderer's current target. These calls prepare the text after a change. Call `Text.update` if you
+want to prepare it earlier.
+
+Use `Text.destroy` before closing the font or destroying the engine. Use `Text_engine.destroy`
+before destroying its renderer, if it has one. Close all fonts and engines before quitting SDL_ttf.
+
 ## Query displays and input devices
 
 Start SDL with `Video`. Use `Display.list` or `Display.primary` to get a display ID. Use the ID to
@@ -285,8 +315,8 @@ The tests below passed on Linux with OCaml 5.5.2 and Dune 3.25.0. For the SDL ve
 
 Run `dune runtest` for native and bytecode tests. These tests use SDL's dummy video and audio
 drivers. They need no display, speakers, or microphone. The core tests need SDL's virtual joystick
-support, not a physical gamepad. The image tests need PNG and JPEG support in SDL3_image. The
-mixer tests need WAV support in SDL3_mixer.
+support, not a physical gamepad. The image tests need GIF, PNG, and JPEG support in SDL3_image.
+The mixer tests need WAV support in SDL3_mixer.
 
 Run `dune build --force @runtest-gpu` on a system with a working SDL GPU driver. On Linux with
 offscreen Vulkan support, set `SDL_VIDEO_DRIVER=offscreen` to run without a display.

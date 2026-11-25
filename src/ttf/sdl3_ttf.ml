@@ -38,3 +38,43 @@ module Font = struct
 
   let has_glyph font u = has_glyph_int font (Uchar.to_int u)
 end
+
+module Text_engine = struct
+  type surface
+  type renderer
+  type 'target t
+
+  external create_surface : context -> surface t
+    = "osdl_ttf_engine_create_surface"
+
+  external create_renderer : context -> Sdl3.Renderer.t -> renderer t
+    = "osdl_ttf_engine_create_renderer"
+
+  external destroy : 'target t -> unit = "osdl_ttf_engine_destroy"
+end
+
+module Text = struct
+  type 'target t
+
+  external create : 'target Text_engine.t -> Font.t -> string -> 'target t
+    = "osdl_ttf_text_create"
+
+  external destroy : 'target t -> unit = "osdl_ttf_text_destroy"
+  external set_string : 'target t -> string -> unit = "osdl_ttf_text_set_string"
+
+  external set_color : 'target t -> Sdl3.Color.t -> unit
+    = "osdl_ttf_text_set_color"
+
+  external set_wrap_width : 'target t -> int -> unit
+    = "osdl_ttf_text_set_wrap_width"
+
+  external size : 'target t -> int * int = "osdl_ttf_text_size"
+  external update : 'target t -> unit = "osdl_ttf_text_update"
+
+  external draw_surface :
+    Text_engine.surface t -> Sdl3.Surface.t -> x:int -> y:int -> unit
+    = "osdl_ttf_text_draw_surface"
+
+  external draw_renderer : Text_engine.renderer t -> x:float -> y:float -> unit
+    = "osdl_ttf_text_draw_renderer"
+end

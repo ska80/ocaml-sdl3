@@ -133,3 +133,75 @@ CAMLprim value osdl_image_save_png_io(value surface, value stream) {
 CAMLprim value osdl_image_save_jpg_io(value quality, value surface, value stream) {
     return image_save_io(surface, stream, false, jpg_quality(quality));
 }
+
+/* Animations own their SDL surfaces. Export only copies or uploaded textures. */
+
+CAMLprim value osdl_image_animation_load(value context, value path) {
+    CAMLparam2(context, path);
+    CAMLlocal1(handle);
+
+    handle = osdl_new_handle(context);
+    osdl_live(context);
+
+    IMG_Animation* anim = IMG_LoadAnimation(osdl_cstring(path));
+    CAMLreturn(osdl_publish(handle, anim, "IMG_LoadAnimation"));
+}
+
+CAMLprim value osdl_image_animation_load_io(value stream) {
+    CAMLparam1(stream);
+    CAMLlocal1(handle);
+
+    handle           = osdl_new_handle(osdl_parent(stream));
+    SDL_IOStream* io = osdl_unborrowed_io(stream);
+
+    IMG_Animation* anim = IMG_LoadAnimation_IO(io, false);
+    CAMLreturn(osdl_publish(handle, anim, "IMG_LoadAnimation_IO"));
+}
+
+OSDL_DESTROY(osdl_image_animation_destroy, IMG_Animation, IMG_FreeAnimation)
+
+CAMLprim value osdl_image_animation_size(value animation) {
+    IMG_Animation* anim = osdl_live(animation);
+    return osdl_int_pair(anim->w, anim->h);
+}
+
+CAMLprim value osdl_image_animation_frame_count(value animation) {
+    IMG_Animation* anim = osdl_live(animation);
+    return osdl_val_int(anim->count);
+}
+
+static int image_frame_index(const IMG_Animation* anim, value index) {
+    intnat i = Long_val(index);
+    if (i < 0 || i >= anim->count) caml_invalid_argument("SDL_image frame index is out of range");
+    return (int)i;
+}
+
+CAMLprim value osdl_image_animation_frame_delay_ms(value animation, value index) {
+    IMG_Animation* anim = osdl_live(animation);
+    return osdl_val_int(anim->delays[image_frame_index(anim, index)]);
+}
+
+CAMLprim value osdl_image_animation_copy_frame(value animation, value index) {
+    CAMLparam2(animation, index);
+    CAMLlocal1(handle);
+
+    handle              = osdl_new_handle(osdl_parent(animation));
+    IMG_Animation* anim = osdl_live(animation);
+    int            i    = image_frame_index(anim, index);
+
+    SDL_Surface* surface = SDL_DuplicateSurface(anim->frames[i]);
+    CAMLreturn(osdl_publish(handle, surface, "SDL_DuplicateSurface"));
+}
+
+CAMLprim value osdl_image_animation_frame_texture(value renderer, value animation, value index) {
+    CAMLparam3(renderer, animation, index);
+    CAMLlocal1(handle);
+
+    handle              = osdl_new_handle(renderer);
+    SDL_Renderer*  r    = osdl_live(renderer);
+    IMG_Animation* anim = osdl_live(animation);
+    int            i    = image_frame_index(anim, index);
+
+    SDL_Texture* texture = SDL_CreateTextureFromSurface(r, anim->frames[i]);
+    CAMLreturn(osdl_publish(handle, texture, "SDL_CreateTextureFromSurface"));
+}
