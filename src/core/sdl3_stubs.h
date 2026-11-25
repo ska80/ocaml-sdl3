@@ -37,9 +37,9 @@ static inline void osdl_check(bool ok, const char* fn) {
     if (!ok) osdl_fail(fn);
 }
 
-/* Internal ABI shared by the four packages. A handle is an OCaml pair
- * (custom cell, parent handle or unit). The GC traces the parent; the cell
- * never stores an OCaml value. No SDL destructor runs from a finalizer. */
+/* Internal ABI shared by the four packages. A handle starts with two OCaml
+ * fields: the custom cell and the parent handle (or unit). The GC traces the
+ * parent. The cell stores no OCaml values or SDL finalizers. */
 typedef struct {
     void*         ptr;
     size_t        children;
@@ -75,9 +75,17 @@ static inline void* osdl_live(value handle) {
     return cell->ptr;
 }
 
+static inline SDL_Window* osdl_unattached_window(value window) {
+    SDL_Window* ptr = osdl_live(window);
+    /* A window's only children are its renderer or GPU claim. */
+    if (osdl_cell_val(window)->children)
+        caml_invalid_argument("SDL window already has a renderer or GPU claim");
+    return ptr;
+}
+
 /* Allocate before calling the SDL constructor, then publish without allocating.
  * This leaves no native resource to free if OCaml allocation fails. */
-static inline value osdl_new_handle_with_ops(value parent, struct custom_operations* ops) {
+static inline value osdl_new_cell(value parent, struct custom_operations* ops) {
     CAMLparam1(parent);
     CAMLlocal1(cell);
     cell = caml_alloc_custom(ops, sizeof(osdl_cell), 0, 1);
@@ -89,6 +97,13 @@ static inline value osdl_new_handle_with_ops(value parent, struct custom_operati
     data->children = 0;
     memcpy(data->thread, &thread, sizeof(thread));
 
+    CAMLreturn(cell);
+}
+
+static inline value osdl_new_handle_with_ops(value parent, struct custom_operations* ops) {
+    CAMLparam1(parent);
+    CAMLlocal1(cell);
+    cell = osdl_new_cell(parent, ops);
     CAMLreturn(caml_alloc_2(0, cell, parent));
 }
 

@@ -25,6 +25,7 @@ let main_thread context window =
     invalid (fun () -> Window.destroy window);
     invalid (fun () -> init []);
     invalid (fun () -> quit context);
+    invalid (fun () -> Gpu.supports_shader_formats context [ Spirv ]);
     check ((version ()).major = 3) "SDL version on another thread";
     ignore (Timer.ticks_ns ())
   in
@@ -293,6 +294,19 @@ let render context window =
               streaming_texture renderer target;
               render_target renderer window_renderer target)))
 
+let gpu_without_backend context =
+  let driver = "not-an-sdl-gpu-driver" in
+  List.iter (fun name -> check (name <> "") "GPU driver name") (Gpu.drivers ());
+  invalid (fun () -> Gpu.supports_shader_formats context []);
+  invalid (fun () -> Gpu.create_device context []);
+  invalid (fun () ->
+      Gpu.create_device ~driver:"embedded\000NUL" context [ Spirv ]);
+  check
+    (not (Gpu.supports_shader_formats ~driver context [ Spirv ]))
+    "Missing GPU driver";
+  sdl_error "SDL_CreateGPUDevice" (fun () ->
+      Gpu.create_device ~driver context [ Spirv ])
+
 let audio context =
   using Audio.close
     (Audio.open_playback context
@@ -342,11 +356,14 @@ let () =
           main_thread context window;
           events context window;
           render context window);
+      gpu_without_backend context;
       audio context);
   let context = init [] in
+  invalid (fun () -> Gpu.create_device context [ Spirv ]);
   quit context;
   quit context;
   invalid (fun () -> Surface.create context ~w:1 ~h:1);
+  invalid (fun () -> Gpu.supports_shader_formats context [ Spirv ]);
   let next = init [] in
   quit context;
   quit next

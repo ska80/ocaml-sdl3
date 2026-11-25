@@ -252,7 +252,7 @@ CAMLprim value osdl_renderer_create(value driver, value window) {
     handle = osdl_new_handle(window);
 
     const char*   name     = Is_long(driver) ? NULL : osdl_cstring(Some_val(driver));
-    SDL_Renderer* renderer = SDL_CreateRenderer(osdl_live(window), name);
+    SDL_Renderer* renderer = SDL_CreateRenderer(osdl_unattached_window(window), name);
     CAMLreturn(osdl_publish(handle, renderer, "SDL_CreateRenderer"));
 }
 

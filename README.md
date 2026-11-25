@@ -5,7 +5,7 @@ of SDL3 functions, not the full C API. See [TODO.md](TODO.md) for the remaining 
 
 | Dune library and opam package | OCaml module | What it covers |
 | --- | --- | --- |
-| `sdl3` | [`Sdl3`](src/core/sdl3.mli) | Windows, 2D drawing, textures, surfaces, input events, gamepads, queued audio, and timers |
+| `sdl3` | [`Sdl3`](src/core/sdl3.mli) | Windows, 2D drawing, GPU setup, textures, surfaces, input events, gamepads, queued audio, and timers |
 | `sdl3-image` | [`Sdl3_image`](src/image/sdl3_image.mli) | Load images from files or memory, load textures, and save PNG and JPEG files |
 | `sdl3-mixer` | [`Sdl3_mixer`](src/mixer/sdl3_mixer.mli) | Load sounds, play audio tracks, and mix to a device or a memory buffer |
 | `sdl3-ttf` | [`Sdl3_ttf`](src/ttf/sdl3_ttf.mli) | Open fonts, measure UTF-8 text, and render text to surfaces |
@@ -111,7 +111,21 @@ the frame.
 
 Use `Renderer.fill_rects` or `Renderer.draw_rects` to submit an array of rectangles in one SDL call.
 
+## Set up GPU presentation
+
+`Sdl3.Gpu` opens devices and presents solid-color frames. It does not yet expose shaders or drawing
+commands. Start SDL with `Video`. Pass the shader formats your program can supply to
+`Gpu.create_device`. Use `Gpu.claim_window` to give the device control of a window.
+
+`Gpu.clear_and_present` clears a window image to one color and submits it for display. If it returns
+`false`, SDL had no image available. Release the claim before destroying the device or window. Do
+not attach a `Renderer` to a claimed window.
+
 ## Run the tests
 
-Run `dune runtest` for native and bytecode tests. The tests use SDL's dummy video and audio drivers,
-so they need no display or speakers. The image tests need PNG and JPEG support in SDL3_image.
+Run `dune runtest` for native and bytecode tests. These tests use SDL's dummy video and audio
+drivers, so they need no display or speakers. The image tests need PNG and JPEG support in
+SDL3_image.
+
+Run `dune build --force @runtest-gpu` on a system with a working SDL GPU driver. On Linux with
+offscreen Vulkan support, set `SDL_VIDEO_DRIVER=offscreen` to run without a display.

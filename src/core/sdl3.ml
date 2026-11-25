@@ -195,6 +195,50 @@ module Texture = struct
     unit = "osdl_texture_draw_rotated_byte" "osdl_texture_draw_rotated"
 end
 
+module Gpu = struct
+  type device
+  type swapchain
+  type shader_format = Spirv | Dxbc | Dxil | Msl | Metallib
+  type present_mode = Vsync | Immediate | Mailbox
+  type composition = Sdr | Sdr_linear | Hdr_extended_linear | Hdr10
+
+  external drivers : unit -> string list = "osdl_gpu_drivers"
+
+  external supports_shader_formats :
+    ?driver:string -> context -> shader_format list -> bool
+    = "osdl_gpu_supports_shader_formats"
+
+  external create_device :
+    ?driver:string -> ?debug:bool -> context -> shader_format list -> device
+    = "osdl_gpu_create_device"
+
+  external destroy_device : device -> unit = "osdl_gpu_destroy_device"
+  external driver : device -> string = "osdl_gpu_driver"
+
+  external shader_formats : device -> shader_format list
+    = "osdl_gpu_shader_formats"
+
+  external wait_idle : device -> unit = "osdl_gpu_wait_idle"
+
+  external claim_window : device -> Window.t -> swapchain
+    = "osdl_gpu_claim_window"
+
+  external release_window : swapchain -> unit = "osdl_gpu_release_window"
+
+  external supports_present_mode : swapchain -> present_mode -> bool
+    = "osdl_gpu_supports_present_mode"
+
+  external supports_composition : swapchain -> composition -> bool
+    = "osdl_gpu_supports_composition"
+
+  external set_swapchain_parameters :
+    swapchain -> composition:composition -> present_mode:present_mode -> unit
+    = "osdl_gpu_set_swapchain_parameters"
+
+  external clear_and_present : swapchain -> Color.t -> bool
+    = "osdl_gpu_clear_and_present"
+end
+
 module Scancode = struct
   type t = int
 

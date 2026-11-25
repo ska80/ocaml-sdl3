@@ -118,6 +118,8 @@ module Renderer : sig
   type presentation = Stretch | Letterbox | Overscan | Integer_scale
 
   val create : ?driver:string -> Window.t -> t
+  (** Create a renderer for a window with no renderer or GPU claim. *)
+
   val create_software : Surface.t -> t
   val destroy : t -> unit
 
@@ -220,6 +222,64 @@ module Texture : sig
     unit
   (** Like [draw], but rotate clockwise by [angle] degrees about the center of
       [dst]. *)
+end
+
+module Gpu : sig
+  (** SDL GPU device setup and window presentation. *)
+
+  type device
+
+  type swapchain
+  (** A GPU claim on a window. It manages the images used to present frames. *)
+
+  type shader_format = Spirv | Dxbc | Dxil | Msl | Metallib
+  type present_mode = Vsync | Immediate | Mailbox
+  type composition = Sdr | Sdr_linear | Hdr_extended_linear | Hdr10
+
+  val drivers : unit -> string list
+  (** The driver names compiled into SDL. This does not check runtime support.
+      Safe on any thread. *)
+
+  val supports_shader_formats :
+    ?driver:string -> context -> shader_format list -> bool
+  (** Test whether SDL can select a driver that accepts at least one format in
+      the list. Start SDL with [Video] and pass a nonempty list. *)
+
+  val create_device :
+    ?driver:string -> ?debug:bool -> context -> shader_format list -> device
+  (** Open a GPU device. Start SDL with [Video] and list the shader formats your
+      program can provide. Pass at least one format. If you omit [driver], SDL
+      selects the driver. Set [debug] to [true] to enable SDL GPU validation. *)
+
+  val destroy_device : device -> unit
+  (** Close the device. Release all its claims first. *)
+
+  val driver : device -> string
+  val shader_formats : device -> shader_format list
+
+  val wait_idle : device -> unit
+  (** Wait for the device to finish its submitted work. *)
+
+  val claim_window : device -> Window.t -> swapchain
+  (** Claim a window that has no renderer or GPU claim. SDL starts with [Sdr]
+      and [Vsync]. The claim keeps the device and window open. *)
+
+  val release_window : swapchain -> unit
+  (** Release the claim before destroying the window or device. Calling this
+      again on a released claim does nothing. *)
+
+  val supports_present_mode : swapchain -> present_mode -> bool
+  val supports_composition : swapchain -> composition -> bool
+
+  val set_swapchain_parameters :
+    swapchain -> composition:composition -> present_mode:present_mode -> unit
+  (** Set the display color format and presentation timing. If the window does
+      not support these settings, SDL can report an error. *)
+
+  val clear_and_present : swapchain -> Color.t -> bool
+  (** Wait for a window image, clear it to the given color, and submit it for
+      presentation. Return [false] if no image can be acquired, for example if
+      the window is minimized. No commands or image handles escape this call. *)
 end
 
 module Scancode : sig

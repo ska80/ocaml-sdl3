@@ -1,0 +1,12 @@
+(executable
+ (name gpu_test)
+ (libraries sdl3)
+ (modes exe byte_complete))
+
+(rule
+ (alias runtest-gpu)
+ (package sdl3)
+ (action
+  (progn
+   (run %{exe:gpu_test.exe})
+   (run ./gpu_test.bc.exe))))
