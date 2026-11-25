@@ -201,7 +201,24 @@ module Gpu = struct
   type command_buffer
   type render_pass
   type fence
+  type vertex
+  type fragment
+  type 'stage shader
+  type graphics_pipeline
+
+  type _ shader_stage =
+    | Vertex : vertex shader_stage
+    | Fragment : fragment shader_stage
+
   type shader_format = Spirv | Dxbc | Dxil | Msl | Metallib
+
+  type primitive =
+    | Triangle_list
+    | Triangle_strip
+    | Line_list
+    | Line_strip
+    | Point_list
+
   type present_mode = Vsync | Immediate | Mailbox
   type composition = Sdr | Sdr_linear | Hdr_extended_linear | Hdr10
 
@@ -238,6 +255,26 @@ module Gpu = struct
     swapchain -> composition:composition -> present_mode:present_mode -> unit
     = "osdl_gpu_set_swapchain_parameters"
 
+  external create_shader :
+    device ->
+    stage:'stage shader_stage ->
+    format:shader_format ->
+    ?entrypoint:string ->
+    string ->
+    'stage shader = "osdl_gpu_create_shader"
+
+  external release_shader : 'stage shader -> unit = "osdl_gpu_release_shader"
+
+  external create_swapchain_pipeline :
+    swapchain ->
+    vertex:vertex shader ->
+    fragment:fragment shader ->
+    primitive:primitive ->
+    graphics_pipeline = "osdl_gpu_create_swapchain_pipeline"
+
+  external release_graphics_pipeline : graphics_pipeline -> unit
+    = "osdl_gpu_release_graphics_pipeline"
+
   external acquire_command_buffer : device -> command_buffer
     = "osdl_gpu_acquire_command_buffer"
 
@@ -257,6 +294,13 @@ module Gpu = struct
   external begin_swapchain_render_pass :
     command_buffer -> swapchain -> clear:Color.t -> render_pass option
     = "osdl_gpu_begin_swapchain_render_pass"
+
+  external bind_graphics_pipeline : render_pass -> graphics_pipeline -> unit
+    = "osdl_gpu_bind_graphics_pipeline"
+
+  external draw_primitives :
+    ?instances:int -> render_pass -> vertices:int -> unit
+    = "osdl_gpu_draw_primitives"
 
   external end_render_pass : render_pass -> unit = "osdl_gpu_end_render_pass"
 

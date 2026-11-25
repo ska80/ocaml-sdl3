@@ -225,7 +225,7 @@ module Texture : sig
 end
 
 module Gpu : sig
-  (** SDL GPU devices, command buffers, and window presentation. *)
+  (** SDL GPU drawing and window presentation. *)
 
   type device
 
@@ -241,7 +241,30 @@ module Gpu : sig
   type fence
   (** A handle that signals completion of submitted GPU work. *)
 
+  type vertex
+  type fragment
+
+  type 'stage shader
+  (** A vertex or fragment program for the GPU. *)
+
+  type _ shader_stage =
+    | Vertex : vertex shader_stage
+    | Fragment : fragment shader_stage
+
+  type graphics_pipeline
+  (** The shaders and drawing state for a render pass. *)
+
   type shader_format = Spirv | Dxbc | Dxil | Msl | Metallib
+
+  type primitive =
+    | Triangle_list  (** Separate triangles. *)
+    | Triangle_strip  (** Connected triangles. *)
+    | Line_list  (** Separate lines. *)
+    | Line_strip  (** Connected lines. *)
+    | Point_list
+        (** Points. Follow the backend's rules for writing a point size in the
+            vertex shader. *)
+
   type present_mode = Vsync | Immediate | Mailbox
   type composition = Sdr | Sdr_linear | Hdr_extended_linear | Hdr10
 
@@ -261,8 +284,8 @@ module Gpu : sig
       selects the driver. Set [debug] to [true] to enable SDL GPU validation. *)
 
   val destroy_device : device -> unit
-  (** Close the device. Release its window claims and fences first. Submit or
-      cancel any open command buffers. *)
+  (** Close the device. Release its claims, fences, shaders, and pipelines
+      first. Submit or cancel any open command buffers. *)
 
   val driver : device -> string
   val shader_formats : device -> shader_format list
@@ -287,6 +310,44 @@ module Gpu : sig
   (** Set the display color format and presentation timing. If a command buffer
       holds an image from this claim, submit that buffer first. SDL can reject
       settings that the window does not support. *)
+
+  val create_shader :
+    device ->
+    stage:'stage shader_stage ->
+    format:shader_format ->
+    ?entrypoint:string ->
+    string ->
+    'stage shader
+  (** Create a shader from code in [format]. Pass valid code for [stage] and a
+      format the device supports. The entry point defaults to ["main"]. Use a
+      shader that does not need buffers, textures, or samplers. The binding does
+      not inspect the code for resource use. *)
+
+  val release_shader : 'stage shader -> unit
+  (** Release the shader. Existing pipelines can still use it. Calling this
+      again on a released shader does nothing. *)
+
+  val create_swapchain_pipeline :
+    swapchain ->
+    vertex:vertex shader ->
+    fragment:fragment shader ->
+    primitive:primitive ->
+    graphics_pipeline
+  (** Create a pipeline for the claim's current pixel format. Both shaders must
+      belong to the device that claimed the window. The vertex shader must not
+      expect vertex buffers. The pipeline uses one color target, with no
+      blending, depth test, or face culling.
+
+      The pipeline belongs to the device, not the claim. Use it with any
+      swapchain on that device that has the same pixel format. If a change to
+      the swapchain parameters changes the format, create a matching pipeline.
+  *)
+
+  val release_graphics_pipeline : graphics_pipeline -> unit
+  (** Release the pipeline. SDL keeps any work already recorded in command
+      buffers valid. If a pass still uses this pipeline, bind another pipeline
+      before drawing again. Calling this again on a released pipeline does
+      nothing. *)
 
   val acquire_command_buffer : device -> command_buffer
   (** Start recording GPU work. Submit or cancel the buffer when finished. *)
@@ -324,6 +385,14 @@ module Gpu : sig
       same buffer. If an SDL call fails here, the binding closes the buffer
       before raising [Error]. It cancels the buffer if no image was acquired.
       Otherwise, it submits the buffer to return the image to SDL. *)
+
+  val bind_graphics_pipeline : render_pass -> graphics_pipeline -> unit
+  (** Bind a live pipeline that matches the pass's device and pixel format. *)
+
+  val draw_primitives : ?instances:int -> render_pass -> vertices:int -> unit
+  (** Draw with the pipeline bound to this pass. Counts must be positive and no
+      greater than [4_294_967_295]. The instance count defaults to 1. Vertex and
+      instance indices start at 0. *)
 
   val end_render_pass : render_pass -> unit
   (** End the pass. Calling this again on an ended pass does nothing. *)

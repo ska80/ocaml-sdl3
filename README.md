@@ -5,7 +5,7 @@ SDL3 functions, not the full C API. See [TODO.md](TODO.md) for the remaining wor
 
 | Dune library and opam package | OCaml module | What it covers |
 | --- | --- | --- |
-| `sdl3` | [`Sdl3`](src/core/sdl3.mli) | Windows, 2D drawing, GPU setup, textures, surfaces, input events, gamepads, queued audio, and timers |
+| `sdl3` | [`Sdl3`](src/core/sdl3.mli) | Windows, 2D and GPU drawing, textures, surfaces, input events, gamepads, queued audio, and timers |
 | `sdl3-image` | [`Sdl3_image`](src/image/sdl3_image.mli) | Load images from files or memory, load textures, and save PNG and JPEG files |
 | `sdl3-mixer` | [`Sdl3_mixer`](src/mixer/sdl3_mixer.mli) | Load sounds, play audio tracks, and mix to a device or a memory buffer |
 | `sdl3-ttf` | [`Sdl3_ttf`](src/ttf/sdl3_ttf.mli) | Open fonts, measure UTF-8 text, and render text to surfaces |
@@ -111,11 +111,10 @@ the frame.
 
 Use `Renderer.fill_rects` or `Renderer.draw_rects` to submit an array of rectangles in one SDL call.
 
-## Set up GPU presentation
+## Draw with the GPU
 
-`Sdl3.Gpu` opens devices and presents solid-color frames. It does not yet expose shader creation
-or draw calls. Start SDL with `Video`. Pass the shader formats your program can supply to
-`Gpu.create_device`. Use `Gpu.claim_window` to give the device control of a window.
+`Sdl3.Gpu` draws to windows. Start SDL with `Video`. Pass the shader formats your program can supply
+to `Gpu.create_device`. Use `Gpu.claim_window` to give the device control of a window.
 
 `Gpu.clear_and_present` clears a window image to one color and submits it for display. If it returns
 `false`, SDL had no image available. Release the claim before destroying the device or window. Do
@@ -131,6 +130,15 @@ A fence signals when submitted GPU work finishes. Use `Gpu.submit_and_acquire_fe
 fence at submission. Call `Gpu.wait_fence` to wait for completion. Release the fence with
 `Gpu.release_fence` when you no longer need it.
 
+A shader is a program that runs on the GPU. Use `Gpu.create_shader` to load vertex and fragment
+code. The shaders must not need buffers, textures, or samplers. A graphics pipeline pairs the
+shaders with the drawing state. Create one with `Gpu.create_swapchain_pipeline`. You can release the
+shader handles after you create the pipeline.
+
+In each pass, call `Gpu.bind_graphics_pipeline` before `Gpu.draw_primitives`. If the window image
+changes to a different pixel format, create a pipeline for the new format. See the [GPU
+test](test/gpu/gpu_test.ml) for a complete example.
+
 ## Run the tests
 
 The tests below passed on Linux with OCaml 5.5.2 and Dune 3.25.0. For the SDL versions, see
@@ -142,3 +150,14 @@ SDL3_image.
 
 Run `dune build --force @runtest-gpu` on a system with a working SDL GPU driver. On Linux with
 offscreen Vulkan support, set `SDL_VIDEO_DRIVER=offscreen` to run without a display.
+
+The drawing tests use SPIR-V, a shader format that Vulkan accepts. They skip drawing on devices that
+do not accept SPIR-V. The repository includes compiled shaders, so the tests do not need a shader
+compiler. If you edit the [triangle shaders](test/gpu/shaders), rebuild the test files:
+
+```sh
+for stage in vert frag; do
+  shader="test/gpu/shaders/triangle.$stage"
+  glslangValidator -V --target-env vulkan1.0 -g0 "$shader" -o "$shader.spv"
+done
+```

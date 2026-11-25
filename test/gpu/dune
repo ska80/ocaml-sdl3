@@ -6,6 +6,7 @@
 (rule
  (alias runtest-gpu)
  (package sdl3)
+ (deps shaders/triangle.vert.spv shaders/triangle.frag.spv)
  (action
   (progn
    (run %{exe:gpu_test.exe})
