@@ -100,6 +100,20 @@ dune exec --profile release ./examples/bunnymark/bunnymark.exe -- --bunnies 1000
 The example reuses arrays for positions, speeds, and colors. It uses `Texture.draw_sprites` to
 submit all bunnies in one OCaml call, with no rectangle or color allocation per bunny per frame.
 
+## Run Aurora Tunnel
+
+[Aurora Tunnel](examples/aurora_tunnel/aurora_tunnel.ml) draws a twisting tunnel of light with
+`Sdl3.Gpu`. Move the mouse to steer, click to send a pulse through the tunnel, and press Space to
+pause or resume. Press Escape or close the window to exit.
+
+```sh
+dune exec --profile release ./examples/aurora_tunnel/aurora_tunnel.exe
+```
+
+The example needs Vulkan support in SDL3 and a Vulkan driver. It includes compiled shaders, so you
+do not need a shader compiler to run it. See the [example notes](examples/aurora_tunnel/README.md)
+for a preview, the draw sequence, and test and build commands.
+
 ## Resource and thread rules
 
 A handle is a typed reference to an SDL resource. Close every handle explicitly. The OCaml garbage

@@ -1,0 +1,12 @@
+(executable
+ (name aurora_tunnel)
+ (libraries sdl3)
+ ; Keep the compiled shaders beside the executable in the build directory.
+ (link_deps shaders/tunnel.vert.spv shaders/tunnel.frag.spv))
+
+(rule
+ (alias runtest-aurora)
+ (package sdl3)
+ (deps shaders/tunnel.vert.spv shaders/tunnel.frag.spv)
+ (action
+  (run %{exe:aurora_tunnel.exe} --frames 3)))
