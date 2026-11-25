@@ -13,6 +13,21 @@ let using destroy handle f =
 external gpu_buffer_matches : 'kind Gpu.buffer -> string -> bool
   = "test_gpu_buffer_matches"
 
+type color_target
+
+external create_color_target : Gpu.swapchain -> color_target
+  = "test_gpu_create_color_target"
+
+external release_color_target : color_target -> unit
+  = "test_gpu_release_color_target"
+
+external begin_color_pass :
+  Gpu.command_buffer -> color_target -> Gpu.render_pass
+  = "test_gpu_begin_color_pass"
+
+external color_target_matches : color_target -> Color.t -> bool
+  = "test_gpu_color_target_matches"
+
 let packed_bytes bytes =
   Bigarray.Array1.init Bigarray.int8_unsigned Bigarray.c_layout
     (Bytes.length bytes) (Bytes.get_uint8 bytes)
@@ -110,6 +125,20 @@ let buffer_uploads device =
   using release_upload_buffer (create_upload_buffer device ~size:4) (fun _ ->
       invalid (fun () -> destroy_device device))
 
+let sampled_handles device =
+  let open Gpu in
+  invalid (fun () -> create_sampled_texture device ~w:0 ~h:2);
+  invalid (fun () -> create_sampled_texture device ~w:2 ~h:16385);
+  using release_texture (create_sampled_texture device ~w:2 ~h:2)
+    (fun texture ->
+      invalid (fun () -> destroy_device device);
+      Domain.join
+        (Domain.spawn (fun () -> invalid (fun () -> release_texture texture))));
+  using release_sampler (create_sampler device ~filter:Nearest) (fun sampler ->
+      invalid (fun () -> destroy_device device);
+      Domain.join
+        (Domain.spawn (fun () -> invalid (fun () -> release_sampler sampler))))
+
 let frames claim =
   check (Gpu.supports_present_mode claim Vsync) "Vsync support";
   check (Gpu.supports_composition claim Sdr) "SDR support";
@@ -164,20 +193,27 @@ let render_pass device claim =
 let wrong_upload_device device other =
   let open Gpu in
   let data = packed_bytes (Bytes.of_string "data") in
-  let with_buffers d f =
+  let with_resources d f =
     using release_upload_buffer (create_upload_buffer d ~size:4) (fun src ->
         write_upload_buffer src data;
-        using release_buffer (create_vertex_buffer d ~size:4) (f src))
+        using release_buffer (create_vertex_buffer d ~size:4) (fun dst ->
+            using release_texture
+              (create_sampled_texture d ~w:1 ~h:1)
+              (f src dst)))
   in
-  with_buffers device (fun src dst ->
-      with_buffers other (fun other_src other_dst ->
+  with_resources device (fun src dst texture ->
+      with_resources other (fun other_src other_dst other_texture ->
           using cancel_command_buffer (acquire_command_buffer device)
             (fun commands ->
               with_copy_pass commands (fun pass ->
                   invalid (fun () ->
                       upload_to_buffer pass ~src:other_src ~dst ~size:4);
                   invalid (fun () ->
-                      upload_to_buffer pass ~src ~dst:other_dst ~size:4)))))
+                      upload_to_buffer pass ~src ~dst:other_dst ~size:4);
+                  invalid (fun () ->
+                      upload_to_texture pass ~src:other_src ~dst:texture);
+                  invalid (fun () ->
+                      upload_to_texture pass ~src ~dst:other_texture)))))
 
 let wrong_device device context claim =
   let open Gpu in
@@ -205,9 +241,14 @@ let triangle_fragment device =
 let shader_checks device =
   let open Gpu in
   let code = shader_code "triangle.vert.spv" in
-  let create ?entrypoint =
-    create_shader device ~stage:Vertex ~format:Spirv ?entrypoint
+  let create ?entrypoint ?samplers ?uniform_buffers =
+    create_shader device ~stage:Vertex ~format:Spirv ?entrypoint ?samplers
+      ?uniform_buffers
   in
+  invalid (fun () -> create ~samplers:(-1) code);
+  invalid (fun () -> create ~samplers:17 code);
+  invalid (fun () -> create ~uniform_buffers:(-1) code);
+  invalid (fun () -> create ~uniform_buffers:5 code);
   invalid (fun () -> create "");
   invalid (fun () -> create "abcd");
   invalid (fun () -> create (code ^ "a"));
@@ -421,6 +462,167 @@ let mesh device claim =
       mesh_frame device claim pipeline Gpu.Uint16;
       mesh_frame device claim pipeline Gpu.Uint32)
 
+let resource_pipeline device claim =
+  let open Gpu in
+  using release_shader
+    (create_shader device ~stage:Vertex ~format:Spirv ~samplers:1
+       ~uniform_buffers:1
+       (shader_code "resources.vert.spv"))
+    (fun vertex ->
+      using release_shader
+        (create_shader device ~stage:Fragment ~format:Spirv ~samplers:2
+           ~uniform_buffers:1
+           (shader_code "resources.frag.spv"))
+        (fun fragment ->
+          create_swapchain_pipeline claim ~vertex ~fragment
+            ~primitive:Triangle_list))
+
+let wrong_sampler_device device context claim pipeline texture sampler =
+  let open Gpu in
+  using destroy_device
+    (create_device ~driver:(driver device) context [ Spirv ])
+    (fun other ->
+      using release_sampler (create_sampler other ~filter:Nearest) (fun s ->
+          using release_texture (create_sampled_texture other ~w:2 ~h:2)
+            (fun t ->
+              with_render_pass device claim ~clear:(Color.rgb 0 0 0)
+                (fun _ pass ->
+                  bind_graphics_pipeline pass pipeline;
+                  invalid (fun () ->
+                      bind_samplers pass ~stage:Vertex [| (t, sampler) |]);
+                  invalid (fun () ->
+                      bind_samplers pass ~stage:Vertex [| (texture, s) |])))))
+
+let uniform_coordinates x y u v =
+  let bytes = Bytes.create 16 in
+  List.iteri
+    (fun i f -> Bytes.set_int32_ne bytes (4 * i) (Int32.bits_of_float f))
+    [ x; y; u; v ];
+  packed_bytes bytes
+
+let upload_resource_textures device commands a b index =
+  let open Gpu in
+  let pixels reds =
+    let bytes = Bytes.make 16 '\255' in
+    List.iteri (fun i red -> Bytes.set_uint8 bytes (4 * i) red) reds;
+    bytes
+  in
+  using release_upload_buffer (create_upload_buffer device ~size:512)
+    (fun src ->
+      let ended =
+        with_copy_pass commands (fun pass ->
+            invalid (fun () -> upload_to_texture pass ~src ~dst:a);
+            let first = pixels [ 0; 255; 255; 0 ] in
+            write_upload_buffer src
+              (packed_bytes (Bytes.cat (Bytes.create 4) first));
+            invalid (fun () -> upload_to_texture ~src_offset:2 pass ~src ~dst:a);
+            invalid (fun () -> upload_to_texture ~src_offset:8 pass ~src ~dst:a);
+            upload_to_texture ~src_offset:4 pass ~src ~dst:a;
+            write_upload_buffer src (packed_bytes (pixels [ 255; 0; 0; 255 ]));
+            upload_to_texture ~cycle:true pass ~src ~dst:b;
+            let indices = Bytes.make 8 '\000' in
+            Bytes.set_uint16_ne indices 2 1;
+            Bytes.set_uint16_ne indices 4 2;
+            write_upload_buffer src (packed_bytes indices);
+            upload_to_buffer pass ~src ~dst:index ~size:8;
+            pass)
+      in
+      invalid (fun () -> upload_to_texture ended ~src ~dst:a))
+
+let resource_draws device claim pipeline a b nearest linear =
+  let open Gpu in
+  let with_target f =
+    using release_color_target (create_color_target claim) f
+  in
+  let with_pass commands target f =
+    using end_render_pass (begin_color_pass commands target) f
+  in
+  let vertex = uniform_coordinates 0.75 0.25 0. 0. in
+  let initial = uniform_coordinates 0.25 0.25 0.25 0.25 in
+  let updated = uniform_coordinates 0.75 0.25 0.75 0.25 in
+  let va = [| (a, nearest) |] and fb = [| (a, nearest); (b, linear) |] in
+  using release_buffer (create_index_buffer device ~format:Uint16 ~size:8)
+    (fun index ->
+      with_target (fun first ->
+          with_target (fun second ->
+              using cancel_command_buffer (acquire_command_buffer device)
+                (fun commands ->
+                  upload_resource_textures device commands a b index;
+                  let push stage slot data =
+                    push_uniform_data commands ~stage ~slot data
+                  in
+                  invalid (fun () -> push Vertex (-1) vertex);
+                  invalid (fun () -> push Fragment 4 initial);
+                  List.iter
+                    (fun size ->
+                      invalid (fun () ->
+                          push Vertex 0 (packed_bytes (Bytes.create size))))
+                    [ 0; 3; 4100 ];
+                  push Vertex 3 (packed_bytes (Bytes.make 4096 '\000'));
+                  push Vertex 0 vertex;
+                  with_pass commands first (fun pass ->
+                      let draw () = draw_indexed_primitives pass ~indices:3 in
+                      invalid (fun () -> bind_samplers pass ~stage:Vertex va);
+                      bind_graphics_pipeline pass pipeline;
+                      bind_index_buffer pass index;
+                      invalid (fun () ->
+                          bind_samplers ~first_slot:(-1) pass ~stage:Vertex va);
+                      invalid (fun () ->
+                          bind_samplers ~first_slot:1 pass ~stage:Vertex va);
+                      invalid (fun () ->
+                          bind_samplers ~first_slot:1 pass ~stage:Fragment fb);
+                      bind_samplers ~first_slot:2 pass ~stage:Fragment [||];
+                      bind_samplers pass ~stage:Vertex va;
+                      bind_samplers pass ~stage:Fragment fb;
+                      invalid draw;
+                      push Fragment 0 initial;
+                      Bigarray.Array1.blit updated initial;
+                      bind_graphics_pipeline pass pipeline;
+                      bind_samplers pass ~stage:Vertex va;
+                      bind_samplers ~first_slot:1 pass ~stage:Fragment
+                        [| fb.(1) |];
+                      invalid draw;
+                      bind_samplers pass ~stage:Fragment [| fb.(0) |];
+                      Gc.full_major ();
+                      draw ());
+                  with_pass commands second (fun pass ->
+                      bind_graphics_pipeline pass pipeline;
+                      bind_samplers pass ~stage:Vertex va;
+                      bind_samplers pass ~stage:Fragment fb;
+                      push Fragment 0 initial;
+                      draw_primitives pass ~vertices:3;
+                      release_sampler linear;
+                      invalid (fun () -> bind_samplers pass ~stage:Fragment fb);
+                      fb.(1) <- (b, nearest);
+                      invalid (fun () -> draw_primitives pass ~vertices:3);
+                      release_texture a;
+                      invalid (fun () -> bind_samplers pass ~stage:Vertex va));
+                  using release_fence
+                    (submit_and_acquire_fence commands)
+                    wait_fence;
+                  invalid (fun () -> push Vertex 0 vertex));
+              check
+                (color_target_matches first (Color.rgb 255 0 255))
+                "GPU shader resources in the first draw";
+              check
+                (color_target_matches second (Color.rgb 255 255 0))
+                "GPU shader resources after a uniform update")))
+
+let shader_resources device context claim =
+  let open Gpu in
+  let texture () = create_sampled_texture device ~w:2 ~h:2 in
+  using release_graphics_pipeline (resource_pipeline device claim)
+    (fun pipeline ->
+      using release_texture (texture ()) (fun a ->
+          using release_texture (texture ()) (fun b ->
+              using release_sampler (create_sampler device ~filter:Nearest)
+                (fun nearest ->
+                  using release_sampler (create_sampler device ~filter:Linear)
+                    (fun linear ->
+                      wrong_sampler_device device context claim pipeline a
+                        nearest;
+                      resource_draws device claim pipeline a b nearest linear)))))
+
 let hidden_window device claim =
   let open Gpu in
   using cancel_command_buffer (acquire_command_buffer device) (fun commands ->
@@ -453,7 +655,8 @@ let window device context =
           render_pass device claim;
           if List.mem Gpu.Spirv (Gpu.shader_formats device) then (
             triangle device context claim;
-            mesh device claim)
+            mesh device claim;
+            shader_resources device context claim)
           else
             Printf.eprintf
               "Skipping GPU drawing tests: SPIR-V is not supported\n%!";
@@ -481,6 +684,7 @@ let () =
           check (Gpu.shader_formats device <> []) "Device shader formats";
           command_buffers device;
           buffer_uploads device;
+          sampled_handles device;
           if List.mem Gpu.Spirv (Gpu.shader_formats device) then
             shader_checks device;
           window device context;

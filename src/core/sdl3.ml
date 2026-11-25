@@ -209,6 +209,9 @@ module Gpu = struct
   type index
   type 'kind buffer
   type upload_buffer
+  type texture
+  type sampler
+  type sampler_filter = Nearest | Linear
   type index_format = Uint16 | Uint32
   type vertex_format = Float32 | Float32x2 | Float32x3 | Float32x4 | Unorm8x4
 
@@ -274,8 +277,10 @@ module Gpu = struct
     stage:'stage shader_stage ->
     format:shader_format ->
     ?entrypoint:string ->
+    ?samplers:int ->
+    ?uniform_buffers:int ->
     string ->
-    'stage shader = "osdl_gpu_create_shader"
+    'stage shader = "osdl_gpu_create_shader_byte" "osdl_gpu_create_shader"
 
   external release_shader : 'stage shader -> unit = "osdl_gpu_release_shader"
 
@@ -308,8 +313,25 @@ module Gpu = struct
   external release_upload_buffer : upload_buffer -> unit
     = "osdl_gpu_release_upload_buffer"
 
+  external create_sampled_texture : device -> w:int -> h:int -> texture
+    = "osdl_gpu_create_sampled_texture"
+
+  external release_texture : texture -> unit = "osdl_gpu_release_texture"
+
+  external create_sampler : device -> filter:sampler_filter -> sampler
+    = "osdl_gpu_create_sampler"
+
+  external release_sampler : sampler -> unit = "osdl_gpu_release_sampler"
+
   external acquire_command_buffer : device -> command_buffer
     = "osdl_gpu_acquire_command_buffer"
+
+  external push_uniform_data :
+    command_buffer ->
+    stage:'stage shader_stage ->
+    slot:int ->
+    byte_buffer ->
+    unit = "osdl_gpu_push_uniform_data"
 
   external submit_command_buffer : command_buffer -> unit
     = "osdl_gpu_submit_command_buffer"
@@ -337,6 +359,14 @@ module Gpu = struct
     size:int ->
     unit = "osdl_gpu_upload_to_buffer_byte" "osdl_gpu_upload_to_buffer"
 
+  external upload_to_texture :
+    ?src_offset:int ->
+    ?cycle:bool ->
+    copy_pass ->
+    src:upload_buffer ->
+    dst:texture ->
+    unit = "osdl_gpu_upload_to_texture"
+
   external end_copy_pass : copy_pass -> unit = "osdl_gpu_end_copy_pass"
 
   external begin_swapchain_render_pass :
@@ -345,6 +375,13 @@ module Gpu = struct
 
   external bind_graphics_pipeline : render_pass -> graphics_pipeline -> unit
     = "osdl_gpu_bind_graphics_pipeline"
+
+  external bind_samplers :
+    ?first_slot:int ->
+    render_pass ->
+    stage:'stage shader_stage ->
+    (texture * sampler) array ->
+    unit = "osdl_gpu_bind_samplers"
 
   external bind_vertex_buffer :
     ?offset:int -> render_pass -> vertex buffer -> unit

@@ -265,6 +265,14 @@ module Gpu : sig
   type upload_buffer
   (** Temporary memory that holds bytes to copy to the GPU. *)
 
+  type texture
+  (** A GPU image that a shader can read. *)
+
+  type sampler
+  (** Rules for how a shader reads pixels from a texture. *)
+
+  type sampler_filter = Nearest | Linear
+
   type index_format =
     | Uint16
     | Uint32  (** The width of each unsigned integer in an index buffer. *)
@@ -322,8 +330,9 @@ module Gpu : sig
       selects the driver. Set [debug] to [true] to enable SDL GPU validation. *)
 
   val destroy_device : device -> unit
-  (** Close the device. Release its claims, fences, shaders, pipelines, and data
-      buffers first. Submit or cancel any open command buffers. *)
+  (** Close the device. Release all its resources first, including claims,
+      fences, shaders, pipelines, buffers, textures, and samplers. Submit or
+      cancel any open command buffers. *)
 
   val driver : device -> string
   val shader_formats : device -> shader_format list
@@ -354,13 +363,20 @@ module Gpu : sig
     stage:'stage shader_stage ->
     format:shader_format ->
     ?entrypoint:string ->
+    ?samplers:int ->
+    ?uniform_buffers:int ->
     string ->
     'stage shader
   (** Create a shader from code in [format]. Pass valid code for [stage] and a
-      format the device supports. The entry point defaults to ["main"]. The
-      shader can read vertex attributes, but must not use uniform or storage
-      buffers, textures, or samplers. The binding does not inspect the code for
-      resource use. *)
+      format the device supports. The entry point defaults to ["main"].
+
+      Declare the number of texture and sampler pairs in [samplers] (0 to 16).
+      Declare the number of uniform blocks in [uniform_buffers] (0 to 4). Both
+      counts default to zero. Use consecutive slots from zero within each group.
+      For SPIR-V, use sets 0 and 1 for vertex samplers and uniforms. Use sets 2
+      and 3 for fragment samplers and uniforms. For the other formats, follow
+      the layout in SDL's [SDL_CreateGPUShader] documentation. The binding does
+      not inspect the code. Do not use storage resources. *)
 
   val release_shader : 'stage shader -> unit
   (** Release the shader. Existing pipelines can still use it. Calling this
@@ -419,8 +435,41 @@ module Gpu : sig
   (** Release the upload buffer. SDL keeps already recorded copies valid.
       Calling this again on a released buffer does nothing. *)
 
+  val create_sampled_texture : device -> w:int -> h:int -> texture
+  (** Allocate a 2D texture with one level. Each pixel uses four bytes in red,
+      green, blue, alpha order. Each byte maps to a value from 0 to 1. Width and
+      height must be in [1, 16384]. Upload pixels before sampling. *)
+
+  val release_texture : texture -> unit
+  (** Release the texture. SDL keeps already recorded commands valid. Calling
+      this again on a released texture does nothing. *)
+
+  val create_sampler : device -> filter:sampler_filter -> sampler
+  (** Create a sampler for a texture with one level. [Nearest] reads the closest
+      pixel. [Linear] blends nearby pixels. Coordinates outside the texture use
+      its edge pixels. *)
+
+  val release_sampler : sampler -> unit
+  (** Release the sampler. SDL keeps already recorded commands valid. Calling
+      this again on a released sampler does nothing. *)
+
   val acquire_command_buffer : device -> command_buffer
   (** Start recording GPU work. Submit or cancel the buffer when finished. *)
+
+  val push_uniform_data :
+    command_buffer ->
+    stage:'stage shader_stage ->
+    slot:int ->
+    byte_buffer ->
+    unit
+  (** Copy values that stay constant for a draw to a uniform slot from 0 to 3.
+      The buffer's length must be 4 to 4096 bytes and a multiple of four. Pack
+      the data to match the shader's block in [std140] layout. The binding does
+      not inspect the layout.
+
+      Call this before or during a render pass. The data applies to subsequent
+      draws in this command buffer until you replace it in the same slot and
+      stage. You can reuse the bigarray as soon as this call returns. *)
 
   val submit_command_buffer : command_buffer -> unit
   (** Queue the recorded work and present any acquired window image. End any
@@ -467,6 +516,27 @@ module Gpu : sig
       a buffer with a cycling upload, upload again before drawing. Without
       cycling, the copy updates the existing storage in GPU command order. *)
 
+  val upload_to_texture :
+    ?src_offset:int ->
+    ?cycle:bool ->
+    copy_pass ->
+    src:upload_buffer ->
+    dst:texture ->
+    unit
+  (** Record a copy that replaces all pixels in [dst]. Write the pixels to [src]
+      in row order with no padding between rows. The byte offset defaults to
+      zero and must be a multiple of four. Use an upload buffer and texture from
+      the pass's device. The pixels must fit in the written bytes of [src].
+
+      With [cycle:true], SDL can use separate storage for the new pixels. If you
+      cancel a buffer with a cycling upload, upload again before sampling.
+      Without cycling, the copy updates the existing storage in GPU command
+      order.
+
+      On Direct3D 12 before SDL 3.4.2, a texture narrower than 32 pixels with at
+      least two rows needs extra capacity in [src]. Leave at least 256 bytes of
+      capacity from the start of the next-to-last row. *)
+
   val end_copy_pass : copy_pass -> unit
   (** End the copy pass. Calling this again on an ended pass does nothing. *)
 
@@ -484,8 +554,20 @@ module Gpu : sig
       Otherwise, it submits the buffer to return the image to SDL. *)
 
   val bind_graphics_pipeline : render_pass -> graphics_pipeline -> unit
-  (** Bind a live pipeline that matches the pass's device and pixel format. If
-      the pipeline uses a vertex buffer, bind that buffer after this call. *)
+  (** Bind a live pipeline that matches the pass's device and pixel format. Bind
+      the vertex buffer and sampler slots that the pipeline needs after each
+      call. Uniform data stays in the command buffer. *)
+
+  val bind_samplers :
+    ?first_slot:int ->
+    render_pass ->
+    stage:'stage shader_stage ->
+    (texture * sampler) array ->
+    unit
+  (** Bind texture and sampler pairs to consecutive slots of the current
+      pipeline's shader. [first_slot] defaults to zero. The range must fit the
+      sampler count for that stage. The resources must belong to the pass's
+      device. An empty array does not change any slots. *)
 
   val bind_vertex_buffer : ?offset:int -> render_pass -> vertex buffer -> unit
   (** Select the vertex data for the current pipeline. The pipeline must have a
@@ -502,7 +584,9 @@ module Gpu : sig
   (** Draw with the pipeline bound to this pass. Counts must be positive and no
       greater than [4_294_967_295]. The instance count defaults to 1. Vertex and
       instance indices start at 0. If the pipeline reads vertex data, bind a
-      live vertex buffer with room for the requested vertices. *)
+      live vertex buffer with room for the requested vertices. Push data for
+      each declared uniform slot and bind each declared sampler slot before
+      drawing. The textures and samplers must still be live. *)
 
   val draw_indexed_primitives :
     ?instances:int -> ?first_index:int -> render_pass -> indices:int -> unit
@@ -511,7 +595,8 @@ module Gpu : sig
       relative to the bound index buffer offset and defaults to zero. The index
       range must fit in the buffer. If the pipeline reads vertex data, bind a
       live vertex buffer and supply indices into its vertex data. The binding
-      does not inspect the index values. *)
+      does not inspect the index values. The same uniform and sampler rules
+      apply as for [draw_primitives]. *)
 
   val end_render_pass : render_pass -> unit
   (** End the pass. Calling this again on an ended pass does nothing. *)

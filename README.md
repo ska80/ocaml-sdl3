@@ -130,9 +130,14 @@ A fence signals when submitted GPU work finishes. Use `Gpu.submit_and_acquire_fe
 fence at submission. Call `Gpu.wait_fence` to wait for completion. Release the fence with
 `Gpu.release_fence` when you no longer need it.
 
-A shader is a program that runs on the GPU. Use `Gpu.create_shader` to load vertex and fragment
-code. The shaders can read vertex data, but cannot use uniform or storage buffers, textures, or
-samplers. A graphics pipeline pairs the shaders with the drawing state. Create one with
+A shader is a program that runs on the GPU. A uniform block holds values that stay constant for a
+draw. A sampler tells the shader how to read pixels from an image.
+
+Use `Gpu.create_shader` to load vertex and fragment code. Declare how many uniform blocks and
+texture-sampler pairs the shader uses. Both counts default to zero. Storage buffers and storage
+textures are not supported.
+
+A graphics pipeline pairs the shaders with the drawing state. Create one with
 `Gpu.create_swapchain_pipeline`. You can release the shader handles after you create the pipeline.
 
 In each pass, call `Gpu.bind_graphics_pipeline` before `Gpu.draw_primitives`. If the window image
@@ -147,7 +152,20 @@ Call `Gpu.begin_copy_pass` to group transfers in the command buffer. Record each
 
 If the vertex shader reads vertex data, pass `~vertex_layout` when you create the pipeline. Bind the
 vertex buffer after you bind that pipeline. For indexed drawing, bind the index buffer and call
-`Gpu.draw_indexed_primitives`. For a complete example, see the [GPU test](test/gpu/gpu_test.ml).
+`Gpu.draw_indexed_primitives`.
+
+Use `Gpu.push_uniform_data` to copy a uniform block to a vertex or fragment slot. Pack the bytes in
+the `std140` layout that SDL requires. You can push the data before or during a render pass.  The
+command buffer keeps it until you replace it in the same slot and stage.
+
+Use `Gpu.create_sampled_texture` to allocate a 2D image that a shader can read. Write four bytes per
+pixel in red, green, blue, alpha order. Use `Gpu.upload_to_texture` in a copy pass to copy the
+packed pixels from an upload buffer. Use `Gpu.create_sampler` to choose nearest or linear filtering.
+
+After you bind the pipeline, use `Gpu.bind_samplers` to set the texture and sampler for each slot.
+Before you draw, set all slots that the shaders declare. Release textures with `Gpu.release_texture`
+and samplers with `Gpu.release_sampler` before you destroy the device. For examples of uniforms,
+texture uploads, and indexed drawing, see the [GPU test](test/gpu/gpu_test.ml).
 
 ## Run the tests
 

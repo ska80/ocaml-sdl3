@@ -17,7 +17,9 @@
   shaders/triangle.vert.spv
   shaders/triangle.frag.spv
   shaders/mesh.vert.spv
-  shaders/mesh.frag.spv)
+  shaders/mesh.frag.spv
+  shaders/resources.vert.spv
+  shaders/resources.frag.spv)
  (action
   (progn
    (run %{exe:gpu_test.exe})

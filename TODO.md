@@ -12,6 +12,7 @@
 - [x] GPU command buffers, swapchain render passes, and fences that signal completion.
 - [x] Typed GPU shaders and pipelines for window drawing.
 - [x] GPU vertex and index buffers, upload commands, and indexed drawing.
+- [x] GPU uniform data, sampled 2D textures, and samplers.
 - [x] Image loading from a file or memory, texture loading, and PNG and JPEG output.
 - [x] Mixer and track playback, looping, gain, and mixing to a device or memory.
 - [x] Font loading, metrics, UTF-8 text measurement, and solid or blended text rendering.
@@ -23,7 +24,6 @@ versions with offscreen Vulkan. Separate installation of each add-on also passed
 
 ## Next
 
-- [ ] Add GPU shader bindings for uniforms, textures, and samplers.
 - [ ] Add scoped write access to streaming textures without exposing pixels after unlock.
 - [ ] Add more window, display, touch, and gamepad APIs.
 - [ ] Add file and memory streams with clear ownership rules.
