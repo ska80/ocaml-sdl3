@@ -1,7 +1,7 @@
 # OCaml SDL3 bindings
 
-These bindings let OCaml 5.4 programs call SDL3 for 2D games and multimedia. They cover a first set
-of SDL3 functions, not the full C API. See [TODO.md](TODO.md) for the remaining work.
+These bindings let OCaml programs call SDL3 for 2D games and multimedia. They cover a first set of
+SDL3 functions, not the full C API. See [TODO.md](TODO.md) for the remaining work.
 
 | Dune library and opam package | OCaml module | What it covers |
 | --- | --- | --- |
@@ -122,6 +122,9 @@ commands. Start SDL with `Video`. Pass the shader formats your program can suppl
 not attach a `Renderer` to a claimed window.
 
 ## Run the tests
+
+The tests below passed on Linux with OCaml 5.5.2 and Dune 3.25.0. For the SDL versions, see
+[TODO.md](TODO.md#done).
 
 Run `dune runtest` for native and bytecode tests. These tests use SDL's dummy video and audio
 drivers, so they need no display or speakers. The image tests need PNG and JPEG support in
