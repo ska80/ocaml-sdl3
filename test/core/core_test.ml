@@ -135,6 +135,66 @@ let render_batches renderer output =
   check (pixel 2 8 = red && pixel 9 8 = red) "Rectangle outline batch";
   check (pixel 3 9 = black && pixel 10 9 = black) "Empty outlines"
 
+let render_sprites context renderer other_renderer output =
+  let black = Color.rgb 0 0 0 and white = Color.rgb 255 255 255 in
+  let red = Color.rgb 255 0 0 and blue = Color.rgb 0 0 255 in
+  let transparent = Color.rgba 0 255 0 0 in
+  let texture =
+    using Surface.destroy (Surface.create context ~w:2 ~h:3) (fun source ->
+        Surface.fill source white;
+        Texture.of_surface renderer source)
+  in
+  using Texture.destroy texture (fun texture ->
+      (* A batch crosses multiple chunks. The final array entry is unused. *)
+      let count = 1025 in
+      let positions = Float.Array.make (2 * (count + 1)) 0. in
+      let tints = Array.make (count + 1) red in
+      let place i x y tint =
+        Float.Array.set positions (2 * i) x;
+        Float.Array.set positions ((2 * i) + 1) y;
+        tints.(i) <- tint
+      in
+      place 0 (-1.) 1. red;
+      place (count - 3) 4. 3. red;
+      place (count - 2) 4. 3. transparent;
+      place (count - 1) 5. 3. blue;
+      place count nan nan white;
+      let draw ~count =
+        Texture.draw_sprites renderer texture ~positions ~tints ~count
+      in
+      Renderer.set_draw_color renderer black;
+      Renderer.clear renderer;
+      Texture.set_blend_mode texture Blend;
+      Texture.set_alpha_mod texture 0;
+      Texture.draw_sprites renderer texture ~positions:(Float.Array.make 0 0.)
+        ~tints:[||] ~count:0;
+      invalid (fun () -> draw ~count:(-1));
+      invalid (fun () -> draw ~count:(count + 1));
+      invalid (fun () ->
+          Texture.draw_sprites renderer texture ~positions ~tints:[||] ~count:1);
+      invalid (fun () ->
+          Texture.draw_sprites renderer texture
+            ~positions:(Float.Array.make 1 0.) ~tints ~count:1);
+      invalid (fun () ->
+          Texture.draw_sprites other_renderer texture ~positions ~tints ~count:1);
+      Domain.join (Domain.spawn (fun () -> invalid (fun () -> draw ~count:1)));
+      Renderer.present renderer;
+      let pixel x y = Surface.read_pixel output ~x ~y in
+      check (pixel 0 1 = black) "Invalid sprite batch did not draw";
+      draw ~count;
+      Texture.draw ~dst:(frect 8. 3. 2. 3.) renderer texture;
+      Texture.set_alpha_mod texture 255;
+      Texture.draw ~dst:(frect 12. 3. 2. 3.) renderer texture;
+      Renderer.present renderer;
+      check (pixel 0 3 = red) "Clipped sprite at its original height";
+      check (pixel 4 5 = red) "Transparent tint preserves the earlier sprite";
+      check (pixel 5 5 = blue && pixel 6 3 = blue) "Last sprite draws on top";
+      check (pixel 7 3 = black) "Sprite uses its original width";
+      check (pixel 8 3 = black) "Sprite batch preserves the texture alpha";
+      check (pixel 12 3 = white) "Sprite batch preserves the texture color";
+      Texture.destroy texture;
+      invalid (fun () -> draw ~count:1))
+
 let streaming_texture renderer output =
   let open Bigarray in
   let pixel x y = Surface.read_pixel output ~x ~y in
@@ -265,6 +325,9 @@ let locked_texture renderer output =
               update ~rect:(rect 0 0 1 1) texture pixels ~pitch:4);
           invalid draw;
           invalid (fun () -> draw_rotated renderer texture ~angle:30.);
+          invalid (fun () ->
+              draw_sprites renderer texture ~positions:(Float.Array.make 2 0.)
+                ~tints:[| red |] ~count:1);
           invalid (fun () -> destroy texture);
           Domain.join
             (Domain.spawn (fun () -> invalid (fun () -> Locked.fill view clear)));
@@ -319,6 +382,9 @@ let render_target renderer other_renderer output =
       invalid (fun () -> Renderer.present renderer);
       invalid (fun () -> Texture.draw renderer target);
       invalid (fun () -> Texture.draw_rotated renderer target ~angle:0.);
+      invalid (fun () ->
+          Texture.draw_sprites renderer target
+            ~positions:(Float.Array.make 2 0.) ~tints:[| blue |] ~count:1);
       Renderer.set_draw_color renderer blue;
       Renderer.clear renderer;
       Renderer.set_draw_color renderer red;
@@ -398,6 +464,7 @@ let render context window =
                   Texture.destroy texture;
                   invalid (fun () -> Texture.size texture));
               render_batches renderer target;
+              render_sprites context renderer window_renderer target;
               streaming_texture renderer target;
               locked_texture renderer target;
               render_target renderer window_renderer target)))

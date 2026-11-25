@@ -248,6 +248,24 @@ module Texture : sig
       itself. If you omit [src] or [dst], SDL uses the whole texture or render
       target, respectively. *)
 
+  val draw_sprites :
+    Renderer.t ->
+    'access texture ->
+    positions:Float.Array.t ->
+    tints:Color.t array ->
+    count:int ->
+    unit
+  (** Draw [count] copies of the whole texture at its original size, in array
+      order. Supply the top-left [x, y] coordinates in consecutive pairs in
+      [positions] and one color per copy in [tints]. The colors replace the
+      texture's color and alpha settings for these draws only.
+
+      Only the first [2 * count] coordinates and [count] colors are used. A
+      count of zero draws nothing. The count must fit both arrays and a C [int].
+      The coordinates must fit finite C floats. Do not change the arrays during
+      the call. Like [draw], the texture must belong to this renderer and cannot
+      be the current target. *)
+
   val draw_rotated :
     ?src:Frect.t ->
     ?dst:Frect.t ->

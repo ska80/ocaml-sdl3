@@ -671,6 +671,90 @@ CAMLprim value osdl_texture_draw(value src, value dst, value renderer, value tex
     return Val_unit;
 }
 
+static inline SDL_Vertex osdl_sprite_vertex(float x, float y, float u, float v, SDL_FColor color) {
+    SDL_FPoint position = {x, y};
+    SDL_FPoint uv       = {u, v};
+    return (SDL_Vertex){.position = position, .color = color, .tex_coord = uv};
+}
+
+CAMLprim value osdl_texture_draw_sprites(value renderer, value texture, value positions,
+                                         value tints, value count) {
+    SDL_Renderer* r = osdl_live(renderer);
+    SDL_Texture*  t = osdl_texture_source(texture, renderer, r);
+
+    mlsize_t n = osdl_nonnegative_int(count);
+    if (n > Wosize_val(tints) || n > Wosize_val(positions) / Double_wosize / 2)
+        caml_invalid_argument("The sprite count exceeds the array lengths");
+    if (!n) return Val_unit;
+
+    for (mlsize_t i = 0; i < n * 2; ++i) {
+        if (!osdl_fits_float(Double_flat_field(positions, i)))
+            caml_invalid_argument("Sprite coordinates must be finite C floats");
+    }
+
+    float w, h;
+    osdl_check(SDL_GetTextureSize(t, &w, &h), "SDL_GetTextureSize");
+
+    /* SDL's software renderer can turn these quads into texture copies. It
+     * sets the texture modulation for each copy and leaves the last one set. */
+    const char* driver   = SDL_GetRendererName(r);
+    bool        software = driver && strcmp(driver, SDL_SOFTWARE_RENDERER) == 0;
+    SDL_FColor  saved    = {0};
+    if (software) {
+        osdl_check(SDL_GetTextureColorModFloat(t, &saved.r, &saved.g, &saved.b),
+                   "SDL_GetTextureColorModFloat");
+        osdl_check(SDL_GetTextureAlphaModFloat(t, &saved.a), "SDL_GetTextureAlphaModFloat");
+    }
+
+    /* Reuse a bounded amount of stack space, even for very large batches. */
+    enum { sprites_per_chunk = 512 };
+    SDL_Vertex vertices[4 * sprites_per_chunk];
+    int        indices[6 * sprites_per_chunk];
+    int        capacity = n < sprites_per_chunk ? (int)n : sprites_per_chunk;
+    for (int j = 0; j < capacity; ++j) {
+        int v = j * 4, k = j * 6;
+        indices[k]     = v;
+        indices[k + 1] = v + 1;
+        indices[k + 2] = v + 2;
+        indices[k + 3] = v;
+        indices[k + 4] = v + 2;
+        indices[k + 5] = v + 3;
+    }
+
+    bool ok = true;
+    for (mlsize_t first = 0; first < n;) {
+        int batch = n - first < (mlsize_t)capacity ? (int)(n - first) : capacity;
+        for (int j = 0; j < batch; ++j) {
+            mlsize_t    i     = first + j;
+            float       x     = (float)Double_flat_field(positions, i * 2);
+            float       y     = (float)Double_flat_field(positions, i * 2 + 1);
+            SDL_Color   c     = osdl_color(Field(tints, i));
+            const float norm  = 1.0f / 255.0f;
+            SDL_FColor  color = {c.r * norm, c.g * norm, c.b * norm, c.a * norm};
+            SDL_Vertex* v     = &vertices[j * 4];
+
+            v[0] = osdl_sprite_vertex(x, y, 0.0f, 0.0f, color);
+            v[1] = osdl_sprite_vertex(x + w, y, 1.0f, 0.0f, color);
+            v[2] = osdl_sprite_vertex(x + w, y + h, 1.0f, 1.0f, color);
+            v[3] = osdl_sprite_vertex(x, y + h, 0.0f, 1.0f, color);
+        }
+        ok = SDL_RenderGeometry(r, t, vertices, 4 * batch, indices, 6 * batch);
+        if (!ok) break;
+        first += batch;
+    }
+
+    if (software) {
+        char message[1024];
+        if (!ok) osdl_error_message(message, sizeof(message), "SDL_RenderGeometry");
+        /* These setters only change the modulation of the live texture. */
+        SDL_SetTextureColorModFloat(t, saved.r, saved.g, saved.b);
+        SDL_SetTextureAlphaModFloat(t, saved.a);
+        if (!ok) osdl_raise_error(message);
+    }
+    osdl_check(ok, "SDL_RenderGeometry");
+    return Val_unit;
+}
+
 CAMLprim value osdl_texture_draw_rotated(value src, value dst, value flip, value renderer,
                                          value texture, value angle) {
     static const SDL_FlipMode modes[] = {SDL_FLIP_NONE, SDL_FLIP_HORIZONTAL, SDL_FLIP_VERTICAL,

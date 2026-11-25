@@ -1,0 +1,20 @@
+(executable
+ (name bunnymark)
+ (modules bunnymark)
+ (enabled_if %{lib-available:sdl3-image})
+ (libraries sdl3 sdl3-image)
+ ; Keep the image beside the executable in the build directory.
+ (link_deps assets/raybunny.png))
+
+(rule
+ (alias runtest)
+ (package sdl3-image)
+ (deps assets/raybunny.png)
+ (action
+  (setenv
+   SDL_VIDEO_DRIVER
+   dummy
+   (setenv
+    SDL_RENDER_DRIVER
+    software
+    (run %{exe:bunnymark.exe} --bunnies 1025 --frames 3)))))

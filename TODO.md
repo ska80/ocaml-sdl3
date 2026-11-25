@@ -9,6 +9,7 @@
       gamepads, queued audio, and timers.
 - [x] Streaming texture uploads, render targets, and batches of rectangles.
 - [x] Scoped write access to streaming textures.
+- [x] Texture sprite batches and an OCaml Bunnymark example.
 - [x] GPU device setup, window claims, and solid-color frames.
 - [x] GPU command buffers, swapchain render passes, and fences that signal completion.
 - [x] Typed GPU shaders and pipelines for window drawing.

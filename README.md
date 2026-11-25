@@ -63,17 +63,42 @@ Add `sdl3` and the add-ons that you use to the `libraries` field in your `dune` 
  (libraries sdl3 sdl3-image sdl3-mixer sdl3-ttf))
 ```
 
-Run the [window and event loop example](examples/hello.ml) from this repository. Press Escape or
-close the window to exit.
+Run the [window and event loop example](examples/hello/hello.ml) from this repository. Press Escape
+or close the window to exit.
 
 ```sh
-dune exec ./examples/hello.exe
+dune exec ./examples/hello/hello.exe
 ```
 
 Use `Sdl3.with_init` to start and stop SDL. Pass `[Sdl3.Video]` for a window or `[Sdl3.Audio]` for a
 core audio stream. Pass `[]` for work that does not use a subsystem, such as loading an image into
 memory. SDL3_image needs no separate setup. Use `Sdl3_mixer.with_init` and `Sdl3_ttf.with_init`
 inside the SDL context.
+
+## Run Bunnymark
+
+[Bunnymark](examples/bunnymark/bunnymark.ml) measures the frame rate while moving and drawing copies
+of one texture. It uses the [bunny image](examples/bunnymark/assets/LICENSE.md) from [Raylib's
+Bunnymark](https://www.raylib.com/examples/textures/loader.html?name=textures_bunnymark).  Install
+SDL3_image with PNG support to run this example.
+
+```sh
+dune exec --profile release ./examples/bunnymark/bunnymark.exe
+```
+
+Hold the left mouse button to add 100 bunnies per frame, up to 80,000. Press P to pause or resume
+movement. Press Escape or close the window to exit. The window title shows the count and frames per
+second. The example disables synchronization with the display refresh rate.
+
+For a fixed workload, set the initial count and the number of frames. The example prints the mean
+frames per second when it exits.
+
+```sh
+dune exec --profile release ./examples/bunnymark/bunnymark.exe -- --bunnies 10000 --frames 300
+```
+
+The example reuses arrays for positions, speeds, and colors. It uses `Texture.draw_sprites` to
+submit all bunnies in one OCaml call, with no rectangle or color allocation per bunny per frame.
 
 ## Resource and thread rules
 
@@ -118,6 +143,8 @@ it. Use `Renderer.set_target renderer None` before you draw the texture to the w
 the frame.
 
 Use `Renderer.fill_rects` or `Renderer.draw_rects` to submit an array of rectangles in one SDL call.
+Use `Texture.draw_sprites` to draw many copies of one texture. Pass pairs of coordinates in a flat
+float array and one tint color per copy. The binding groups the copies into batches for SDL.
 
 ## Draw with the GPU
 

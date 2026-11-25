@@ -214,6 +214,14 @@ module Texture = struct
     ?src:Frect.t -> ?dst:Frect.t -> Renderer.t -> 'access texture -> unit
     = "osdl_texture_draw"
 
+  external draw_sprites :
+    Renderer.t ->
+    'access texture ->
+    positions:Float.Array.t ->
+    tints:Color.t array ->
+    count:int ->
+    unit = "osdl_texture_draw_sprites"
+
   external draw_rotated :
     ?src:Frect.t ->
     ?dst:Frect.t ->
