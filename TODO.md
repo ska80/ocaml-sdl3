@@ -8,6 +8,7 @@
 - [x] Core windows, 2D rendering, textures from surfaces, BMP files, keyboard and mouse input,
       gamepads, queued audio, and timers.
 - [x] Streaming texture uploads, render targets, and batches of rectangles.
+- [x] Scoped write access to streaming textures.
 - [x] GPU device setup, window claims, and solid-color frames.
 - [x] GPU command buffers, swapchain render passes, and fences that signal completion.
 - [x] Typed GPU shaders and pipelines for window drawing.
@@ -24,7 +25,6 @@ versions with offscreen Vulkan. Separate installation of each add-on also passed
 
 ## Next
 
-- [ ] Add scoped write access to streaming textures without exposing pixels after unlock.
 - [ ] Add more window, display, touch, and gamepad APIs.
 - [ ] Add file and memory streams with clear ownership rules.
 - [ ] Add audio device selection, audio capture, and more mixer playback controls.

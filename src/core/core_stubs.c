@@ -238,8 +238,15 @@ CAMLprim value osdl_surface_read_pixel(value surface, value x, value y) {
 
 /* Renderers. */
 
-static SDL_Texture* osdl_texture_for_renderer(value texture, value renderer) {
+static SDL_Texture* osdl_texture_unlocked(value texture) {
     SDL_Texture* t = osdl_live(texture);
+    if (osdl_cell_val(texture)->children)
+        caml_invalid_argument("Finish the SDL texture lock before using the texture");
+    return t;
+}
+
+static SDL_Texture* osdl_texture_for_renderer(value texture, value renderer) {
+    SDL_Texture* t = osdl_texture_unlocked(texture);
     if (osdl_parent(texture) != renderer)
         caml_invalid_argument("Use the renderer that owns the texture");
     return t;
@@ -439,23 +446,168 @@ CAMLprim value osdl_texture_create_target(value renderer, value w, value h) {
     return osdl_texture_create(renderer, w, h, SDL_TEXTUREACCESS_TARGET);
 }
 
-CAMLprim value osdl_texture_update(value rect, value texture, value buffer, value pitch) {
-    SDL_Texture* t       = osdl_live(texture);
-    bool         partial = Is_block(rect);
-    SDL_Rect     area    = partial ? osdl_rect(Some_val(rect)) : (SDL_Rect){0, 0, t->w, t->h};
-    if (partial && (area.x < 0 || area.y < 0 || area.w <= 0 || area.h <= 0 ||
-                    area.x > t->w - area.w || area.y > t->h - area.h))
-        caml_invalid_argument("SDL update rectangle must be inside the texture");
+static SDL_Rect osdl_texture_region(SDL_Texture* texture, value rect) {
+    if (Is_long(rect)) return (SDL_Rect){0, 0, texture->w, texture->h};
 
+    SDL_Rect area = osdl_rect(Some_val(rect));
+    if (area.x < 0 || area.y < 0 || area.w <= 0 || area.h <= 0 || area.x > texture->w - area.w ||
+        area.y > texture->h - area.h)
+        caml_invalid_argument(
+            "SDL rectangle must be inside the texture and have positive dimensions");
+    return area;
+}
+
+static int osdl_rgba_pitch(value pitch, int width) {
     int stride = osdl_positive_int(pitch);
-    if (stride % 4 || stride / 4 < area.w)
+    if (stride % 4 || stride / 4 < width)
         caml_invalid_argument("SDL RGBA pitch must be a multiple of four and cover a row");
+    return stride;
+}
+
+CAMLprim value osdl_texture_update(value rect, value texture, value buffer, value pitch) {
+    SDL_Texture* t      = osdl_texture_unlocked(texture);
+    SDL_Rect     area   = osdl_texture_region(t, rect);
+    int          stride = osdl_rgba_pitch(pitch, area.w);
     if (area.h > INT_MAX / stride) caml_invalid_argument("SDL texture upload is too large");
     if (Caml_ba_array_val(buffer)->dim[0] < stride * area.h)
         caml_invalid_argument("SDL texture upload buffer is too small");
 
-    osdl_check(SDL_UpdateTexture(t, partial ? &area : NULL, Caml_ba_data_val(buffer), stride),
-               "SDL_UpdateTexture");
+    osdl_check(
+        SDL_UpdateTexture(t, Is_block(rect) ? &area : NULL, Caml_ba_data_val(buffer), stride),
+        "SDL_UpdateTexture");
+    return Val_unit;
+}
+
+/* A lock is the texture's only child. The custom cell keeps all pixel data
+ * private. Only the OCaml wrapper can acquire or release the lock. */
+typedef struct {
+    osdl_cell cell;
+    int       width, height, pitch;
+    bool      initialized;
+} osdl_texture_lock;
+
+CAMLprim value osdl_texture_prepare_lock(value texture) {
+    CAMLparam1(texture);
+    CAMLlocal1(cell);
+
+    osdl_texture_unlocked(texture);
+    cell                    = caml_alloc_custom(&osdl_handle_ops, sizeof(osdl_texture_lock), 0, 1);
+    osdl_texture_lock* lock = Data_custom_val(cell);
+    lock->cell              = (osdl_cell){0};
+    memcpy(lock->cell.thread, osdl_cell_val(texture)->thread, sizeof(lock->cell.thread));
+    CAMLreturn(caml_alloc_2(0, cell, texture));
+}
+
+CAMLprim value osdl_texture_lock_pixels(value rect, value view) {
+    value        texture   = osdl_parent(view);
+    SDL_Texture* t         = osdl_texture_unlocked(texture);
+    SDL_Rect     area      = osdl_texture_region(t, rect);
+    size_t       row_bytes = 4 * (size_t)area.w;
+
+    void* pixels = NULL;
+    int   pitch  = 0;
+    osdl_check(SDL_LockTexture(t, Is_block(rect) ? &area : NULL, &pixels, &pitch),
+               "SDL_LockTexture");
+    if (!pixels || pitch <= 0 || (size_t)pitch < row_bytes ||
+        (size_t)(area.h - 1) > (SIZE_MAX - row_bytes) / (size_t)pitch) {
+        SDL_UnlockTexture(t);
+        osdl_raise_error("SDL_LockTexture: SDL returned invalid pixel storage");
+    }
+
+    osdl_texture_lock* lock = (osdl_texture_lock*)osdl_cell_val(view);
+    lock->width             = area.w;
+    lock->height            = area.h;
+    lock->pitch             = pitch;
+
+    /* A whole-region write can skip the initial clear. */
+    lock->initialized = false;
+    osdl_publish(view, pixels, "SDL_LockTexture");
+    return Val_unit;
+}
+
+static Uint32 osdl_rgba_pixel(value color) {
+    SDL_Color c       = osdl_color(color);
+    Uint8     bytes[] = {c.r, c.g, c.b, c.a};
+    Uint32    pixel;
+    memcpy(&pixel, bytes, sizeof(pixel));
+    return pixel;
+}
+
+static void osdl_locked_fill(osdl_texture_lock* lock, Uint8* pixels, Uint32 pixel) {
+    size_t pitch = lock->pitch, rows = lock->height;
+    size_t row_bytes = 4 * (size_t)lock->width;
+    if (pitch == row_bytes) {
+        row_bytes *= rows;
+        rows = 1;
+    }
+    for (size_t y = 0; y < rows; ++y) {
+        Uint8* row = pixels + y * pitch;
+        if (!pixel)
+            memset(row, 0, row_bytes);
+        else
+            for (size_t i = 0; i < row_bytes; i += 4)
+                memcpy(row + i, &pixel, sizeof(pixel));
+    }
+    lock->initialized = true;
+}
+
+CAMLprim value osdl_texture_unlock_pixels(value view) {
+    Uint8* pixels = osdl_take(view);
+    if (pixels) {
+        osdl_texture_lock* lock = (osdl_texture_lock*)osdl_cell_val(view);
+        SDL_Texture*       t    = osdl_cell_val(osdl_parent(view))->ptr;
+        if (!lock->initialized) osdl_locked_fill(lock, pixels, 0);
+        SDL_UnlockTexture(t);
+        Store_field(view, 1, Val_unit);
+    }
+    return Val_unit;
+}
+
+static osdl_texture_lock* osdl_live_lock(value view) {
+    osdl_live(view);
+    return (osdl_texture_lock*)osdl_cell_val(view);
+}
+
+CAMLprim value osdl_locked_pixels_size(value view) {
+    osdl_texture_lock* lock = osdl_live_lock(view);
+    return osdl_int_pair(lock->width, lock->height);
+}
+
+CAMLprim value osdl_locked_pixels_fill(value view, value color) {
+    osdl_texture_lock* lock = osdl_live_lock(view);
+    osdl_locked_fill(lock, lock->cell.ptr, osdl_rgba_pixel(color));
+    return Val_unit;
+}
+
+CAMLprim value osdl_locked_pixels_set_pixel(value view, value vx, value vy, value color) {
+    osdl_texture_lock* lock = osdl_live_lock(view);
+    intnat             x = Long_val(vx), y = Long_val(vy);
+    if (x < 0 || x >= lock->width || y < 0 || y >= lock->height)
+        caml_invalid_argument("SDL pixel is outside the locked rectangle");
+
+    Uint8* pixels = lock->cell.ptr;
+    if (!lock->initialized) osdl_locked_fill(lock, pixels, 0);
+    Uint32 pixel = osdl_rgba_pixel(color);
+    memcpy(pixels + (size_t)y * lock->pitch + 4 * (size_t)x, &pixel, sizeof(pixel));
+    return Val_unit;
+}
+
+CAMLprim value osdl_locked_pixels_copy_from(value view, value buffer, value pitch) {
+    osdl_texture_lock* lock      = osdl_live_lock(view);
+    size_t             row_bytes = 4 * (size_t)lock->width;
+    size_t             stride    = osdl_rgba_pitch(pitch, lock->width);
+    size_t             length    = Caml_ba_array_val(buffer)->dim[0];
+    if (length < row_bytes || (size_t)(lock->height - 1) > (length - row_bytes) / stride)
+        caml_invalid_argument("The RGBA source buffer does not cover the locked rectangle");
+
+    const Uint8* src = Caml_ba_data_val(buffer);
+    Uint8*       dst = lock->cell.ptr;
+    if (stride == row_bytes && (size_t)lock->pitch == row_bytes)
+        memcpy(dst, src, row_bytes * (size_t)lock->height);
+    else
+        for (int y = 0; y < lock->height; ++y)
+            memcpy(dst + (size_t)y * lock->pitch, src + (size_t)y * stride, row_bytes);
+    lock->initialized = true;
     return Val_unit;
 }
 

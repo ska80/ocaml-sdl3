@@ -176,9 +176,9 @@ module Texture : sig
   (** Copy the pixels. You can then destroy the surface. *)
 
   val create_streaming : Renderer.t -> w:int -> h:int -> streaming
-  (** Create a texture for repeated pixel uploads. Fill it with [update] before
-      you draw it. The dimensions must be positive. The byte count [w * h * 4]
-      must fit in a C [int]. *)
+  (** Create a texture for repeated pixel uploads. Fill it with [update] or
+      [with_lock] before you draw it. The dimensions must be positive. The byte
+      count [w * h * 4] must fit in a C [int]. *)
 
   val create_target : Renderer.t -> w:int -> h:int -> target
   (** Create a texture that you can draw to with {!Renderer.set_target}. Clear
@@ -197,9 +197,45 @@ module Texture : sig
       byte count must fit in a C [int]. Do not change the buffer during the
       call. SDL does not keep the buffer. *)
 
+  module Locked : sig
+    (** Write-only access to one locked rectangle. All operations raise
+        [Invalid_argument] after the lock ends. *)
+
+    type t
+
+    val size : t -> int * int
+    (** The width and height of the locked rectangle in pixels. *)
+
+    val set_pixel : t -> x:int -> y:int -> Color.t -> unit
+    (** Write one pixel. Coordinates start at zero in the locked rectangle. A
+        point outside the rectangle raises [Invalid_argument]. *)
+
+    val fill : t -> Color.t -> unit
+    (** Set every pixel in the locked rectangle to the given color. *)
+
+    val copy_from : t -> byte_buffer -> pitch:int -> unit
+    (** Copy red, green, blue, and alpha bytes into the whole locked rectangle.
+        [pitch] is the byte distance between source rows. It must be a multiple
+        of four and at least four times the width of the rectangle. The buffer
+        must cover all rows. The last row does not need padding. Do not change
+        the source buffer during the call. *)
+  end
+
+  val with_lock : ?rect:Rect.t -> streaming -> (Locked.t -> 'a) -> 'a
+  (** Call the function with write access to the texture. If you omit [rect],
+      lock the whole texture. Otherwise, use a rectangle with positive
+      dimensions that lies inside the texture. The lock does not preserve the
+      old pixels in the rectangle. Any pixel you do not write becomes
+      transparent black.
+
+      Run the function on the main thread. Do not lock, update, draw, or destroy
+      the same texture during the call. If the function returns or raises, the
+      binding unlocks the texture and keeps the pixel writes. If it raises, the
+      binding propagates the exception. *)
+
   val destroy : 'access texture -> unit
-  (** Destroy the texture. If it is the current target, restore the default
-      target first. *)
+  (** Destroy the texture. End any lock on it first. If it is the current
+      target, restore the default target first. *)
 
   val size : 'access texture -> float * float
   val set_scale_mode : 'access texture -> scale_mode -> unit

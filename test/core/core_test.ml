@@ -191,6 +191,113 @@ let streaming_texture renderer output =
       Texture.destroy texture;
       invalid (fun () -> update ~pitch:12))
 
+let locked_texture renderer output =
+  let open Texture in
+  let red = Color.rgba 200 12 56 255 and blue = Color.rgba 18 48 207 127 in
+  let green = Color.rgba 34 160 78 242 and clear = Color.rgba 0 0 0 0 in
+  let rect x y w h = Rect.make ~x ~y ~w ~h in
+  let pixels =
+    let open Bigarray in
+    let buffer = Array1.create int8_unsigned c_layout 24 in
+    let pixels = Array1.sub buffer 4 20 in
+    Array1.fill buffer 42;
+    let put i { Color.r; g; b; a } =
+      pixels.{i} <- r;
+      pixels.{i + 1} <- g;
+      pixels.{i + 2} <- b;
+      pixels.{i + 3} <- a
+    in
+    put 0 green;
+    put 4 blue;
+    put 12 blue;
+    put 16 green;
+    pixels
+  in
+  using destroy (create_streaming renderer ~w:3 ~h:3) (fun texture ->
+      let draw () =
+        Texture.draw ~dst:(frect 9. 9. 3. 3.) renderer texture;
+        Renderer.present renderer
+      in
+      let pixel x y = Surface.read_pixel output ~x:(x + 9) ~y:(y + 9) in
+      let unexpected _ = failwith "The texture lock callback must not run" in
+      let region = rect 1 1 2 2 in
+      List.iter
+        (fun rect -> invalid (fun () -> with_lock ~rect texture unexpected))
+        [
+          rect (-1) 0 1 1;
+          rect 0 0 0 1;
+          rect 2 0 2 1;
+          rect 0 2 1 2;
+          rect max_int 0 1 1;
+        ];
+      Domain.join
+        (Domain.spawn (fun () ->
+             invalid (fun () -> with_lock texture unexpected)));
+      set_blend_mode texture None;
+      let stale =
+        with_lock texture (fun view ->
+            check (Locked.size view = (3, 3)) "Whole lock size";
+            Locked.fill view red;
+            Locked.set_pixel view ~x:0 ~y:0 blue;
+            view)
+      in
+      draw ();
+      check (pixel 0 0 = blue && pixel 2 2 = red) "Whole lock writes";
+      invalid (fun () -> Locked.size stale);
+      invalid (fun () -> Locked.fill stale clear);
+      invalid (fun () -> Locked.set_pixel stale ~x:0 ~y:0 red);
+      invalid (fun () -> Locked.copy_from stale pixels ~pitch:12);
+      with_lock ~rect:region texture (fun view ->
+          Gc.compact ();
+          check (Locked.size view = (2, 2)) "Partial lock size";
+          invalid (fun () -> Locked.fill stale clear);
+          invalid (fun () -> Locked.set_pixel view ~x:(-1) ~y:0 red);
+          invalid (fun () -> Locked.set_pixel view ~x:2 ~y:0 red);
+          invalid (fun () -> Locked.set_pixel view ~x:0 ~y:max_int red);
+          List.iter
+            (fun pitch ->
+              invalid (fun () -> Locked.copy_from view pixels ~pitch))
+            [ 0; 4; 10 ];
+          invalid (fun () ->
+              Locked.copy_from view (Bigarray.Array1.sub pixels 0 19) ~pitch:12);
+          invalid (fun () -> with_lock texture unexpected);
+          invalid (fun () ->
+              update ~rect:(rect 0 0 1 1) texture pixels ~pitch:4);
+          invalid draw;
+          invalid (fun () -> draw_rotated renderer texture ~angle:30.);
+          invalid (fun () -> destroy texture);
+          Domain.join
+            (Domain.spawn (fun () -> invalid (fun () -> Locked.fill view clear)));
+          Locked.copy_from view pixels ~pitch:12);
+      draw ();
+      check (pixel 1 1 = green && pixel 2 1 = blue) "First copied row";
+      check (pixel 1 2 = blue && pixel 2 2 = green) "Last copied row";
+      check
+        (pixel 0 2 = red && pixel 2 0 = red)
+        "Pixels outside the locked rectangle";
+      let failure = Failure "Stop writing pixels" in
+      let saved = ref None in
+      (match
+         with_lock ~rect:region texture (fun view ->
+             saved := Some view;
+             Locked.set_pixel view ~x:1 ~y:1 blue;
+             raise failure)
+       with
+      | exception exn when exn == failure -> ()
+      | _ -> failwith "Expected the texture lock callback exception");
+      invalid (fun () -> Locked.fill (Option.get !saved) red);
+      draw ();
+      check (pixel 2 2 = blue) "Writes before an exception stay in the texture";
+      check
+        (pixel 1 1 = clear && pixel 1 2 = clear && pixel 0 2 = red)
+        "Unwritten pixels are clear";
+      with_lock ~rect:(rect 0 0 1 1) texture (fun _ -> ());
+      draw ();
+      check (pixel 0 0 = clear) "An empty lock clears only its rectangle";
+      check (pixel 2 2 = blue) "The empty lock did not change other pixels";
+      destroy texture;
+      invalid (fun () -> with_lock texture unexpected))
+
 let render_target renderer other_renderer output =
   let black = Color.rgb 0 0 0 and blue = Color.rgb 0 0 255 in
   let red = Color.rgb 255 0 0 in
@@ -292,6 +399,7 @@ let render context window =
                   invalid (fun () -> Texture.size texture));
               render_batches renderer target;
               streaming_texture renderer target;
+              locked_texture renderer target;
               render_target renderer window_renderer target)))
 
 let gpu_without_backend context =

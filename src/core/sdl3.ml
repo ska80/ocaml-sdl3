@@ -169,6 +169,35 @@ module Texture = struct
     ?rect:Rect.t -> streaming -> byte_buffer -> pitch:int -> unit
     = "osdl_texture_update"
 
+  module Locked = struct
+    type t
+
+    external size : t -> int * int = "osdl_locked_pixels_size"
+
+    external set_pixel : t -> x:int -> y:int -> Color.t -> unit
+      = "osdl_locked_pixels_set_pixel"
+
+    external fill : t -> Color.t -> unit = "osdl_locked_pixels_fill"
+
+    external copy_from : t -> byte_buffer -> pitch:int -> unit
+      = "osdl_locked_pixels_copy_from"
+  end
+
+  external prepare_lock : streaming -> Locked.t = "osdl_texture_prepare_lock"
+
+  external lock_pixels : Rect.t option -> Locked.t -> unit
+    = "osdl_texture_lock_pixels"
+
+  external unlock_pixels : Locked.t -> unit = "osdl_texture_unlock_pixels"
+
+  let with_lock ?rect texture f =
+    let view = prepare_lock texture in
+    Fun.protect
+      ~finally:(fun () -> unlock_pixels view)
+      (fun () ->
+        lock_pixels rect view;
+        f view)
+
   external destroy : 'access texture -> unit = "osdl_texture_destroy"
   external size : 'access texture -> float * float = "osdl_texture_size"
 

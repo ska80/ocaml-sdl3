@@ -104,6 +104,14 @@ upload RGBA bytes from a reusable bigarray with `Texture.update`. Pass `~rect` t
 of the texture. Pass `~pitch` for the byte distance between rows, including any padding. The binding
 passes the buffer directly to SDL.
 
+Use `Texture.with_lock` to write to a streaming texture during a function call. Use
+`Texture.Locked.fill` for a solid color or `Texture.Locked.copy_from` to copy pixels from a
+bigarray. Use `Texture.Locked.set_pixel` to write one pixel at a time. Coordinates start at zero
+in the locked rectangle. Unwritten pixels in that rectangle become transparent black.
+
+The binding unlocks the texture even if the function raises an exception. The writes stay in
+the texture. You cannot use the locked view after the function exits.
+
 A render target is where the renderer draws. Use `Texture.create_target` to create a texture you can
 draw to. Select it with `Renderer.set_target renderer (Some target)`. Clear it before you draw to
 it. Use `Renderer.set_target renderer None` before you draw the texture to the window and present
