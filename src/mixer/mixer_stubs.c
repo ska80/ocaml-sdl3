@@ -95,6 +95,19 @@ CAMLprim value osdl_mixer_audio_load(value predecode, value context, value path)
     CAMLreturn(osdl_publish(handle, audio, "MIX_LoadAudio"));
 }
 
+CAMLprim value osdl_mixer_audio_load_io(value predecode, value context, value stream) {
+    CAMLparam3(predecode, context, stream);
+    CAMLlocal1(handle);
+
+    osdl_live(context);
+    SDL_IOStream* io     = osdl_unborrowed_io(stream);
+    bool          decode = Is_block(predecode) && Bool_val(Some_val(predecode));
+    handle               = osdl_new_handle(context);
+
+    MIX_Audio* audio = MIX_LoadAudio_IO(NULL, io, decode, false);
+    CAMLreturn(osdl_publish(handle, audio, "MIX_LoadAudio_IO"));
+}
+
 OSDL_DESTROY(osdl_mixer_audio_destroy, MIX_Audio, MIX_DestroyAudio)
 
 CAMLprim value osdl_mixer_audio_duration(value audio) {

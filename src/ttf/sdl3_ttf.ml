@@ -13,6 +13,10 @@ module Font = struct
   type mode = Solid | Blended
 
   external open_ : context -> string -> ptsize:float -> t = "osdl_ttf_font_open"
+
+  external open_io : context -> [> `Read ] Sdl3.Io.t -> ptsize:float -> t
+    = "osdl_ttf_font_open_io"
+
   external close : t -> unit = "osdl_ttf_font_close"
   external set_size : t -> ptsize:float -> unit = "osdl_ttf_font_set_size"
   external height : t -> int = "osdl_ttf_font_height"

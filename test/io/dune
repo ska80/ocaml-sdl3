@@ -1,0 +1,19 @@
+(executable
+ (name io_test)
+ (libraries sdl3)
+ (modes exe byte_complete)
+ (foreign_stubs
+  (language c)
+  (names io_fixture)
+  (include_dirs ../../src/core)
+  (flags
+   (:standard
+    (:include ../../src/core/c_flags.sexp)))))
+
+(rule
+ (alias runtest)
+ (package sdl3)
+ (action
+  (progn
+   (run %{exe:io_test.exe})
+   (run ./io_test.bc.exe))))

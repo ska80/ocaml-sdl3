@@ -136,6 +136,26 @@ Drawing calls pass small values directly to C. Audio and in-memory image calls t
 hold data outside the OCaml heap. `Audio.queue` copies the samples into SDL, but the binding adds no
 copy.
 
+## Use file and memory streams
+
+A stream reads or writes bytes. For a seekable stream, use `Io.seek` to move to a byte position.
+Open a binary file with `Io.open_file`. Its mode determines whether you can call `Io.read`,
+`Io.write`, or both. Use `Io.with_file` to close the file at the end of a function.
+
+Use `Io.of_memory` to read an existing bigarray. Use `Io.of_memory_rw` to read or change it. Neither
+copies the bigarray. The stream keeps the buffer alive until you call `Io.close`. A memory stream
+has a fixed size.
+
+Load BMP images, SDL3_image images and textures, or SDL3_mixer audio from a readable stream. Save
+BMP, PNG, or JPEG data to a writable stream. These calls leave the stream open and do not retain it.
+`Sdl3_ttf.Font.open_io` is different. Close the font before you use or close its stream again. Keep
+its backing buffer unchanged until you close the font.
+
+```ocaml
+let load_bmp context path =
+  Sdl3.Io.with_file context ~mode:Read path Sdl3.Surface.load_bmp_io
+```
+
 ## Query displays and input devices
 
 Start SDL with `Video`. Use `Display.list` or `Display.primary` to get a display ID. Use the ID to

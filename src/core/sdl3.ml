@@ -33,6 +33,59 @@ let with_init subsystems f =
   let context = init subsystems in
   Fun.protect ~finally:(fun () -> quit context) (fun () -> f context)
 
+module Io = struct
+  type 'access t
+
+  type _ file_mode =
+    | Read : [ `Read ] file_mode
+    | Write : [ `Write ] file_mode
+    | Append : [ `Write ] file_mode
+    | Update : [ `Read | `Write ] file_mode
+    | Create : [ `Read | `Write ] file_mode
+    | Append_update : [ `Read | `Write ] file_mode
+
+  type origin = Start | Current | End
+
+  external open_file_raw : context -> string -> string -> 'access t
+    = "osdl_io_open_file"
+
+  let open_file (type a) context ~(mode : a file_mode) path : a t =
+    let mode =
+      match mode with
+      | Read -> "rb"
+      | Write -> "wb"
+      | Append -> "ab"
+      | Update -> "r+b"
+      | Create -> "w+b"
+      | Append_update -> "a+b"
+    in
+    open_file_raw context path mode
+
+  external of_memory : context -> byte_buffer -> [ `Read ] t
+    = "osdl_io_of_memory"
+
+  external of_memory_rw : context -> byte_buffer -> [ `Read | `Write ] t
+    = "osdl_io_of_memory_rw"
+
+  external close : 'access t -> unit = "osdl_io_close"
+  external size : 'access t -> int64 = "osdl_io_size"
+  external tell : 'access t -> int64 = "osdl_io_tell"
+  external seek : 'access t -> from:origin -> int64 -> int64 = "osdl_io_seek"
+
+  external read : [> `Read ] t -> byte_buffer -> offset:int -> length:int -> int
+    = "osdl_io_read"
+
+  external write :
+    [> `Write ] t -> byte_buffer -> offset:int -> length:int -> unit
+    = "osdl_io_write"
+
+  external flush : [> `Write ] t -> unit = "osdl_io_flush"
+
+  let with_file context ~mode path f =
+    let stream = open_file context ~mode path in
+    Fun.protect ~finally:(fun () -> close stream) (fun () -> f stream)
+end
+
 (* Keep temporary SDL arrays in scope while C copies them to OCaml. *)
 module Snapshot = struct
   type t
@@ -148,6 +201,11 @@ module Surface = struct
 
   external load_bmp : context -> string -> t = "osdl_surface_load_bmp"
   external save_bmp : t -> string -> unit = "osdl_surface_save_bmp"
+  external load_bmp_io : [> `Read ] Io.t -> t = "osdl_surface_load_bmp_io"
+
+  external save_bmp_io : t -> [> `Write ] Io.t -> unit
+    = "osdl_surface_save_bmp_io"
+
   external destroy : t -> unit = "osdl_surface_destroy"
   external size : t -> int * int = "osdl_surface_size"
   external fill : ?rect:Rect.t -> t -> Color.t -> unit = "osdl_surface_fill"

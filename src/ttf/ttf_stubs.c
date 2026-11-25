@@ -39,14 +39,40 @@ CAMLprim value osdl_ttf_font_open(value context, value path, value ptsize) {
     CAMLparam3(context, path, ptsize);
     CAMLlocal1(handle);
 
-    handle = osdl_new_handle(context);
+    handle = osdl_new_attached_handle(context, Val_unit);
     osdl_live(context);
 
     TTF_Font* font = TTF_OpenFont(osdl_cstring(path), font_size(ptsize));
     CAMLreturn(osdl_publish(handle, font, "TTF_OpenFont"));
 }
 
-OSDL_DESTROY(osdl_ttf_font_close, TTF_Font, TTF_CloseFont)
+CAMLprim value osdl_ttf_font_open_io(value context, value stream, value ptsize) {
+    CAMLparam3(context, stream, ptsize);
+    CAMLlocal1(handle);
+
+    osdl_live(context);
+    SDL_IOStream* io   = osdl_unborrowed_io(stream);
+    float         size = font_size(ptsize);
+    handle             = osdl_new_attached_handle(context, stream);
+
+    TTF_Font* font = TTF_OpenFontIO(io, false, size);
+    osdl_publish(handle, font, "TTF_OpenFontIO");
+    ++osdl_cell_val(stream)->children;
+    CAMLreturn(handle);
+}
+
+CAMLprim value osdl_ttf_font_close(value font) {
+    TTF_Font* f = osdl_take(font);
+    if (f) {
+        TTF_CloseFont(f);
+        value stream = osdl_attachment(font);
+        if (Is_block(stream)) {
+            --osdl_cell_val(stream)->children;
+            osdl_forget_attachment(font);
+        }
+    }
+    return Val_unit;
+}
 
 CAMLprim value osdl_ttf_font_set_size(value font, value ptsize) {
     osdl_check(TTF_SetFontSize(osdl_live(font), font_size(ptsize)), "TTF_SetFontSize");

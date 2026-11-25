@@ -40,6 +40,72 @@ val with_init : subsystem list -> (context -> 'a) -> 'a
 (** Start SDL and call [quit] when the function exits. Close all resources
     inside the function, including when an exception occurs. *)
 
+module Io : sig
+  (** File and memory streams. The caller owns each stream and closes it with
+      [close]. Use any live SDL context. No subsystem is needed. *)
+
+  type 'access t
+  (** The type parameter specifies whether a stream supports reading, writing,
+      or both. *)
+
+  type _ file_mode =
+    | Read : [ `Read ] file_mode  (** Open an existing file for reading. *)
+    | Write : [ `Write ] file_mode  (** Create or empty a file for writing. *)
+    | Append : [ `Write ] file_mode
+        (** Create a file if needed. Write at the end, even after a seek. *)
+    | Update : [ `Read | `Write ] file_mode
+        (** Read and write an existing file. Keep its contents. *)
+    | Create : [ `Read | `Write ] file_mode
+        (** Create or empty a file for reading and writing. *)
+    | Append_update : [ `Read | `Write ] file_mode
+        (** Read and append to a file. Create it if needed. *)
+
+  type origin = Start | Current | End
+
+  val open_file : context -> mode:'access file_mode -> string -> 'access t
+  (** Open a file in binary mode. Seek when you switch between reading and
+      writing on the same file stream. *)
+
+  val with_file :
+    context -> mode:'access file_mode -> string -> ('access t -> 'a) -> 'a
+  (** Close the stream when the function exits, even if it raises. Close any
+      resource that uses the stream before the function exits. *)
+
+  val of_memory : context -> byte_buffer -> [ `Read ] t
+  (** Open a read-only stream over a nonempty buffer. The stream keeps the
+      buffer alive without copying it. Use [Bigarray.Array1.sub] to select a
+      region of a larger buffer. *)
+
+  val of_memory_rw : context -> byte_buffer -> [ `Read | `Write ] t
+  (** Read or write a nonempty buffer without copying it. The stream size is the
+      buffer size and does not grow. Writes change the original buffer. *)
+
+  val close : 'access t -> unit
+  (** Close the stream, including its file if it has one. Close any resource
+      that uses the stream first. If closing raises [Error], the stream is still
+      closed. Calling [close] again does nothing. *)
+
+  val size : 'access t -> int64
+  val tell : 'access t -> int64
+
+  val seek : 'access t -> from:origin -> int64 -> int64
+  (** Move by the given byte offset relative to [from]. Return the new byte
+      position. Memory streams limit the position to the buffer bounds. *)
+
+  val read : [> `Read ] t -> byte_buffer -> offset:int -> length:int -> int
+  (** Read up to [length] bytes into the buffer at [offset]. Return the byte
+      count. Return zero at end of input or if [length] is zero. The buffer
+      range must not overlap the stream's backing memory. *)
+
+  val write : [> `Write ] t -> byte_buffer -> offset:int -> length:int -> unit
+  (** Write the buffer range at [offset]. A short write raises [Error] after
+      writing as many bytes as SDL can. The range must not overlap the stream's
+      backing memory. *)
+
+  val flush : [> `Write ] t -> unit
+  (** Flush pending output. *)
+end
+
 module Color : sig
   type t = private { r : int; g : int; b : int; a : int }
 
@@ -151,6 +217,16 @@ module Surface : sig
   val create : ?format:Pixel_format.t -> context -> w:int -> h:int -> t
   val load_bmp : context -> string -> t
   val save_bmp : t -> string -> unit
+
+  val load_bmp_io : [> `Read ] Io.t -> t
+  (** Read a BMP from the current position in a seekable stream. The stream
+      stays open and the surface does not retain it. *)
+
+  val save_bmp_io : t -> [> `Write ] Io.t -> unit
+  (** Write a BMP to a seekable stream. The stream stays open. Raise
+      [Invalid_argument] for an append stream because SDL seeks back to update
+      the BMP header. *)
+
   val destroy : t -> unit
   val size : t -> int * int
   val fill : ?rect:Rect.t -> t -> Color.t -> unit

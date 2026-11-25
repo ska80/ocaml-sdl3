@@ -33,6 +33,9 @@ module Audio = struct
   external load : ?predecode:bool -> context -> string -> t
     = "osdl_mixer_audio_load"
 
+  external load_io : ?predecode:bool -> context -> [> `Read ] Sdl3.Io.t -> t
+    = "osdl_mixer_audio_load_io"
+
   external destroy : t -> unit = "osdl_mixer_audio_destroy"
   external duration : t -> duration = "osdl_mixer_audio_duration"
 end

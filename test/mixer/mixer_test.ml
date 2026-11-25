@@ -46,15 +46,26 @@ let () =
               Mixer.set_gain device 0.5);
           using Sys.remove (Filename.temp_file "sdl3-mixer" ".wav") (fun path ->
               write_wav path 96;
+              let module Io = Sdl3.Io in
+              using Audio.destroy (Audio.load ~predecode:true context path)
+                (fun audio ->
+                  check (Audio.duration audio = Frames 96L) "WAV file duration");
+              let closed = Io.with_file sdl ~mode:Read path Fun.id in
+              invalid (fun () -> Audio.load_io context closed);
               using Mixer.destroy (Mixer.create context spec) (fun mixer ->
                   invalid (fun () -> quit context);
                   using Track.destroy (Track.create mixer) (fun track ->
                       invalid (fun () -> Mixer.destroy mixer);
-                      using Audio.destroy
-                        (Audio.load ~predecode:true context path) (fun audio ->
+                      let loaded =
+                        Io.with_file sdl ~mode:Read path (fun io ->
+                            let audio = Audio.load_io context io in
+                            check (Io.size io = 236L) "WAV stream stays open";
+                            audio)
+                      in
+                      using Audio.destroy loaded (fun audio ->
                           check
                             (Audio.duration audio = Frames 96L)
-                            "WAV duration";
+                            "WAV stream duration";
                           Track.set_audio track (Some audio));
                       let buffer =
                         Bigarray.Array1.create Bigarray.int8_unsigned

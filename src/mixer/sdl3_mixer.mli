@@ -42,6 +42,10 @@ module Audio : sig
   (** Decode the whole file up front if [predecode] is [true]. The default is
       [false], which lets the mixer decode the data during playback. *)
 
+  val load_io : ?predecode:bool -> context -> [> `Read ] Sdl3.Io.t -> t
+  (** Load all audio data from a seekable stream. The stream stays open. The
+      audio does not retain the stream, even when [predecode] is [false]. *)
+
   val destroy : t -> unit
   val duration : t -> duration
 end

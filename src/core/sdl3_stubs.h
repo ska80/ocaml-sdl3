@@ -38,8 +38,9 @@ static inline void osdl_check(bool ok, const char* fn) {
 }
 
 /* Internal ABI shared by the four packages. A handle starts with two OCaml
- * fields: the custom cell and the parent handle (or unit). The GC traces the
- * parent. The cell stores no OCaml values or SDL finalizers. */
+ * fields: the custom cell and the parent handle (or unit). Some handles have
+ * a third field for extra data, such as a buffer or another handle. The cell
+ * stores no OCaml values or SDL finalizers. */
 typedef struct {
     void*         ptr;
     size_t        children;
@@ -55,6 +56,14 @@ static inline osdl_cell* osdl_cell_val(value handle) {
 
 static inline value osdl_parent(value handle) {
     return Field(handle, 1);
+}
+
+static inline value osdl_attachment(value handle) {
+    return Field(handle, 2);
+}
+
+static inline void osdl_forget_attachment(value handle) {
+    caml_modify(&Field(handle, 2), Val_unit);
 }
 
 static inline void osdl_require_thread(SDL_ThreadID thread) {
@@ -78,6 +87,18 @@ static inline void* osdl_live(value handle) {
 static inline void osdl_require_subsystem(value context, SDL_InitFlags flags, const char* message) {
     osdl_live(context);
     if (SDL_WasInit(flags) != flags) caml_invalid_argument(message);
+}
+
+static inline SDL_IOStream* osdl_unborrowed_io(value stream) {
+    SDL_IOStream* io = osdl_live(stream);
+    if (osdl_cell_val(stream)->children)
+        caml_invalid_argument("Close the resource that uses this stream first");
+    return io;
+}
+
+/* Stream attachments are unit, true for append files, or a bigarray. */
+static inline bool osdl_append_io(value stream) {
+    return osdl_attachment(stream) == Val_true;
 }
 
 static inline SDL_Window* osdl_unattached_window(value window) {
@@ -114,6 +135,14 @@ static inline value osdl_new_handle_with_ops(value parent, struct custom_operati
 
 static inline value osdl_new_handle(value parent) {
     return osdl_new_handle_with_ops(parent, &osdl_handle_ops);
+}
+
+/* An attachment is traced by the GC but does not count as a parent. */
+static inline value osdl_new_attached_handle(value parent, value attachment) {
+    CAMLparam2(parent, attachment);
+    CAMLlocal1(cell);
+    cell = osdl_new_cell(parent, &osdl_handle_ops);
+    CAMLreturn(caml_alloc_3(0, cell, parent, attachment));
 }
 
 static inline value osdl_publish(value handle, void* ptr, const char* fn) {

@@ -16,6 +16,13 @@ module Font : sig
   type mode = Solid | Blended
 
   val open_ : context -> string -> ptsize:float -> t
+
+  val open_io : context -> [> `Read ] Sdl3.Io.t -> ptsize:float -> t
+  (** Open a font from the start of a seekable stream. The font uses the stream
+      until you close the font. You cannot use or close the stream in that time.
+      Do not change a memory stream's backing buffer while the font uses it. The
+      caller still owns the stream and must close it after the font. *)
+
   val close : t -> unit
   val set_size : t -> ptsize:float -> unit
   val height : t -> int

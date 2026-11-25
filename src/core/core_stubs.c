@@ -379,6 +379,25 @@ CAMLprim value osdl_surface_save_bmp(value surface, value path) {
     return Val_unit;
 }
 
+CAMLprim value osdl_surface_load_bmp_io(value stream) {
+    CAMLparam1(stream);
+    CAMLlocal1(handle);
+
+    SDL_IOStream* io = osdl_unborrowed_io(stream);
+    handle           = osdl_new_handle(osdl_parent(stream));
+
+    CAMLreturn(osdl_publish(handle, SDL_LoadBMP_IO(io, false), "SDL_LoadBMP_IO"));
+}
+
+CAMLprim value osdl_surface_save_bmp_io(value surface, value stream) {
+    SDL_Surface*  s  = osdl_live(surface);
+    SDL_IOStream* io = osdl_unborrowed_io(stream);
+    if (osdl_append_io(stream)) caml_invalid_argument("BMP output cannot use an append stream");
+
+    osdl_check(SDL_SaveBMP_IO(s, io, false), "SDL_SaveBMP_IO");
+    return Val_unit;
+}
+
 OSDL_DESTROY(osdl_surface_destroy, SDL_Surface, SDL_DestroySurface)
 
 CAMLprim value osdl_surface_size(value surface) {
