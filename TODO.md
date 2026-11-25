@@ -7,6 +7,8 @@
 - [x] Abstract handles, explicit cleanup, main thread guards, and shared error reporting.
 - [x] Core windows, 2D rendering, textures from surfaces, BMP files, keyboard and mouse input,
       gamepads, queued audio, and timers.
+- [x] Window placement and state changes, display queries, touch input, and gamepad discovery
+      and events.
 - [x] Streaming texture uploads, render targets, and batches of rectangles.
 - [x] Scoped write access to streaming textures.
 - [x] Texture sprite batches and an OCaml Bunnymark example.
@@ -27,7 +29,6 @@ versions with offscreen Vulkan. Separate installation of each add-on also passed
 
 ## Next
 
-- [ ] Add more window, display, touch, and gamepad APIs.
 - [ ] Add file and memory streams with clear ownership rules.
 - [ ] Add audio device selection, audio capture, and more mixer playback controls.
 - [ ] Add SDL3_image animation and SDL3_ttf text engine support.

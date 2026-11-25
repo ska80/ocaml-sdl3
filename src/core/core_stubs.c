@@ -70,6 +70,133 @@ CAMLprim value osdl_quit(value context) {
     return Val_unit;
 }
 
+/* Temporary SDL arrays. The private OCaml wrapper creates the owner before
+ * calling SDL and frees the array even if copying to OCaml raises. */
+
+CAMLprim value osdl_snapshot_create(value unit) {
+    (void)unit;
+    return osdl_new_handle(Val_unit);
+}
+
+OSDL_DESTROY(osdl_snapshot_release, void, SDL_free)
+
+static value osdl_id_list(const Uint32* ids, int count) {
+    CAMLparam0();
+    CAMLlocal2(list, id);
+
+    list = Val_emptylist;
+    for (int i = count; i > 0; --i) {
+        id   = caml_copy_int32((int32_t)ids[i - 1]);
+        list = caml_alloc_2(0, id, list);
+    }
+    CAMLreturn(list);
+}
+
+/* Displays. */
+
+static void osdl_require_display_context(value context) {
+    osdl_require_subsystem(context, SDL_INIT_VIDEO, "Start SDL with Video to query displays");
+}
+
+CAMLprim value osdl_display_list(value context, value snapshot) {
+    CAMLparam2(context, snapshot);
+
+    osdl_require_display_context(context);
+
+    int            count;
+    SDL_DisplayID* ids = SDL_GetDisplays(&count);
+    osdl_publish(snapshot, ids, "SDL_GetDisplays");
+    CAMLreturn(osdl_id_list(ids, count));
+}
+
+CAMLprim value osdl_display_primary(value context) {
+    osdl_require_display_context(context);
+
+    SDL_DisplayID id = SDL_GetPrimaryDisplay();
+    if (!id) osdl_fail("SDL_GetPrimaryDisplay");
+    return caml_copy_int32((int32_t)id);
+}
+
+CAMLprim value osdl_display_name(value context, value id) {
+    osdl_require_display_context(context);
+
+    const char* name = SDL_GetDisplayName((SDL_DisplayID)Int32_val(id));
+    if (!name) osdl_fail("SDL_GetDisplayName");
+    return caml_copy_string(name);
+}
+
+static value osdl_display_rect(value context, value id, bool usable) {
+    osdl_require_display_context(context);
+
+    SDL_DisplayID display = (SDL_DisplayID)Int32_val(id);
+    SDL_Rect      rect;
+    if (usable)
+        osdl_check(SDL_GetDisplayUsableBounds(display, &rect), "SDL_GetDisplayUsableBounds");
+    else
+        osdl_check(SDL_GetDisplayBounds(display, &rect), "SDL_GetDisplayBounds");
+    return caml_alloc_4(0, osdl_val_int(rect.x), osdl_val_int(rect.y), osdl_val_int(rect.w),
+                        osdl_val_int(rect.h));
+}
+
+CAMLprim value osdl_display_bounds(value context, value id) {
+    return osdl_display_rect(context, id, false);
+}
+
+CAMLprim value osdl_display_usable_bounds(value context, value id) {
+    return osdl_display_rect(context, id, true);
+}
+
+CAMLprim value osdl_display_content_scale(value context, value id) {
+    osdl_require_display_context(context);
+
+    float scale = SDL_GetDisplayContentScale((SDL_DisplayID)Int32_val(id));
+    if (!scale) osdl_fail("SDL_GetDisplayContentScale");
+    return caml_copy_double(scale);
+}
+
+static value osdl_display_mode_value(SDL_DisplayMode mode) {
+    CAMLparam0();
+    CAMLlocal2(density, rate);
+
+    density = caml_copy_double(mode.pixel_density);
+    rate    = caml_copy_double(mode.refresh_rate);
+    CAMLreturn(caml_alloc_4(0, osdl_val_int(mode.w), osdl_val_int(mode.h), density, rate));
+}
+
+CAMLprim value osdl_display_desktop_mode(value context, value id) {
+    osdl_require_display_context(context);
+
+    const SDL_DisplayMode* mode = SDL_GetDesktopDisplayMode((SDL_DisplayID)Int32_val(id));
+    if (!mode) osdl_fail("SDL_GetDesktopDisplayMode");
+    return osdl_display_mode_value(*mode);
+}
+
+CAMLprim value osdl_display_current_mode(value context, value id) {
+    osdl_require_display_context(context);
+
+    const SDL_DisplayMode* mode = SDL_GetCurrentDisplayMode((SDL_DisplayID)Int32_val(id));
+    if (!mode) osdl_fail("SDL_GetCurrentDisplayMode");
+    return osdl_display_mode_value(*mode);
+}
+
+CAMLprim value osdl_display_fullscreen_modes(value context, value id, value snapshot) {
+    CAMLparam3(context, id, snapshot);
+    CAMLlocal2(list, mode);
+
+    osdl_require_display_context(context);
+
+    int               count;
+    SDL_DisplayMode** modes = SDL_GetFullscreenDisplayModes((SDL_DisplayID)Int32_val(id), &count);
+    osdl_publish(snapshot, modes, "SDL_GetFullscreenDisplayModes");
+
+    list = Val_emptylist;
+    for (int i = count; i > 0; --i) {
+        mode = osdl_display_mode_value(*modes[i - 1]);
+        list = caml_alloc_2(0, mode, list);
+    }
+    CAMLreturn(list);
+}
+
 /* Windows. */
 
 CAMLprim value osdl_window_create(value flags, value context, value title, value w, value h) {
@@ -104,6 +231,10 @@ CAMLprim value osdl_window_id(value window) {
     return caml_copy_int32((int32_t)id);
 }
 
+CAMLprim value osdl_window_title(value window) {
+    return caml_copy_string(SDL_GetWindowTitle(osdl_live(window)));
+}
+
 CAMLprim value osdl_window_size(value window) {
     int w, h;
     osdl_check(SDL_GetWindowSize(osdl_live(window), &w, &h), "SDL_GetWindowSize");
@@ -114,6 +245,24 @@ CAMLprim value osdl_window_size_in_pixels(value window) {
     int w, h;
     osdl_check(SDL_GetWindowSizeInPixels(osdl_live(window), &w, &h), "SDL_GetWindowSizeInPixels");
     return osdl_int_pair(w, h);
+}
+
+CAMLprim value osdl_window_position(value window) {
+    int x, y;
+    osdl_check(SDL_GetWindowPosition(osdl_live(window), &x, &y), "SDL_GetWindowPosition");
+    return osdl_int_pair(x, y);
+}
+
+CAMLprim value osdl_window_display(value window) {
+    SDL_DisplayID id = SDL_GetDisplayForWindow(osdl_live(window));
+    if (!id) osdl_fail("SDL_GetDisplayForWindow");
+    return caml_copy_int32((int32_t)id);
+}
+
+CAMLprim value osdl_window_display_scale(value window) {
+    float scale = SDL_GetWindowDisplayScale(osdl_live(window));
+    if (!scale) osdl_fail("SDL_GetWindowDisplayScale");
+    return caml_copy_double(scale);
 }
 
 CAMLprim value osdl_window_set_title(value window, value title) {
@@ -127,6 +276,27 @@ CAMLprim value osdl_window_set_size(value window, value w, value h) {
     return Val_unit;
 }
 
+static int osdl_window_coordinate(value coordinate) {
+    int n = osdl_int(coordinate);
+    if (SDL_WINDOWPOS_ISUNDEFINED(n) || SDL_WINDOWPOS_ISCENTERED(n))
+        caml_invalid_argument("Window position is reserved for automatic placement");
+    return n;
+}
+
+CAMLprim value osdl_window_set_position(value window, value x, value y) {
+    SDL_Window* w  = osdl_live(window);
+    int         px = osdl_window_coordinate(x), py = osdl_window_coordinate(y);
+
+    osdl_check(SDL_SetWindowPosition(w, px, py), "SDL_SetWindowPosition");
+    return Val_unit;
+}
+
+CAMLprim value osdl_window_set_resizable(value window, value enabled) {
+    osdl_check(SDL_SetWindowResizable(osdl_live(window), Bool_val(enabled)),
+               "SDL_SetWindowResizable");
+    return Val_unit;
+}
+
 CAMLprim value osdl_window_set_fullscreen(value window, value fullscreen) {
     osdl_check(SDL_SetWindowFullscreen(osdl_live(window), Bool_val(fullscreen)),
                "SDL_SetWindowFullscreen");
@@ -135,6 +305,9 @@ CAMLprim value osdl_window_set_fullscreen(value window, value fullscreen) {
 
 OSDL_ACTION(osdl_window_show, SDL_ShowWindow)
 OSDL_ACTION(osdl_window_hide, SDL_HideWindow)
+OSDL_ACTION(osdl_window_minimize, SDL_MinimizeWindow)
+OSDL_ACTION(osdl_window_maximize, SDL_MaximizeWindow)
+OSDL_ACTION(osdl_window_restore, SDL_RestoreWindow)
 
 /* Rectangle and blend mode conversions for surfaces and rendering. */
 
@@ -825,7 +998,30 @@ CAMLprim value osdl_mouse_set_relative_mode(value window, value enabled) {
     return Val_unit;
 }
 
-/* Gamepads. */
+/* Gamepad discovery and handles. State queries share the event tables. */
+
+static void osdl_require_gamepad_context(value context) {
+    osdl_require_subsystem(context, SDL_INIT_GAMEPAD, "Start SDL with Gamepad to use gamepads");
+}
+
+CAMLprim value osdl_gamepad_list(value context, value snapshot) {
+    CAMLparam2(context, snapshot);
+
+    osdl_require_gamepad_context(context);
+
+    int             count;
+    SDL_JoystickID* ids = SDL_GetGamepads(&count);
+    osdl_publish(snapshot, ids, "SDL_GetGamepads");
+    CAMLreturn(osdl_id_list(ids, count));
+}
+
+CAMLprim value osdl_gamepad_name_for_id(value context, value id) {
+    osdl_require_gamepad_context(context);
+
+    const char* name = SDL_GetGamepadNameForID((SDL_JoystickID)Int32_val(id));
+    if (!name) osdl_fail("SDL_GetGamepadNameForID");
+    return caml_copy_string(name);
+}
 
 CAMLprim value osdl_gamepad_open(value context, value id) {
     CAMLparam2(context, id);
@@ -843,24 +1039,16 @@ CAMLprim value osdl_gamepad_connected(value gamepad) {
     return Val_bool(SDL_GamepadConnected(osdl_live(gamepad)));
 }
 
-CAMLprim value osdl_gamepad_axis(value gamepad, value axis) {
-    static const SDL_GamepadAxis axes[] = {
-        SDL_GAMEPAD_AXIS_LEFTX,  SDL_GAMEPAD_AXIS_LEFTY,        SDL_GAMEPAD_AXIS_RIGHTX,
-        SDL_GAMEPAD_AXIS_RIGHTY, SDL_GAMEPAD_AXIS_LEFT_TRIGGER, SDL_GAMEPAD_AXIS_RIGHT_TRIGGER};
-    return Val_int(SDL_GetGamepadAxis(osdl_live(gamepad), axes[Int_val(axis)]));
+CAMLprim value osdl_gamepad_id(value gamepad) {
+    SDL_JoystickID id = SDL_GetGamepadID(osdl_live(gamepad));
+    if (!id) osdl_fail("SDL_GetGamepadID");
+    return caml_copy_int32((int32_t)id);
 }
 
-CAMLprim value osdl_gamepad_button(value gamepad, value button) {
-    static const SDL_GamepadButton buttons[] = {
-        SDL_GAMEPAD_BUTTON_SOUTH,          SDL_GAMEPAD_BUTTON_EAST,
-        SDL_GAMEPAD_BUTTON_WEST,           SDL_GAMEPAD_BUTTON_NORTH,
-        SDL_GAMEPAD_BUTTON_BACK,           SDL_GAMEPAD_BUTTON_GUIDE,
-        SDL_GAMEPAD_BUTTON_START,          SDL_GAMEPAD_BUTTON_LEFT_STICK,
-        SDL_GAMEPAD_BUTTON_RIGHT_STICK,    SDL_GAMEPAD_BUTTON_LEFT_SHOULDER,
-        SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER, SDL_GAMEPAD_BUTTON_DPAD_UP,
-        SDL_GAMEPAD_BUTTON_DPAD_DOWN,      SDL_GAMEPAD_BUTTON_DPAD_LEFT,
-        SDL_GAMEPAD_BUTTON_DPAD_RIGHT};
-    return Val_bool(SDL_GetGamepadButton(osdl_live(gamepad), buttons[Int_val(button)]));
+CAMLprim value osdl_gamepad_name(value gamepad) {
+    const char* name = SDL_GetGamepadName(osdl_live(gamepad));
+    if (!name) osdl_fail("SDL_GetGamepadName");
+    return caml_copy_string(name);
 }
 
 /* Queued audio. */

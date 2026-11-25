@@ -1,6 +1,12 @@
 open Sdl3
 
 external push_events : int32 -> unit = "test_push_events"
+external push_device_events : int32 -> unit = "test_push_device_events"
+external attach_gamepad : unit -> int32 = "test_attach_gamepad"
+external detach_gamepad : int32 -> unit = "test_detach_gamepad"
+
+external set_gamepad_state : int32 -> axis:int -> pressed:bool -> unit
+  = "test_set_gamepad_state"
 
 let check condition message = if not condition then failwith message
 
@@ -22,6 +28,10 @@ let main_thread context window =
   let worker () =
     check (not (is_main_thread ())) "Wrong thread identity";
     invalid (fun () -> Window.size window);
+    invalid (fun () -> Window.display window);
+    invalid (fun () -> Display.list context);
+    invalid (fun () -> Touch.devices context);
+    invalid (fun () -> Gamepad.list context);
     invalid (fun () -> Window.destroy window);
     invalid (fun () -> init []);
     invalid (fun () -> quit context);
@@ -109,6 +119,179 @@ let events context window =
   check ((next ()).kind = Quit) "Quit event";
   check (poll context = None) "Empty queue";
   check (text = "é") "UTF-8 text after more polls"
+
+let displays context window =
+  let primary = Display.primary context in
+  let displays = Display.list context in
+  check (List.mem primary displays) "Primary display in the display list";
+  check (Display.id_to_int32 primary <> 0l) "Display ID";
+  check (Display.name context primary <> "") "Display name";
+  let bounds = Display.bounds context primary in
+  let usable = Display.usable_bounds context primary in
+  check (bounds.w > 0 && bounds.h > 0) "Display bounds";
+  check (usable.w > 0 && usable.h > 0) "Usable display bounds";
+  check (Display.content_scale context primary > 0.) "Display content scale";
+  let check_mode (mode : Display.mode) =
+    check (mode.w > 0 && mode.h > 0) "Display mode size";
+    check (mode.pixel_density > 0.) "Display mode pixel density";
+    check (mode.refresh_rate >= 0.) "Display mode refresh rate"
+  in
+  check_mode (Display.desktop_mode context primary);
+  check_mode (Display.current_mode context primary);
+  List.iter check_mode (Display.fullscreen_modes context primary);
+  check (Window.display window = primary) "Window's display";
+  check (Window.display_scale window > 0.) "Window display scale";
+  check (Window.title window = "Core test") "Initial title";
+  Window.set_title window "Core test é";
+  check (Window.title window = "Core test é") "Changed UTF-8 title";
+  Window.set_resizable window true;
+  Window.set_position window ~x:7 ~y:9;
+  check (Window.position window = (7, 9)) "Window position";
+  invalid (fun () -> Window.set_position window ~x:0x2fff_0000 ~y:0);
+  if Sys.int_size > 32 then
+    invalid (fun () -> Window.set_position window ~x:0 ~y:max_int)
+
+let device_events context window =
+  let window_id = Window.id window in
+  let primary = Display.primary context in
+  let mouse_touch =
+    List.find (fun id -> Touch.id_to_int64 id = -1L) (Touch.devices context)
+  in
+  check (Touch.name context mouse_touch <> "") "Touch device name";
+  check (Touch.device_type context mouse_touch = Direct) "Touch device type";
+  check (Touch.fingers context mouse_touch = []) "No active fingers";
+  push_device_events (Window.id_to_int32 window_id);
+  let next () =
+    match Event.poll context with
+    | Some { kind; _ } -> kind
+    | None -> failwith "Missing device event"
+  in
+  let open Event in
+  List.iter
+    (fun change ->
+      check (next () = Window { window = window_id; change }) "Window event")
+    [
+      Moved (-17, 23);
+      Display_changed primary;
+      Shown;
+      Hidden;
+      Minimized;
+      Maximized;
+      Restored;
+      Display_scale_changed;
+      Entered_fullscreen;
+      Left_fullscreen;
+    ];
+  List.iter
+    (fun change ->
+      check (next () = Display { display = primary; change }) "Display event")
+    [
+      Connected;
+      Disconnected;
+      Layout_changed;
+      Desktop_mode_changed;
+      Current_mode_changed;
+      Content_scale_changed;
+    ];
+  (match next () with
+  | Display { display; change = Disconnected } ->
+      check (Display.id_to_int32 display = -1l) "Full display ID width";
+      sdl_error "SDL_GetDisplayBounds" (fun () ->
+          Display.bounds context display);
+      sdl_error "SDL_GetFullscreenDisplayModes" (fun () ->
+          Display.fullscreen_modes context display)
+  | _ -> failwith "Missing display removal");
+  List.iter
+    (fun change ->
+      match next () with
+      | Touch { window; device; finger; change = actual; dx; dy } ->
+          check (actual = change) "Touch event change";
+          check
+            (Touch.finger_id_to_int64 finger.id = 0xf123_4567_89ab_cdefL)
+            "Full finger ID width";
+          check (finger.x = 0.25 && finger.y = 0.75) "Finger coordinates";
+          check
+            (finger.pressure = 0.625 && dx = -0.125 && dy = 0.5)
+            "Finger pressure and motion";
+          if change = Canceled then (
+            check (window = None) "Touch event without a window";
+            check
+              (Touch.id_to_int64 device = 0xbeef_0000_dead_9876L)
+              "Full touch device ID width";
+            sdl_error "SDL_GetTouchFingers" (fun () ->
+                Touch.fingers context device))
+          else
+            check
+              (window = Some window_id && device = mouse_touch)
+              "Touch event window and device"
+      | _ -> failwith "Expected a touch event")
+    [ Down; Motion; Up; Canceled ];
+  (match next () with
+  | Gamepad_remapped id ->
+      check (Gamepad.id_to_int32 id = 123l) "Gamepad mapping event ID"
+  | _ -> failwith "Expected a gamepad mapping event");
+  check (next () = Other 0x650l) "Unknown gamepad axis event";
+  check (next () = Other 0x651l) "Unknown gamepad button event"
+
+let gamepads context =
+  let gamepad = attach_gamepad () in
+  using detach_gamepad gamepad (fun raw_id ->
+      let id =
+        List.find
+          (fun id -> Gamepad.id_to_int32 id = raw_id)
+          (Gamepad.list context)
+      in
+      let name = Gamepad.name_for_id context id in
+      check (name <> "") "Gamepad name before opening";
+      using Gamepad.close (Gamepad.open_ context id) (fun pad ->
+          check (Gamepad.connected pad && Gamepad.id pad = id) "Opened gamepad";
+          check (Gamepad.name pad = name) "Opened gamepad name";
+          check (Gamepad.has_axis pad Left_x) "Mapped gamepad axis";
+          check (not (Gamepad.has_axis pad Right_y)) "Unmapped gamepad axis";
+          check (Gamepad.has_button pad Left_paddle2) "Mapped gamepad button";
+          check
+            (not (Gamepad.has_button pad Dpad_right))
+            "Unmapped gamepad button";
+          (* Finish the current SDL poll cycle before changing the inputs. *)
+          while Option.is_some (Event.poll context) do
+            ()
+          done;
+          let state pressed axis_value =
+            set_gamepad_state raw_id ~axis:axis_value ~pressed;
+            let rec events axis_seen button_seen =
+              match Event.poll context with
+              | Some
+                  { kind = Gamepad_axis { gamepad; axis = Left_x; value }; _ }
+                when gamepad = id && value = axis_value ->
+                  events true button_seen
+              | Some
+                  {
+                    kind =
+                      Gamepad_button { gamepad; button = Left_paddle2; down };
+                    _;
+                  }
+                when gamepad = id && down = pressed ->
+                  events axis_seen true
+              | Some _ -> events axis_seen button_seen
+              | None -> check (axis_seen && button_seen) "Gamepad state events"
+            in
+            events false false;
+            check (Gamepad.axis pad Left_x = axis_value) "Gamepad axis value";
+            check
+              (Gamepad.button pad Left_paddle2 = pressed)
+              "Gamepad button value"
+          in
+          (* SDL 3.2 can round the mapped center from zero to one. *)
+          state true (-32768);
+          state false 32767;
+          Gamepad.close pad;
+          invalid (fun () -> Gamepad.has_axis pad Left_x)));
+  check
+    (not
+       (List.exists
+          (fun id -> Gamepad.id_to_int32 id = gamepad)
+          (Gamepad.list context)))
+    "Detached gamepad not in the list"
 
 let frect x y w h = Frect.make ~x ~y ~w ~h
 
@@ -529,14 +712,23 @@ let () =
             (not (Keyboard.is_pressed context Scancode.escape))
             "Keyboard state";
           main_thread context window;
+          displays context window;
           events context window;
+          device_events context window;
           render context window);
+      gamepads context;
       gpu_without_backend context;
       audio context);
   let context = init [] in
   invalid (fun () -> Gpu.create_device context [ Spirv ]);
+  invalid (fun () -> Display.list context);
+  invalid (fun () -> Touch.devices context);
+  invalid (fun () -> Gamepad.list context);
   quit context;
   quit context;
+  invalid (fun () -> Display.primary context);
+  invalid (fun () -> Touch.devices context);
+  invalid (fun () -> Gamepad.list context);
   invalid (fun () -> Surface.create context ~w:1 ~h:1);
   invalid (fun () -> Gpu.supports_shader_formats context [ Spirv ]);
   let next = init [] in

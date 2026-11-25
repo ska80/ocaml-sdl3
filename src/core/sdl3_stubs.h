@@ -75,6 +75,11 @@ static inline void* osdl_live(value handle) {
     return cell->ptr;
 }
 
+static inline void osdl_require_subsystem(value context, SDL_InitFlags flags, const char* message) {
+    osdl_live(context);
+    if (SDL_WasInit(flags) != flags) caml_invalid_argument(message);
+}
+
 static inline SDL_Window* osdl_unattached_window(value window) {
     SDL_Window* ptr = osdl_live(window);
     /* A window's only children are its renderer or GPU claim. */

@@ -18,6 +18,124 @@ CAMLprim value osdl_mouse_pressed(value buttons, value button) {
     return Val_bool(((Uint32)Int32_val(buttons) & SDL_BUTTON_MASK(index)) != 0);
 }
 
+/* Sdl3.Gamepad.axis and Gamepad.button constructor order. */
+static const SDL_GamepadAxis gamepad_axes[] = {
+    SDL_GAMEPAD_AXIS_LEFTX,  SDL_GAMEPAD_AXIS_LEFTY,        SDL_GAMEPAD_AXIS_RIGHTX,
+    SDL_GAMEPAD_AXIS_RIGHTY, SDL_GAMEPAD_AXIS_LEFT_TRIGGER, SDL_GAMEPAD_AXIS_RIGHT_TRIGGER,
+};
+
+static const SDL_GamepadButton gamepad_buttons[] = {
+    SDL_GAMEPAD_BUTTON_SOUTH,          SDL_GAMEPAD_BUTTON_EAST,
+    SDL_GAMEPAD_BUTTON_WEST,           SDL_GAMEPAD_BUTTON_NORTH,
+    SDL_GAMEPAD_BUTTON_BACK,           SDL_GAMEPAD_BUTTON_GUIDE,
+    SDL_GAMEPAD_BUTTON_START,          SDL_GAMEPAD_BUTTON_LEFT_STICK,
+    SDL_GAMEPAD_BUTTON_RIGHT_STICK,    SDL_GAMEPAD_BUTTON_LEFT_SHOULDER,
+    SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER, SDL_GAMEPAD_BUTTON_DPAD_UP,
+    SDL_GAMEPAD_BUTTON_DPAD_DOWN,      SDL_GAMEPAD_BUTTON_DPAD_LEFT,
+    SDL_GAMEPAD_BUTTON_DPAD_RIGHT,     SDL_GAMEPAD_BUTTON_MISC1,
+    SDL_GAMEPAD_BUTTON_RIGHT_PADDLE1,  SDL_GAMEPAD_BUTTON_LEFT_PADDLE1,
+    SDL_GAMEPAD_BUTTON_RIGHT_PADDLE2,  SDL_GAMEPAD_BUTTON_LEFT_PADDLE2,
+    SDL_GAMEPAD_BUTTON_TOUCHPAD,       SDL_GAMEPAD_BUTTON_MISC2,
+    SDL_GAMEPAD_BUTTON_MISC3,          SDL_GAMEPAD_BUTTON_MISC4,
+    SDL_GAMEPAD_BUTTON_MISC5,          SDL_GAMEPAD_BUTTON_MISC6,
+};
+
+CAMLprim value osdl_gamepad_has_axis(value gamepad, value axis) {
+    return Val_bool(SDL_GamepadHasAxis(osdl_live(gamepad), gamepad_axes[Int_val(axis)]));
+}
+
+CAMLprim value osdl_gamepad_has_button(value gamepad, value button) {
+    return Val_bool(SDL_GamepadHasButton(osdl_live(gamepad), gamepad_buttons[Int_val(button)]));
+}
+
+CAMLprim value osdl_gamepad_axis(value gamepad, value axis) {
+    return Val_int(SDL_GetGamepadAxis(osdl_live(gamepad), gamepad_axes[Int_val(axis)]));
+}
+
+CAMLprim value osdl_gamepad_button(value gamepad, value button) {
+    return Val_bool(SDL_GetGamepadButton(osdl_live(gamepad), gamepad_buttons[Int_val(button)]));
+}
+
+/* Touch device queries and finger values. */
+
+static void osdl_require_touch_context(value context) {
+    osdl_require_subsystem(context, SDL_INIT_VIDEO, "Start SDL with Video to query touch devices");
+}
+
+CAMLprim value osdl_touch_devices(value context, value snapshot) {
+    CAMLparam2(context, snapshot);
+    CAMLlocal2(list, id);
+
+    osdl_require_touch_context(context);
+
+    int          count;
+    SDL_TouchID* ids = SDL_GetTouchDevices(&count);
+    osdl_publish(snapshot, ids, "SDL_GetTouchDevices");
+
+    list = Val_emptylist;
+    for (int i = count; i > 0; --i) {
+        id   = caml_copy_int64((int64_t)ids[i - 1]);
+        list = caml_alloc_2(0, id, list);
+    }
+    CAMLreturn(list);
+}
+
+CAMLprim value osdl_touch_name(value context, value id) {
+    osdl_require_touch_context(context);
+
+    const char* name = SDL_GetTouchDeviceName((SDL_TouchID)Int64_val(id));
+    if (!name) osdl_fail("SDL_GetTouchDeviceName");
+    return caml_copy_string(name);
+}
+
+CAMLprim value osdl_touch_device_type(value context, value id) {
+    osdl_require_touch_context(context);
+
+    SDL_TouchDeviceType type = SDL_GetTouchDeviceType((SDL_TouchID)Int64_val(id));
+    switch (type) {
+    case SDL_TOUCH_DEVICE_DIRECT:
+        return Val_int(0);
+    case SDL_TOUCH_DEVICE_INDIRECT_ABSOLUTE:
+        return Val_int(1);
+    case SDL_TOUCH_DEVICE_INDIRECT_RELATIVE:
+        return Val_int(2);
+    case SDL_TOUCH_DEVICE_INVALID:
+        osdl_fail("SDL_GetTouchDeviceType");
+    default:
+        return caml_alloc_1(0, osdl_val_int(type)); /* Other */
+    }
+}
+
+static value finger_value(SDL_FingerID id, float x, float y, float pressure) {
+    CAMLparam0();
+    CAMLlocal4(v_id, v_x, v_y, v_pressure);
+
+    v_id       = caml_copy_int64((int64_t)id);
+    v_x        = caml_copy_double(x);
+    v_y        = caml_copy_double(y);
+    v_pressure = caml_copy_double(pressure);
+    CAMLreturn(caml_alloc_4(0, v_id, v_x, v_y, v_pressure));
+}
+
+CAMLprim value osdl_touch_fingers(value context, value id, value snapshot) {
+    CAMLparam3(context, id, snapshot);
+    CAMLlocal2(list, finger);
+
+    osdl_require_touch_context(context);
+
+    int          count;
+    SDL_Finger** fingers = SDL_GetTouchFingers((SDL_TouchID)Int64_val(id), &count);
+    osdl_publish(snapshot, fingers, "SDL_GetTouchFingers");
+
+    list = Val_emptylist;
+    for (int i = count; i > 0; --i) {
+        const SDL_Finger* f = fingers[i - 1];
+        finger              = finger_value(f->id, f->x, f->y, f->pressure);
+        list                = caml_alloc_2(0, finger, list);
+    }
+    CAMLreturn(list);
+}
+
 /* Event decoding. */
 
 /* Sdl3.Event.kind block constructor tags. Quit is an immediate. */
@@ -31,9 +149,15 @@ enum {
     K_MOUSE_WHEEL,
     K_GAMEPAD_ADDED,
     K_GAMEPAD_REMOVED,
+    K_GAMEPAD_REMAPPED,
+    K_GAMEPAD_AXIS,
+    K_GAMEPAD_BUTTON,
+    K_DISPLAY,
+    K_TOUCH,
     K_OTHER,
 };
 
+/* Sdl3.Event.window_change counts constants and blocks separately. */
 static value window_event_value(const SDL_WindowEvent* event) {
     CAMLparam0();
     CAMLlocal2(window, change);
@@ -49,9 +173,40 @@ static value window_event_value(const SDL_WindowEvent* event) {
         change = Val_int(2);
         break;
     case SDL_EVENT_WINDOW_RESIZED:
+        change = caml_alloc_2(0, osdl_val_int(event->data1), osdl_val_int(event->data2));
+        break;
     case SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED:
-        change = caml_alloc_2(event->type == SDL_EVENT_WINDOW_RESIZED ? 0 : 1,
-                              osdl_val_int(event->data1), osdl_val_int(event->data2));
+        change = caml_alloc_2(1, osdl_val_int(event->data1), osdl_val_int(event->data2));
+        break;
+    case SDL_EVENT_WINDOW_MOVED:
+        change = caml_alloc_2(2, osdl_val_int(event->data1), osdl_val_int(event->data2));
+        break;
+    case SDL_EVENT_WINDOW_DISPLAY_CHANGED:
+        change = caml_alloc_1(3, caml_copy_int32(event->data1));
+        break;
+    case SDL_EVENT_WINDOW_SHOWN:
+        change = Val_int(3);
+        break;
+    case SDL_EVENT_WINDOW_HIDDEN:
+        change = Val_int(4);
+        break;
+    case SDL_EVENT_WINDOW_MINIMIZED:
+        change = Val_int(5);
+        break;
+    case SDL_EVENT_WINDOW_MAXIMIZED:
+        change = Val_int(6);
+        break;
+    case SDL_EVENT_WINDOW_RESTORED:
+        change = Val_int(7);
+        break;
+    case SDL_EVENT_WINDOW_DISPLAY_SCALE_CHANGED:
+        change = Val_int(8);
+        break;
+    case SDL_EVENT_WINDOW_ENTER_FULLSCREEN:
+        change = Val_int(9);
+        break;
+    case SDL_EVENT_WINDOW_LEAVE_FULLSCREEN:
+        change = Val_int(10);
         break;
     default:
         CAMLreturn(caml_alloc_1(K_OTHER, caml_copy_int32((int32_t)event->type)));
@@ -61,7 +216,53 @@ static value window_event_value(const SDL_WindowEvent* event) {
     CAMLreturn(caml_alloc_2(K_WINDOW, window, change));
 }
 
+/* Sdl3.Event.display_change constant constructor order. */
+static value display_event_value(const SDL_DisplayEvent* event) {
+    int change;
+    switch (event->type) {
+    case SDL_EVENT_DISPLAY_ADDED:
+        change = 0;
+        break;
+    case SDL_EVENT_DISPLAY_REMOVED:
+        change = 1;
+        break;
+    case SDL_EVENT_DISPLAY_MOVED:
+        change = 2;
+        break;
+    case SDL_EVENT_DISPLAY_DESKTOP_MODE_CHANGED:
+        change = 3;
+        break;
+    case SDL_EVENT_DISPLAY_CURRENT_MODE_CHANGED:
+        change = 4;
+        break;
+    case SDL_EVENT_DISPLAY_CONTENT_SCALE_CHANGED:
+        change = 5;
+        break;
+    default:
+        return caml_alloc_1(K_OTHER, caml_copy_int32((int32_t)event->type));
+    }
+    return caml_alloc_2(K_DISPLAY, caml_copy_int32((int32_t)event->displayID), Val_int(change));
+}
+
+static value touch_event_value(const SDL_TouchFingerEvent* event, int change) {
+    CAMLparam0();
+    CAMLlocal5(window, device, finger, dx, dy);
+
+    window =
+        event->windowID ? caml_alloc_some(caml_copy_int32((int32_t)event->windowID)) : Val_none;
+    device = caml_copy_int64((int64_t)event->touchID);
+    finger = finger_value(event->fingerID, event->x, event->y, event->pressure);
+    dx     = caml_copy_double(event->dx);
+    dy     = caml_copy_double(event->dy);
+    CAMLreturn(caml_alloc_6(K_TOUCH, window, device, finger, Val_int(change), dx, dy));
+}
+
 static value event_kind_value(const SDL_Event* event) {
+    if (event->type >= SDL_EVENT_WINDOW_FIRST && event->type <= SDL_EVENT_WINDOW_LAST)
+        return window_event_value(&event->window);
+    if (event->type >= SDL_EVENT_DISPLAY_FIRST && event->type <= SDL_EVENT_DISPLAY_LAST)
+        return display_event_value(&event->display);
+
     CAMLparam0();
     CAMLlocal5(window, x, y, a, b);
     CAMLlocal1(c);
@@ -69,13 +270,6 @@ static value event_kind_value(const SDL_Event* event) {
     switch (event->type) {
     case SDL_EVENT_QUIT:
         CAMLreturn(Val_int(0));
-
-    case SDL_EVENT_WINDOW_CLOSE_REQUESTED:
-    case SDL_EVENT_WINDOW_FOCUS_GAINED:
-    case SDL_EVENT_WINDOW_FOCUS_LOST:
-    case SDL_EVENT_WINDOW_RESIZED:
-    case SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED:
-        CAMLreturn(window_event_value(&event->window));
 
     case SDL_EVENT_KEY_DOWN:
     case SDL_EVENT_KEY_UP:
@@ -125,10 +319,45 @@ static value event_kind_value(const SDL_Event* event) {
         CAMLreturn(caml_alloc_1(K_GAMEPAD_ADDED, caml_copy_int32((int32_t)event->gdevice.which)));
     case SDL_EVENT_GAMEPAD_REMOVED:
         CAMLreturn(caml_alloc_1(K_GAMEPAD_REMOVED, caml_copy_int32((int32_t)event->gdevice.which)));
+    case SDL_EVENT_GAMEPAD_REMAPPED:
+        CAMLreturn(
+            caml_alloc_1(K_GAMEPAD_REMAPPED, caml_copy_int32((int32_t)event->gdevice.which)));
+
+    case SDL_EVENT_GAMEPAD_AXIS_MOTION:
+        for (size_t i = 0; i < SDL_arraysize(gamepad_axes); ++i) {
+            if (gamepad_axes[i] == event->gaxis.axis) {
+                a = caml_copy_int32((int32_t)event->gaxis.which);
+                CAMLreturn(
+                    caml_alloc_3(K_GAMEPAD_AXIS, a, Val_int(i), Val_int(event->gaxis.value)));
+            }
+        }
+        break;
+
+    case SDL_EVENT_GAMEPAD_BUTTON_DOWN:
+    case SDL_EVENT_GAMEPAD_BUTTON_UP:
+        for (size_t i = 0; i < SDL_arraysize(gamepad_buttons); ++i) {
+            if (gamepad_buttons[i] == event->gbutton.button) {
+                a = caml_copy_int32((int32_t)event->gbutton.which);
+                CAMLreturn(
+                    caml_alloc_3(K_GAMEPAD_BUTTON, a, Val_int(i), Val_bool(event->gbutton.down)));
+            }
+        }
+        break;
+
+    /* Sdl3.Event.touch_change constant constructor order. */
+    case SDL_EVENT_FINGER_DOWN:
+        CAMLreturn(touch_event_value(&event->tfinger, 0));
+    case SDL_EVENT_FINGER_UP:
+        CAMLreturn(touch_event_value(&event->tfinger, 1));
+    case SDL_EVENT_FINGER_MOTION:
+        CAMLreturn(touch_event_value(&event->tfinger, 2));
+    case SDL_EVENT_FINGER_CANCELED:
+        CAMLreturn(touch_event_value(&event->tfinger, 3));
 
     default:
-        CAMLreturn(caml_alloc_1(K_OTHER, caml_copy_int32((int32_t)event->type)));
+        break;
     }
+    CAMLreturn(caml_alloc_1(K_OTHER, caml_copy_int32((int32_t)event->type)));
 }
 
 CAMLprim value osdl_event_poll(value context) {

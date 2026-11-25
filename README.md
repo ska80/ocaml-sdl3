@@ -5,7 +5,7 @@ SDL3 functions, not the full C API. See [TODO.md](TODO.md) for the remaining wor
 
 | Dune library and opam package | OCaml module | What it covers |
 | --- | --- | --- |
-| `sdl3` | [`Sdl3`](src/core/sdl3.mli) | Windows, 2D and GPU drawing, textures, surfaces, input events, gamepads, queued audio, and timers |
+| `sdl3` | [`Sdl3`](src/core/sdl3.mli) | Windows, displays, 2D and GPU drawing, textures, surfaces, touch and other input, gamepads, queued audio, and timers |
 | `sdl3-image` | [`Sdl3_image`](src/image/sdl3_image.mli) | Load images from files or memory, load textures, and save PNG and JPEG files |
 | `sdl3-mixer` | [`Sdl3_mixer`](src/mixer/sdl3_mixer.mli) | Load sounds, play audio tracks, and mix to a device or a memory buffer |
 | `sdl3-ttf` | [`Sdl3_ttf`](src/ttf/sdl3_ttf.mli) | Open fonts, measure UTF-8 text, and render text to surfaces |
@@ -136,6 +136,22 @@ Drawing calls pass small values directly to C. Audio and in-memory image calls t
 hold data outside the OCaml heap. `Audio.queue` copies the samples into SDL, but the binding adds no
 copy.
 
+## Query displays and input devices
+
+Start SDL with `Video`. Use `Display.list` or `Display.primary` to get a display ID. Use the ID to
+read the display's bounds, modes, and content scale. Use `Window.display_scale` for the content
+scale of a window. A request to move, minimize, maximize, or restore a window can take effect
+later. Read `Event.Window` to learn what changed.
+
+Use `Touch.devices` to list known touch devices. Use `Touch.fingers` to copy the active finger
+positions and pressure. `Event.Touch` reports touches that start, move, end, or get canceled. A
+touch event can have no associated window.
+
+Start SDL with `Gamepad`. Use `Gamepad.list` to find connected controllers. Read their names with
+`Gamepad.name_for_id` before opening them. Use `Gamepad.has_axis` and `Gamepad.has_button` to find
+the controls that SDL maps. Poll for `Event.Gamepad_axis` and `Event.Gamepad_button` to read
+changes. Close each opened gamepad with `Gamepad.close`.
+
 ## Update textures and draw to them
 
 A streaming texture accepts repeated pixel uploads. Create one with `Texture.create_streaming` and
@@ -222,8 +238,8 @@ The tests below passed on Linux with OCaml 5.5.2 and Dune 3.25.0. For the SDL ve
 [TODO.md](TODO.md#done).
 
 Run `dune runtest` for native and bytecode tests. These tests use SDL's dummy video and audio
-drivers, so they need no display or speakers. The image tests need PNG and JPEG support in
-SDL3_image.
+drivers, so they need no display or speakers. The core tests need SDL's virtual joystick support,
+not a physical gamepad. The image tests need PNG and JPEG support in SDL3_image.
 
 Run `dune build --force @runtest-gpu` on a system with a working SDL GPU driver. On Linux with
 offscreen Vulkan support, set `SDL_VIDEO_DRIVER=offscreen` to run without a display.

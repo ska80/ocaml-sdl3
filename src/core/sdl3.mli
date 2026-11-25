@@ -66,6 +66,37 @@ module Pixel_format : sig
   type t = Rgba32 | Bgra32 | Rgb24
 end
 
+module Display : sig
+  (** Queries for connected displays. Start SDL with [Video]. *)
+
+  type id
+
+  type mode = { w : int; h : int; pixel_density : float; refresh_rate : float }
+  (** [w] and [h] are in display coordinates. Multiply by [pixel_density] for
+      pixels. [refresh_rate] is in hertz, or zero if SDL does not know it. *)
+
+  val id_to_int32 : id -> int32
+  val list : context -> id list
+  val primary : context -> id
+  val name : context -> id -> string
+  val bounds : context -> id -> Rect.t
+
+  val usable_bounds : context -> id -> Rect.t
+  (** Display bounds minus areas that the system reserves. *)
+
+  val content_scale : context -> id -> float
+  (** The display's suggested scale for text and other content. *)
+
+  val desktop_mode : context -> id -> mode
+  (** The mode that the desktop uses outside fullscreen. *)
+
+  val current_mode : context -> id -> mode
+  (** The mode in use now. A fullscreen window can change it. *)
+
+  val fullscreen_modes : context -> id -> mode list
+  (** Copy the fullscreen modes in the order SDL reports them. *)
+end
+
 module Window : sig
   type t
   type id
@@ -83,13 +114,33 @@ module Window : sig
   val destroy : t -> unit
   val id : t -> id
   val id_to_int32 : id -> int32
+  val title : t -> string
   val size : t -> int * int
   val size_in_pixels : t -> int * int
+  val position : t -> int * int
+  val display : t -> Display.id
+
+  val display_scale : t -> float
+  (** The suggested scale for content in this window, relative to its pixel
+      size. This can differ from the display's content scale. *)
+
   val set_title : t -> string -> unit
   val set_size : t -> w:int -> h:int -> unit
+
+  val set_position : t -> x:int -> y:int -> unit
+  (** Request a move to the given screen coordinates. The window manager can
+      apply the move later, change the coordinates, or refuse the request. *)
+
+  val set_resizable : t -> bool -> unit
   val set_fullscreen : t -> bool -> unit
   val show : t -> unit
   val hide : t -> unit
+  val minimize : t -> unit
+
+  val maximize : t -> unit
+  (** Request to maximize a resizable window. *)
+
+  val restore : t -> unit
 end
 
 module Surface : sig
@@ -704,6 +755,35 @@ module Mouse : sig
   val set_relative_mode : Window.t -> bool -> unit
 end
 
+module Touch : sig
+  (** Touch device and finger queries. Start SDL with [Video]. *)
+
+  type id
+  type finger_id
+
+  type device_type =
+    | Direct
+    | Indirect_absolute
+    | Indirect_relative
+    | Other of int
+
+  type finger = { id : finger_id; x : float; y : float; pressure : float }
+
+  val id_to_int64 : id -> int64
+  val finger_id_to_int64 : finger_id -> int64
+
+  val devices : context -> id list
+  (** List known devices. On some systems, a device only appears after use. *)
+
+  val name : context -> id -> string
+  val device_type : context -> id -> device_type
+
+  val fingers : context -> id -> finger list
+  (** Copy the active fingers on a device. SDL reports coordinates and pressure
+      on a scale of zero to one. Coordinates outside the touch area can lie
+      outside that range. *)
+end
+
 module Gamepad : sig
   type t
   type id
@@ -732,14 +812,35 @@ module Gamepad : sig
     | Dpad_down
     | Dpad_left
     | Dpad_right
+    | Misc1
+    | Right_paddle1
+    | Left_paddle1
+    | Right_paddle2
+    | Left_paddle2
+    | Touchpad
+    | Misc2
+    | Misc3
+    | Misc4
+    | Misc5
+    | Misc6
 
   val id_to_int32 : id -> int32
 
+  val list : context -> id list
+  (** List connected gamepads. Start SDL with [Gamepad]. *)
+
+  val name_for_id : context -> id -> string
+  (** Read the name before opening a gamepad. *)
+
   val open_ : context -> id -> t
-  (** Open a device identified by a [Gamepad_added] event. *)
+  (** Open a device from [list] or a [Gamepad_added] event. *)
 
   val close : t -> unit
   val connected : t -> bool
+  val id : t -> id
+  val name : t -> string
+  val has_axis : t -> axis -> bool
+  val has_button : t -> button -> bool
 
   val axis : t -> axis -> int
   (** Read a value from [-32768] to [32767]. Triggers start at [0]. *)
@@ -754,6 +855,26 @@ module Event : sig
     | Focus_lost
     | Resized of int * int
     | Pixel_size_changed of int * int
+    | Moved of int * int
+    | Display_changed of Display.id
+    | Shown
+    | Hidden
+    | Minimized
+    | Maximized
+    | Restored
+    | Display_scale_changed
+    | Entered_fullscreen
+    | Left_fullscreen
+
+  type display_change =
+    | Connected
+    | Disconnected
+    | Layout_changed
+    | Desktop_mode_changed
+    | Current_mode_changed
+    | Content_scale_changed
+
+  type touch_change = Down | Up | Motion | Canceled
 
   type kind =
     | Quit
@@ -797,6 +918,24 @@ module Event : sig
       }
     | Gamepad_added of Gamepad.id
     | Gamepad_removed of Gamepad.id
+    | Gamepad_remapped of Gamepad.id
+    | Gamepad_axis of { gamepad : Gamepad.id; axis : Gamepad.axis; value : int }
+    | Gamepad_button of {
+        gamepad : Gamepad.id;
+        button : Gamepad.button;
+        down : bool;
+      }
+    | Display of { display : Display.id; change : display_change }
+    | Touch of {
+        window : Window.id option;
+        device : Touch.id;
+        finger : Touch.finger;
+        change : touch_change;
+        dx : float;
+        dy : float;
+      }
+        (** [window] is [None] when SDL reports no window under the finger. [dx]
+            and [dy] use the same scale as the finger's coordinates. *)
     | Other of int32
 
   type t = { timestamp_ns : int64; kind : kind }

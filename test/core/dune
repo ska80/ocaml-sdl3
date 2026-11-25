@@ -16,7 +16,10 @@
    (setenv
     SDL_AUDIO_DRIVER
     dummy
-    (run %{test})))))
+    (setenv
+     SDL_MOUSE_TOUCH_EVENTS
+     1
+     (run %{test}))))))
 
 (rule
  (alias runtest)
@@ -28,4 +31,7 @@
    (setenv
     SDL_AUDIO_DRIVER
     dummy
-    (run ./core_test.bc.exe)))))
+    (setenv
+     SDL_MOUSE_TOUCH_EVENTS
+     1
+     (run ./core_test.bc.exe))))))

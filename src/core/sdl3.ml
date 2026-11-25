@@ -33,6 +33,18 @@ let with_init subsystems f =
   let context = init subsystems in
   Fun.protect ~finally:(fun () -> quit context) (fun () -> f context)
 
+(* Keep temporary SDL arrays in scope while C copies them to OCaml. *)
+module Snapshot = struct
+  type t
+
+  external create : unit -> t = "osdl_snapshot_create"
+  external release : t -> unit = "osdl_snapshot_release"
+
+  let read f =
+    let snapshot = create () in
+    Fun.protect ~finally:(fun () -> release snapshot) (fun () -> f snapshot)
+end
+
 module Color = struct
   type t = { r : int; g : int; b : int; a : int }
 
@@ -61,6 +73,33 @@ module Pixel_format = struct
   type t = Rgba32 | Bgra32 | Rgb24
 end
 
+module Display = struct
+  type id = int32
+  type mode = { w : int; h : int; pixel_density : float; refresh_rate : float }
+
+  let id_to_int32 id = id
+
+  external list_raw : context -> Snapshot.t -> id list = "osdl_display_list"
+  external primary : context -> id = "osdl_display_primary"
+  external name : context -> id -> string = "osdl_display_name"
+  external bounds : context -> id -> Rect.t = "osdl_display_bounds"
+
+  external usable_bounds : context -> id -> Rect.t
+    = "osdl_display_usable_bounds"
+
+  external content_scale : context -> id -> float = "osdl_display_content_scale"
+  external desktop_mode : context -> id -> mode = "osdl_display_desktop_mode"
+  external current_mode : context -> id -> mode = "osdl_display_current_mode"
+
+  external fullscreen_modes_raw : context -> id -> Snapshot.t -> mode list
+    = "osdl_display_fullscreen_modes"
+
+  let list context = Snapshot.read (list_raw context)
+
+  let fullscreen_modes context id =
+    Snapshot.read (fullscreen_modes_raw context id)
+end
+
 module Window = struct
   type t
   type id = int32
@@ -80,13 +119,25 @@ module Window = struct
 
   external destroy : t -> unit = "osdl_window_destroy"
   external id : t -> id = "osdl_window_id"
+  external title : t -> string = "osdl_window_title"
   external size : t -> int * int = "osdl_window_size"
   external size_in_pixels : t -> int * int = "osdl_window_size_in_pixels"
+  external position : t -> int * int = "osdl_window_position"
+  external display : t -> Display.id = "osdl_window_display"
+  external display_scale : t -> float = "osdl_window_display_scale"
   external set_title : t -> string -> unit = "osdl_window_set_title"
   external set_size : t -> w:int -> h:int -> unit = "osdl_window_set_size"
+
+  external set_position : t -> x:int -> y:int -> unit
+    = "osdl_window_set_position"
+
+  external set_resizable : t -> bool -> unit = "osdl_window_set_resizable"
   external set_fullscreen : t -> bool -> unit = "osdl_window_set_fullscreen"
   external show : t -> unit = "osdl_window_show"
   external hide : t -> unit = "osdl_window_hide"
+  external minimize : t -> unit = "osdl_window_minimize"
+  external maximize : t -> unit = "osdl_window_maximize"
+  external restore : t -> unit = "osdl_window_restore"
 end
 
 module Surface = struct
@@ -488,6 +539,32 @@ module Mouse = struct
     = "osdl_mouse_set_relative_mode"
 end
 
+module Touch = struct
+  type id = int64
+  type finger_id = int64
+
+  type device_type =
+    | Direct
+    | Indirect_absolute
+    | Indirect_relative
+    | Other of int
+
+  type finger = { id : finger_id; x : float; y : float; pressure : float }
+
+  let id_to_int64 id = id
+  let finger_id_to_int64 id = id
+
+  external devices_raw : context -> Snapshot.t -> id list = "osdl_touch_devices"
+  external name : context -> id -> string = "osdl_touch_name"
+  external device_type : context -> id -> device_type = "osdl_touch_device_type"
+
+  external fingers_raw : context -> id -> Snapshot.t -> finger list
+    = "osdl_touch_fingers"
+
+  let devices context = Snapshot.read (devices_raw context)
+  let fingers context id = Snapshot.read (fingers_raw context id)
+end
+
 module Gamepad = struct
   type t
   type id = int32
@@ -516,14 +593,33 @@ module Gamepad = struct
     | Dpad_down
     | Dpad_left
     | Dpad_right
+    | Misc1
+    | Right_paddle1
+    | Left_paddle1
+    | Right_paddle2
+    | Left_paddle2
+    | Touchpad
+    | Misc2
+    | Misc3
+    | Misc4
+    | Misc5
+    | Misc6
 
   let id_to_int32 id = id
 
+  external list_raw : context -> Snapshot.t -> id list = "osdl_gamepad_list"
+  external name_for_id : context -> id -> string = "osdl_gamepad_name_for_id"
   external open_ : context -> id -> t = "osdl_gamepad_open"
   external close : t -> unit = "osdl_gamepad_close"
   external connected : t -> bool = "osdl_gamepad_connected"
+  external id : t -> id = "osdl_gamepad_id"
+  external name : t -> string = "osdl_gamepad_name"
+  external has_axis : t -> axis -> bool = "osdl_gamepad_has_axis"
+  external has_button : t -> button -> bool = "osdl_gamepad_has_button"
   external axis : t -> axis -> int = "osdl_gamepad_axis"
   external button : t -> button -> bool = "osdl_gamepad_button"
+
+  let list context = Snapshot.read (list_raw context)
 end
 
 module Event = struct
@@ -533,6 +629,26 @@ module Event = struct
     | Focus_lost
     | Resized of int * int
     | Pixel_size_changed of int * int
+    | Moved of int * int
+    | Display_changed of Display.id
+    | Shown
+    | Hidden
+    | Minimized
+    | Maximized
+    | Restored
+    | Display_scale_changed
+    | Entered_fullscreen
+    | Left_fullscreen
+
+  type display_change =
+    | Connected
+    | Disconnected
+    | Layout_changed
+    | Desktop_mode_changed
+    | Current_mode_changed
+    | Content_scale_changed
+
+  type touch_change = Down | Up | Motion | Canceled
 
   type kind =
     | Quit
@@ -576,6 +692,22 @@ module Event = struct
       }
     | Gamepad_added of Gamepad.id
     | Gamepad_removed of Gamepad.id
+    | Gamepad_remapped of Gamepad.id
+    | Gamepad_axis of { gamepad : Gamepad.id; axis : Gamepad.axis; value : int }
+    | Gamepad_button of {
+        gamepad : Gamepad.id;
+        button : Gamepad.button;
+        down : bool;
+      }
+    | Display of { display : Display.id; change : display_change }
+    | Touch of {
+        window : Window.id option;
+        device : Touch.id;
+        finger : Touch.finger;
+        change : touch_change;
+        dx : float;
+        dy : float;
+      }
     | Other of int32
 
   type t = { timestamp_ns : int64; kind : kind }
