@@ -109,6 +109,127 @@ let events context window =
   check (poll context = None) "Empty queue";
   check (text = "é") "UTF-8 text after more polls"
 
+let frect x y w h = Frect.make ~x ~y ~w ~h
+
+let render_batches renderer output =
+  let black = Color.rgb 0 0 0 and red = Color.rgb 255 0 0 in
+  let pixel x y = Surface.read_pixel output ~x ~y in
+  Renderer.set_draw_color renderer black;
+  Renderer.clear renderer;
+  Renderer.set_draw_color renderer red;
+  Renderer.fill_rects renderer [||];
+  Renderer.draw_rects renderer [||];
+  invalid (fun () ->
+      Renderer.fill_rects renderer [| frect 0. 0. 1. 1.; frect nan 0. 1. 1. |]);
+  let invalid_batch = Array.make 65 (frect 0. 0. 2. 2.) in
+  invalid_batch.(64) <- frect 0. 0. 1. infinity;
+  invalid (fun () -> Renderer.draw_rects renderer invalid_batch);
+  Renderer.fill_rects renderer [| frect 2. 2. 2. 2.; frect 7. 2. 2. 2. |];
+  let outlines = Array.make 65 (frect 2. 8. 4. 4.) in
+  outlines.(64) <- frect 9. 8. 4. 4.;
+  Renderer.draw_rects renderer outlines;
+  Renderer.present renderer;
+  check (pixel 0 0 = black) "Invalid batches did not draw";
+  check (pixel 3 3 = red && pixel 8 3 = red) "Filled rectangle batch";
+  check (pixel 2 8 = red && pixel 9 8 = red) "Rectangle outline batch";
+  check (pixel 3 9 = black && pixel 10 9 = black) "Empty outlines"
+
+let streaming_texture renderer output =
+  let open Bigarray in
+  let pixel x y = Surface.read_pixel output ~x ~y in
+  let red = Color.rgb 255 0 0 and blue = Color.rgb 0 0 255 in
+  let green = Color.rgba 0 255 0 127 in
+  let buffer = Array1.create int8_unsigned c_layout 28 in
+  Array1.fill buffer 0;
+  let pixels = Array1.sub buffer 4 24 in
+  let put i { Color.r; g; b; a } =
+    pixels.{i} <- r;
+    pixels.{i + 1} <- g;
+    pixels.{i + 2} <- b;
+    pixels.{i + 3} <- a
+  in
+  invalid (fun () -> Texture.create_streaming renderer ~w:0 ~h:2);
+  invalid (fun () -> Texture.create_streaming renderer ~w:(1 lsl 28) ~h:2);
+  using Texture.destroy (Texture.create_streaming renderer ~w:2 ~h:2)
+    (fun texture ->
+      let update ~pitch = Texture.update texture pixels ~pitch in
+      invalid (fun () -> update ~pitch:0);
+      invalid (fun () -> update ~pitch:4);
+      invalid (fun () -> update ~pitch:9);
+      invalid (fun () ->
+          Texture.update texture (Array1.sub pixels 0 23) ~pitch:12);
+      let invalid_rect rect =
+        invalid (fun () -> Texture.update ~rect texture pixels ~pitch:12)
+      in
+      invalid_rect (Rect.make ~x:(-1) ~y:0 ~w:1 ~h:1);
+      invalid_rect (Rect.make ~x:0 ~y:0 ~w:0 ~h:1);
+      invalid_rect (Rect.make ~x:1 ~y:0 ~w:2 ~h:1);
+      invalid_rect (Rect.make ~x:0 ~y:1 ~w:1 ~h:2);
+      invalid_rect (Rect.make ~x:max_int ~y:0 ~w:1 ~h:1);
+      put 0 red;
+      put 4 blue;
+      put 12 blue;
+      put 16 red;
+      update ~pitch:12;
+      Texture.set_blend_mode texture None;
+      let draw () =
+        Texture.draw ~dst:(frect 4. 4. 2. 2.) renderer (texture :> Texture.t);
+        Renderer.present renderer
+      in
+      draw ();
+      check (pixel 4 4 = red && pixel 5 4 = blue) "Streaming texture first row";
+      check (pixel 4 5 = blue && pixel 5 5 = red) "Padded streaming texture row";
+      put 0 green;
+      put 4 green;
+      Texture.update
+        ~rect:(Rect.make ~x:1 ~y:0 ~w:1 ~h:2)
+        texture (Array1.sub pixels 0 8) ~pitch:4;
+      draw ();
+      check (pixel 4 4 = red && pixel 4 5 = blue) "Pixels outside update";
+      check (pixel 5 4 = green && pixel 5 5 = green) "Partial RGBA update";
+      Texture.destroy texture;
+      invalid (fun () -> update ~pitch:12))
+
+let render_target renderer other_renderer output =
+  let black = Color.rgb 0 0 0 and blue = Color.rgb 0 0 255 in
+  let red = Color.rgb 255 0 0 in
+  Renderer.set_draw_color renderer black;
+  Renderer.clear renderer;
+  invalid (fun () -> Texture.create_target renderer ~w:3 ~h:(-1));
+  using Texture.destroy (Texture.create_target renderer ~w:3 ~h:4)
+    (fun target ->
+      let select () = Renderer.set_target renderer (Some target) in
+      invalid (fun () -> Renderer.set_target other_renderer (Some target));
+      invalid (fun () -> Renderer.destroy renderer);
+      Domain.join
+        (Domain.spawn (fun () ->
+             invalid select;
+             invalid (fun () -> Texture.destroy target)));
+      check (Renderer.output_size renderer = (16, 16)) "Default output size";
+      select ();
+      check (Renderer.current_output_size renderer = (3, 4)) "Target size";
+      invalid (fun () -> Renderer.present renderer);
+      invalid (fun () -> Texture.draw renderer target);
+      invalid (fun () -> Texture.draw_rotated renderer target ~angle:0.);
+      Renderer.set_draw_color renderer blue;
+      Renderer.clear renderer;
+      Renderer.set_draw_color renderer red;
+      Renderer.fill_rects renderer [| frect 1. 2. 1. 1. |];
+      Renderer.set_target renderer None;
+      Texture.set_blend_mode target None;
+      Texture.draw ~dst:(frect 4. 4. 3. 4.) renderer target;
+      Renderer.present renderer;
+      check (Surface.read_pixel output ~x:3 ~y:4 = black) "Outside target draw";
+      check (Surface.read_pixel output ~x:4 ~y:4 = blue) "Target clear color";
+      check (Surface.read_pixel output ~x:5 ~y:6 = red) "Target rectangle color";
+      select ();
+      Texture.destroy target;
+      check
+        (Renderer.current_output_size renderer = (16, 16))
+        "Destroying the current target restores the default";
+      invalid select;
+      Renderer.present renderer)
+
 let render context window =
   sdl_error "SDL_CreateRenderer" (fun () ->
       Renderer.create ~driver:"missing-renderer" window);
@@ -167,7 +288,10 @@ let render context window =
                     (Surface.read_pixel target ~x:0 ~y:8 = blue)
                     "Rotated texture draw";
                   Texture.destroy texture;
-                  invalid (fun () -> Texture.size texture)))))
+                  invalid (fun () -> Texture.size texture));
+              render_batches renderer target;
+              streaming_texture renderer target;
+              render_target renderer window_renderer target)))
 
 let audio context =
   using Audio.close

@@ -110,6 +110,9 @@ module Blend_mode : sig
   type t = None | Blend | Add | Mod | Mul
 end
 
+type +'access texture
+(** A texture handle. The type parameter marks how you can use it. *)
+
 module Renderer : sig
   type t
   type presentation = Stretch | Letterbox | Overscan | Integer_scale
@@ -117,8 +120,19 @@ module Renderer : sig
   val create : ?driver:string -> Window.t -> t
   val create_software : Surface.t -> t
   val destroy : t -> unit
+
   val output_size : t -> int * int
+  (** The output size in pixels, as reported by SDL. If you draw to a texture,
+      use [current_output_size]. *)
+
+  val current_output_size : t -> int * int
+  (** The size of the current target, adjusted for logical presentation. *)
+
   val set_vsync : t -> bool -> unit
+
+  val set_target : t -> [ `Target ] texture option -> unit
+  (** Draw to a texture that belongs to this renderer. Pass [None] to draw to
+      the window or surface again. *)
 
   val set_logical_presentation : t -> (int * int * presentation) option -> unit
   (** Set a virtual width and height. Pass [None] to draw in output pixels. *)
@@ -128,39 +142,84 @@ module Renderer : sig
   val clear : t -> unit
   val fill_rect : t -> Frect.t -> unit
   val draw_rect : t -> Frect.t -> unit
+
+  val fill_rects : t -> Frect.t array -> unit
+  (** Fill all rectangles with the current drawing color in one call to SDL. An
+      empty array draws nothing. *)
+
+  val draw_rects : t -> Frect.t array -> unit
+  (** Draw the outlines of all rectangles in one call to SDL. An empty array
+      draws nothing. *)
+
   val draw_line : t -> x1:float -> y1:float -> x2:float -> y2:float -> unit
+
   val present : t -> unit
+  (** Present the frame. Raise [Invalid_argument] if a texture is the current
+      target. *)
 end
 
 module Texture : sig
   (** An image owned by a renderer. *)
 
-  type t
+  type t = [ `Static | `Streaming | `Target ] texture
+  (** A drawable texture. Use [(tex :> Texture.t)] to store [streaming],
+      [target], and other textures together. *)
+
+  type streaming = [ `Streaming ] texture
+  type target = [ `Target ] texture
   type scale_mode = Nearest | Linear
   type flip = No_flip | Horizontal | Vertical | Both
 
   val of_surface : Renderer.t -> Surface.t -> t
   (** Copy the pixels. You can then destroy the surface. *)
 
-  val destroy : t -> unit
-  val size : t -> float * float
-  val set_scale_mode : t -> scale_mode -> unit
-  val set_blend_mode : t -> Blend_mode.t -> unit
-  val set_alpha_mod : t -> int -> unit
+  val create_streaming : Renderer.t -> w:int -> h:int -> streaming
+  (** Create a texture for repeated pixel uploads. Fill it with [update] before
+      you draw it. The dimensions must be positive. The byte count [w * h * 4]
+      must fit in a C [int]. *)
 
-  val draw : ?src:Frect.t -> ?dst:Frect.t -> Renderer.t -> t -> unit
-  (** Draw with the renderer that owns the texture. If you omit [src] or [dst],
-      SDL uses the whole texture or render target, respectively. *)
+  val create_target : Renderer.t -> w:int -> h:int -> target
+  (** Create a texture that you can draw to with {!Renderer.set_target}. Clear
+      it before you use it. The size limits are the same as for
+      [create_streaming]. *)
+
+  val update : ?rect:Rect.t -> streaming -> byte_buffer -> pitch:int -> unit
+  (** Copy pixels in red, green, blue, alpha byte order. If you omit [rect],
+      update the whole texture. Otherwise, [rect] must have positive dimensions
+      and lie inside the texture. The buffer starts at the first pixel of the
+      update.
+
+      [pitch] is the byte distance between rows. It must be a multiple of four
+      and at least four times the width of the update. The buffer must contain
+      at least [pitch * height] bytes, including padding after the last row. The
+      byte count must fit in a C [int]. Do not change the buffer during the
+      call. SDL does not keep the buffer. *)
+
+  val destroy : 'access texture -> unit
+  (** Destroy the texture. If it is the current target, restore the default
+      target first. *)
+
+  val size : 'access texture -> float * float
+  val set_scale_mode : 'access texture -> scale_mode -> unit
+  val set_blend_mode : 'access texture -> Blend_mode.t -> unit
+  val set_alpha_mod : 'access texture -> int -> unit
+
+  val draw :
+    ?src:Frect.t -> ?dst:Frect.t -> Renderer.t -> 'access texture -> unit
+  (** Draw with the renderer that owns the texture. Do not draw a texture into
+      itself. If you omit [src] or [dst], SDL uses the whole texture or render
+      target, respectively. *)
 
   val draw_rotated :
     ?src:Frect.t ->
     ?dst:Frect.t ->
     ?flip:flip ->
     Renderer.t ->
-    t ->
+    'access texture ->
     angle:float ->
     unit
-  (** Rotate clockwise by [angle] degrees about the center of [dst]. *)
+  (** Like [draw], but rotate clockwise by [angle] degrees about the center of
+      [dst]. *)
 end
 
 module Scancode : sig

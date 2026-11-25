@@ -143,10 +143,21 @@ static SDL_Rect osdl_rect(value v) {
                       osdl_int(Field(v, 3))};
 }
 
-static SDL_FRect osdl_frect(value v) {
+static bool osdl_read_frect(value v, SDL_FRect* rect) {
     /* Frect.t is a float-only record, even without flat float arrays. */
-    return (SDL_FRect){osdl_float(Double_flat_field(v, 0)), osdl_float(Double_flat_field(v, 1)),
-                       osdl_float(Double_flat_field(v, 2)), osdl_float(Double_flat_field(v, 3))};
+    double x = Double_flat_field(v, 0), y = Double_flat_field(v, 1);
+    double w = Double_flat_field(v, 2), h = Double_flat_field(v, 3);
+    if (!osdl_fits_float(x) || !osdl_fits_float(y) || !osdl_fits_float(w) || !osdl_fits_float(h))
+        return false;
+
+    *rect = (SDL_FRect){(float)x, (float)y, (float)w, (float)h};
+    return true;
+}
+
+static SDL_FRect osdl_frect(value v) {
+    SDL_FRect rect;
+    if (!osdl_read_frect(v, &rect)) caml_invalid_argument("SDL argument is not a finite C float");
+    return rect;
 }
 
 static const SDL_FRect* osdl_frect_option(value v, SDL_FRect* rect) {
@@ -227,6 +238,13 @@ CAMLprim value osdl_surface_read_pixel(value surface, value x, value y) {
 
 /* Renderers. */
 
+static SDL_Texture* osdl_texture_for_renderer(value texture, value renderer) {
+    SDL_Texture* t = osdl_live(texture);
+    if (osdl_parent(texture) != renderer)
+        caml_invalid_argument("Use the renderer that owns the texture");
+    return t;
+}
+
 CAMLprim value osdl_renderer_create(value driver, value window) {
     CAMLparam2(driver, window);
     CAMLlocal1(handle);
@@ -256,9 +274,24 @@ CAMLprim value osdl_renderer_output_size(value renderer) {
     return osdl_int_pair(w, h);
 }
 
+CAMLprim value osdl_renderer_current_output_size(value renderer) {
+    int w, h;
+    osdl_check(SDL_GetCurrentRenderOutputSize(osdl_live(renderer), &w, &h),
+               "SDL_GetCurrentRenderOutputSize");
+    return osdl_int_pair(w, h);
+}
+
 CAMLprim value osdl_renderer_set_vsync(value renderer, value enabled) {
     osdl_check(SDL_SetRenderVSync(osdl_live(renderer), Bool_val(enabled) ? 1 : 0),
                "SDL_SetRenderVSync");
+    return Val_unit;
+}
+
+CAMLprim value osdl_renderer_set_target(value renderer, value target) {
+    SDL_Renderer* r = osdl_live(renderer);
+    SDL_Texture* t = Is_long(target) ? NULL : osdl_texture_for_renderer(Some_val(target), renderer);
+
+    osdl_check(SDL_SetRenderTarget(r, t), "SDL_SetRenderTarget");
     return Val_unit;
 }
 
@@ -311,6 +344,41 @@ CAMLprim value osdl_renderer_draw_rect(value renderer, value rect) {
     return Val_unit;
 }
 
+static value osdl_renderer_rects(value renderer, value rects, bool fill) {
+    SDL_Renderer* r     = osdl_live(renderer);
+    mlsize_t      count = Wosize_val(rects);
+    if (count == 0) return Val_unit;
+    /* SDL can expand each filled rectangle into eight float coordinates. */
+    if (count > INT_MAX / 8 || count > SIZE_MAX / (8 * sizeof(float)))
+        caml_invalid_argument("SDL rectangle array is too large");
+
+    SDL_FRect  stack[32];
+    SDL_FRect* native = stack;
+    if (count > SDL_arraysize(stack)) {
+        native = SDL_malloc(count * sizeof(*native));
+        if (!native) caml_raise_out_of_memory();
+    }
+
+    mlsize_t i = 0;
+    while (i < count && osdl_read_frect(Field(rects, i), &native[i]))
+        ++i;
+    bool ok = i == count && (fill ? SDL_RenderFillRects(r, native, (int)count)
+                                  : SDL_RenderRects(r, native, (int)count));
+    if (native != stack) SDL_free(native);
+
+    if (i != count) caml_invalid_argument("SDL argument is not a finite C float");
+    osdl_check(ok, fill ? "SDL_RenderFillRects" : "SDL_RenderRects");
+    return Val_unit;
+}
+
+CAMLprim value osdl_renderer_fill_rects(value renderer, value rects) {
+    return osdl_renderer_rects(renderer, rects, true);
+}
+
+CAMLprim value osdl_renderer_draw_rects(value renderer, value rects) {
+    return osdl_renderer_rects(renderer, rects, false);
+}
+
 CAMLprim value osdl_renderer_draw_line(value renderer, value x1, value y1, value x2, value y2) {
     osdl_check(SDL_RenderLine(osdl_live(renderer), osdl_float(Double_val(x1)),
                               osdl_float(Double_val(y1)), osdl_float(Double_val(x2)),
@@ -319,9 +387,23 @@ CAMLprim value osdl_renderer_draw_line(value renderer, value x1, value y1, value
     return Val_unit;
 }
 
-OSDL_ACTION(osdl_renderer_present, SDL_RenderPresent)
+CAMLprim value osdl_renderer_present(value renderer) {
+    SDL_Renderer* r = osdl_live(renderer);
+    if (SDL_GetRenderTarget(r))
+        caml_invalid_argument("Restore the default render target before presenting");
+
+    osdl_check(SDL_RenderPresent(r), "SDL_RenderPresent");
+    return Val_unit;
+}
 
 /* Textures. */
+
+/* Only render-target textures need an SDL target lookup when drawn. */
+static struct custom_operations osdl_target_ops = {.identifier = "ocaml-sdl3.target"};
+
+static bool osdl_texture_can_be_target(value texture) {
+    return Custom_ops_val(Field(texture, 0)) == &osdl_target_ops;
+}
 
 CAMLprim value osdl_texture_of_surface(value renderer, value surface) {
     CAMLparam2(renderer, surface);
@@ -333,7 +415,66 @@ CAMLprim value osdl_texture_of_surface(value renderer, value surface) {
     CAMLreturn(osdl_publish(handle, texture, "SDL_CreateTextureFromSurface"));
 }
 
-OSDL_DESTROY(osdl_texture_destroy, SDL_Texture, SDL_DestroyTexture)
+static value osdl_texture_create(value renderer, value w, value h, SDL_TextureAccess access) {
+    CAMLparam3(renderer, w, h);
+    CAMLlocal1(handle);
+
+    handle = osdl_new_handle_with_ops(
+        renderer, access == SDL_TEXTUREACCESS_TARGET ? &osdl_target_ops : &osdl_handle_ops);
+
+    SDL_Renderer* r     = osdl_live(renderer);
+    int           width = osdl_positive_int(w), height = osdl_positive_int(h);
+    /* Keep pixel offsets in range on renderers that use int arithmetic. */
+    if (width > INT_MAX / 4 / height) caml_invalid_argument("SDL RGBA texture is too large");
+
+    SDL_Texture* texture = SDL_CreateTexture(r, SDL_PIXELFORMAT_RGBA32, access, width, height);
+    CAMLreturn(osdl_publish(handle, texture, "SDL_CreateTexture"));
+}
+
+CAMLprim value osdl_texture_create_streaming(value renderer, value w, value h) {
+    return osdl_texture_create(renderer, w, h, SDL_TEXTUREACCESS_STREAMING);
+}
+
+CAMLprim value osdl_texture_create_target(value renderer, value w, value h) {
+    return osdl_texture_create(renderer, w, h, SDL_TEXTUREACCESS_TARGET);
+}
+
+CAMLprim value osdl_texture_update(value rect, value texture, value buffer, value pitch) {
+    SDL_Texture* t       = osdl_live(texture);
+    bool         partial = Is_block(rect);
+    SDL_Rect     area    = partial ? osdl_rect(Some_val(rect)) : (SDL_Rect){0, 0, t->w, t->h};
+    if (partial && (area.x < 0 || area.y < 0 || area.w <= 0 || area.h <= 0 ||
+                    area.x > t->w - area.w || area.y > t->h - area.h))
+        caml_invalid_argument("SDL update rectangle must be inside the texture");
+
+    int stride = osdl_positive_int(pitch);
+    if (stride % 4 || stride / 4 < area.w)
+        caml_invalid_argument("SDL RGBA pitch must be a multiple of four and cover a row");
+    if (area.h > INT_MAX / stride) caml_invalid_argument("SDL texture upload is too large");
+    if (Caml_ba_array_val(buffer)->dim[0] < stride * area.h)
+        caml_invalid_argument("SDL texture upload buffer is too small");
+
+    osdl_check(SDL_UpdateTexture(t, partial ? &area : NULL, Caml_ba_data_val(buffer), stride),
+               "SDL_UpdateTexture");
+    return Val_unit;
+}
+
+CAMLprim value osdl_texture_destroy(value texture) {
+    if (osdl_texture_can_be_target(texture)) {
+        osdl_cell* cell = osdl_cell_val(texture);
+        osdl_require_thread(osdl_cell_thread(cell));
+        SDL_Texture* t = cell->ptr;
+        if (!t) return Val_unit;
+
+        SDL_Renderer* r = osdl_live(osdl_parent(texture));
+        if (SDL_GetRenderTarget(r) == t)
+            osdl_check(SDL_SetRenderTarget(r, NULL), "SDL_SetRenderTarget");
+    }
+
+    SDL_Texture* t = osdl_take(texture);
+    if (t) SDL_DestroyTexture(t);
+    return Val_unit;
+}
 
 CAMLprim value osdl_texture_size(value texture) {
     float w, h;
@@ -360,18 +501,21 @@ CAMLprim value osdl_texture_set_alpha_mod(value texture, value alpha) {
     return Val_unit;
 }
 
-static SDL_Texture* osdl_texture_for_renderer(value texture, value renderer) {
-    SDL_Texture* t = osdl_live(texture);
-    if (osdl_parent(texture) != renderer)
-        caml_invalid_argument("Use the renderer that owns the texture");
+static SDL_Texture* osdl_texture_source(value texture, value renderer, SDL_Renderer* r) {
+    SDL_Texture* t = osdl_texture_for_renderer(texture, renderer);
+    if (osdl_texture_can_be_target(texture) && SDL_GetRenderTarget(r) == t)
+        caml_invalid_argument("Do not draw a texture into itself");
     return t;
 }
 
 CAMLprim value osdl_texture_draw(value src, value dst, value renderer, value texture) {
-    SDL_FRect s, d;
-    osdl_check(SDL_RenderTexture(osdl_live(renderer), osdl_texture_for_renderer(texture, renderer),
-                                 osdl_frect_option(src, &s), osdl_frect_option(dst, &d)),
-               "SDL_RenderTexture");
+    SDL_Renderer*    r = osdl_live(renderer);
+    SDL_Texture*     t = osdl_texture_source(texture, renderer, r);
+    SDL_FRect        s, d;
+    const SDL_FRect* source = osdl_frect_option(src, &s);
+    const SDL_FRect* dest   = osdl_frect_option(dst, &d);
+
+    osdl_check(SDL_RenderTexture(r, t, source, dest), "SDL_RenderTexture");
     return Val_unit;
 }
 
@@ -380,14 +524,16 @@ CAMLprim value osdl_texture_draw_rotated(value src, value dst, value flip, value
     static const SDL_FlipMode modes[] = {SDL_FLIP_NONE, SDL_FLIP_HORIZONTAL, SDL_FLIP_VERTICAL,
                                          SDL_FLIP_HORIZONTAL | SDL_FLIP_VERTICAL};
 
-    SDL_FRect    s, d;
-    SDL_FlipMode mode    = Is_long(flip) ? SDL_FLIP_NONE : modes[Int_val(Some_val(flip))];
-    double       degrees = Double_val(angle);
+    SDL_Renderer*    r = osdl_live(renderer);
+    SDL_Texture*     t = osdl_texture_source(texture, renderer, r);
+    SDL_FRect        s, d;
+    const SDL_FRect* source  = osdl_frect_option(src, &s);
+    const SDL_FRect* dest    = osdl_frect_option(dst, &d);
+    SDL_FlipMode     mode    = Is_long(flip) ? SDL_FLIP_NONE : modes[Int_val(Some_val(flip))];
+    double           degrees = Double_val(angle);
     if (!isfinite(degrees)) caml_invalid_argument("SDL rotation must be finite");
 
-    osdl_check(SDL_RenderTextureRotated(
-                   osdl_live(renderer), osdl_texture_for_renderer(texture, renderer),
-                   osdl_frect_option(src, &s), osdl_frect_option(dst, &d), degrees, NULL, mode),
+    osdl_check(SDL_RenderTextureRotated(r, t, source, dest, degrees, NULL, mode),
                "SDL_RenderTextureRotated");
     return Val_unit;
 }

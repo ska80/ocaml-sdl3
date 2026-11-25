@@ -109,6 +109,8 @@ module Blend_mode = struct
   type t = None | Blend | Add | Mod | Mul
 end
 
+type +'access texture
+
 module Renderer = struct
   type t
   type presentation = Stretch | Letterbox | Overscan | Integer_scale
@@ -117,7 +119,14 @@ module Renderer = struct
   external create_software : Surface.t -> t = "osdl_renderer_create_software"
   external destroy : t -> unit = "osdl_renderer_destroy"
   external output_size : t -> int * int = "osdl_renderer_output_size"
+
+  external current_output_size : t -> int * int
+    = "osdl_renderer_current_output_size"
+
   external set_vsync : t -> bool -> unit = "osdl_renderer_set_vsync"
+
+  external set_target : t -> [ `Target ] texture option -> unit
+    = "osdl_renderer_set_target"
 
   external set_logical_presentation :
     t -> (int * int * presentation) option -> unit
@@ -132,6 +141,8 @@ module Renderer = struct
   external clear : t -> unit = "osdl_renderer_clear"
   external fill_rect : t -> Frect.t -> unit = "osdl_renderer_fill_rect"
   external draw_rect : t -> Frect.t -> unit = "osdl_renderer_draw_rect"
+  external fill_rects : t -> Frect.t array -> unit = "osdl_renderer_fill_rects"
+  external draw_rects : t -> Frect.t array -> unit = "osdl_renderer_draw_rects"
 
   external draw_line : t -> x1:float -> y1:float -> x2:float -> y2:float -> unit
     = "osdl_renderer_draw_line"
@@ -140,23 +151,38 @@ module Renderer = struct
 end
 
 module Texture = struct
-  type t
+  type t = [ `Static | `Streaming | `Target ] texture
+  type streaming = [ `Streaming ] texture
+  type target = [ `Target ] texture
   type scale_mode = Nearest | Linear
   type flip = No_flip | Horizontal | Vertical | Both
 
   external of_surface : Renderer.t -> Surface.t -> t = "osdl_texture_of_surface"
-  external destroy : t -> unit = "osdl_texture_destroy"
-  external size : t -> float * float = "osdl_texture_size"
 
-  external set_scale_mode : t -> scale_mode -> unit
+  external create_streaming : Renderer.t -> w:int -> h:int -> streaming
+    = "osdl_texture_create_streaming"
+
+  external create_target : Renderer.t -> w:int -> h:int -> target
+    = "osdl_texture_create_target"
+
+  external update :
+    ?rect:Rect.t -> streaming -> byte_buffer -> pitch:int -> unit
+    = "osdl_texture_update"
+
+  external destroy : 'access texture -> unit = "osdl_texture_destroy"
+  external size : 'access texture -> float * float = "osdl_texture_size"
+
+  external set_scale_mode : 'access texture -> scale_mode -> unit
     = "osdl_texture_set_scale_mode"
 
-  external set_blend_mode : t -> Blend_mode.t -> unit
+  external set_blend_mode : 'access texture -> Blend_mode.t -> unit
     = "osdl_texture_set_blend_mode"
 
-  external set_alpha_mod : t -> int -> unit = "osdl_texture_set_alpha_mod"
+  external set_alpha_mod : 'access texture -> int -> unit
+    = "osdl_texture_set_alpha_mod"
 
-  external draw : ?src:Frect.t -> ?dst:Frect.t -> Renderer.t -> t -> unit
+  external draw :
+    ?src:Frect.t -> ?dst:Frect.t -> Renderer.t -> 'access texture -> unit
     = "osdl_texture_draw"
 
   external draw_rotated :
@@ -164,7 +190,7 @@ module Texture = struct
     ?dst:Frect.t ->
     ?flip:flip ->
     Renderer.t ->
-    t ->
+    'access texture ->
     angle:float ->
     unit = "osdl_texture_draw_rotated_byte" "osdl_texture_draw_rotated"
 end

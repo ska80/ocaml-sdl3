@@ -77,10 +77,10 @@ static inline void* osdl_live(value handle) {
 
 /* Allocate before calling the SDL constructor, then publish without allocating.
  * This leaves no native resource to free if OCaml allocation fails. */
-static inline value osdl_new_handle(value parent) {
+static inline value osdl_new_handle_with_ops(value parent, struct custom_operations* ops) {
     CAMLparam1(parent);
     CAMLlocal1(cell);
-    cell = caml_alloc_custom(&osdl_handle_ops, sizeof(osdl_cell), 0, 1);
+    cell = caml_alloc_custom(ops, sizeof(osdl_cell), 0, 1);
 
     osdl_cell*   data = Data_custom_val(cell);
     SDL_ThreadID thread =
@@ -90,6 +90,10 @@ static inline value osdl_new_handle(value parent) {
     memcpy(data->thread, &thread, sizeof(thread));
 
     CAMLreturn(caml_alloc_2(0, cell, parent));
+}
+
+static inline value osdl_new_handle(value parent) {
+    return osdl_new_handle_with_ops(parent, &osdl_handle_ops);
 }
 
 static inline value osdl_publish(value handle, void* ptr, const char* fn) {
@@ -156,9 +160,12 @@ static inline int osdl_nonnegative_int(value v) {
     return n;
 }
 
+static inline bool osdl_fits_float(double n) {
+    return n >= -FLT_MAX && n <= FLT_MAX;
+}
+
 static inline float osdl_float(double n) {
-    if (!(n >= -FLT_MAX && n <= FLT_MAX))
-        caml_invalid_argument("SDL argument is not a finite C float");
+    if (!osdl_fits_float(n)) caml_invalid_argument("SDL argument is not a finite C float");
     return (float)n;
 }
 
