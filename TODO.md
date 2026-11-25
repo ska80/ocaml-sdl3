@@ -9,6 +9,7 @@
       gamepads, queued audio, and timers.
 - [x] Streaming texture uploads, render targets, and batches of rectangles.
 - [x] GPU device setup, window claims, and solid-color frames.
+- [x] GPU command buffers, swapchain render passes, and fences that signal completion.
 - [x] Image loading from a file or memory, texture loading, and PNG and JPEG output.
 - [x] Mixer and track playback, looping, gain, and mixing to a device or memory.
 - [x] Font loading, metrics, UTF-8 text measurement, and solid or blended text rendering.
@@ -20,7 +21,7 @@ versions with offscreen Vulkan. Separate installation of each add-on also passed
 
 ## Next
 
-- [ ] Extend the GPU bindings with command buffers, shaders, pipelines, and drawing commands.
+- [ ] Add GPU shaders, graphics pipelines, and drawing commands.
 - [ ] Add scoped write access to streaming textures without exposing pixels after unlock.
 - [ ] Add more window, display, touch, and gamepad APIs.
 - [ ] Add file and memory streams with clear ownership rules.

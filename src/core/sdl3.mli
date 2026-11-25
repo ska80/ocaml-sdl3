@@ -225,12 +225,21 @@ module Texture : sig
 end
 
 module Gpu : sig
-  (** SDL GPU device setup and window presentation. *)
+  (** SDL GPU devices, command buffers, and window presentation. *)
 
   type device
 
   type swapchain
   (** A GPU claim on a window. It manages the images used to present frames. *)
+
+  type command_buffer
+  (** A list of GPU operations to submit together. *)
+
+  type render_pass
+  (** A group of rendering operations that share the same target image. *)
+
+  type fence
+  (** A handle that signals completion of submitted GPU work. *)
 
   type shader_format = Spirv | Dxbc | Dxil | Msl | Metallib
   type present_mode = Vsync | Immediate | Mailbox
@@ -252,7 +261,8 @@ module Gpu : sig
       selects the driver. Set [debug] to [true] to enable SDL GPU validation. *)
 
   val destroy_device : device -> unit
-  (** Close the device. Release all its claims first. *)
+  (** Close the device. Release its window claims and fences first. Submit or
+      cancel any open command buffers. *)
 
   val driver : device -> string
   val shader_formats : device -> shader_format list
@@ -265,16 +275,58 @@ module Gpu : sig
       and [Vsync]. The claim keeps the device and window open. *)
 
   val release_window : swapchain -> unit
-  (** Release the claim before destroying the window or device. Calling this
-      again on a released claim does nothing. *)
+  (** Release the claim before destroying the window or device. If a command
+      buffer holds an image from this claim, submit that buffer first. Calling
+      this again on a released claim does nothing. *)
 
   val supports_present_mode : swapchain -> present_mode -> bool
   val supports_composition : swapchain -> composition -> bool
 
   val set_swapchain_parameters :
     swapchain -> composition:composition -> present_mode:present_mode -> unit
-  (** Set the display color format and presentation timing. If the window does
-      not support these settings, SDL can report an error. *)
+  (** Set the display color format and presentation timing. If a command buffer
+      holds an image from this claim, submit that buffer first. SDL can reject
+      settings that the window does not support. *)
+
+  val acquire_command_buffer : device -> command_buffer
+  (** Start recording GPU work. Submit or cancel the buffer when finished. *)
+
+  val submit_command_buffer : command_buffer -> unit
+  (** Queue the recorded work and present any acquired window image. End the
+      render pass first. Once SDL receives the buffer, the binding closes it
+      even if SDL reports an error. *)
+
+  val submit_and_acquire_fence : command_buffer -> fence
+  (** Submit and return a fence for the work. The same rules apply as for
+      [submit_command_buffer]. Release the fence when you no longer need it. *)
+
+  val cancel_command_buffer : command_buffer -> unit
+  (** Discard recorded work. If the buffer holds a window image, submit it
+      instead. Calling this on a closed buffer does nothing. *)
+
+  val fence_signaled : fence -> bool
+  (** Return [true] if the GPU finished the work for this fence. *)
+
+  val wait_fence : fence -> unit
+  (** Wait for the GPU to finish the work for this fence. *)
+
+  val release_fence : fence -> unit
+  (** Release the fence. Calling this again on a released fence does nothing. *)
+
+  val begin_swapchain_render_pass :
+    command_buffer -> swapchain -> clear:Color.t -> render_pass option
+  (** Wait for a window image and start a pass that clears it. The claim and
+      command buffer must belong to the same device. If this returns [None], no
+      image was available and you can still cancel the buffer.
+
+      If this returns a pass, end the pass before submitting the buffer. The
+      claim stays busy until submission. Do not acquire another image in the
+      same buffer. If an SDL call fails here, the binding closes the buffer
+      before raising [Error]. It cancels the buffer if no image was acquired.
+      Otherwise, it submits the buffer to return the image to SDL. *)
+
+  val end_render_pass : render_pass -> unit
+  (** End the pass. Calling this again on an ended pass does nothing. *)
 
   val clear_and_present : swapchain -> Color.t -> bool
   (** Wait for a window image, clear it to the given color, and submit it for

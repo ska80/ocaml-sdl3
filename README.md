@@ -113,13 +113,23 @@ Use `Renderer.fill_rects` or `Renderer.draw_rects` to submit an array of rectang
 
 ## Set up GPU presentation
 
-`Sdl3.Gpu` opens devices and presents solid-color frames. It does not yet expose shaders or drawing
-commands. Start SDL with `Video`. Pass the shader formats your program can supply to
+`Sdl3.Gpu` opens devices and presents solid-color frames. It does not yet expose shader creation
+or draw calls. Start SDL with `Video`. Pass the shader formats your program can supply to
 `Gpu.create_device`. Use `Gpu.claim_window` to give the device control of a window.
 
 `Gpu.clear_and_present` clears a window image to one color and submits it for display. If it returns
 `false`, SDL had no image available. Release the claim before destroying the device or window. Do
 not attach a `Renderer` to a claimed window.
+
+A command buffer holds GPU work before submission. Open one with `Gpu.acquire_command_buffer`.
+Use `Gpu.begin_swapchain_render_pass` to acquire and clear a window image. If it returns `None`,
+no image is available and you can cancel the buffer. If it returns a pass, call
+`Gpu.end_render_pass` and then `Gpu.submit_command_buffer`. You cannot cancel after acquiring
+an image.
+
+A fence signals when submitted GPU work finishes. Use `Gpu.submit_and_acquire_fence` to get a
+fence at submission. Call `Gpu.wait_fence` to wait for completion. Release the fence with
+`Gpu.release_fence` when you no longer need it.
 
 ## Run the tests
 

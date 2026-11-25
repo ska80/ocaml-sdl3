@@ -198,6 +198,9 @@ end
 module Gpu = struct
   type device
   type swapchain
+  type command_buffer
+  type render_pass
+  type fence
   type shader_format = Spirv | Dxbc | Dxil | Msl | Metallib
   type present_mode = Vsync | Immediate | Mailbox
   type composition = Sdr | Sdr_linear | Hdr_extended_linear | Hdr10
@@ -234,6 +237,28 @@ module Gpu = struct
   external set_swapchain_parameters :
     swapchain -> composition:composition -> present_mode:present_mode -> unit
     = "osdl_gpu_set_swapchain_parameters"
+
+  external acquire_command_buffer : device -> command_buffer
+    = "osdl_gpu_acquire_command_buffer"
+
+  external submit_command_buffer : command_buffer -> unit
+    = "osdl_gpu_submit_command_buffer"
+
+  external submit_and_acquire_fence : command_buffer -> fence
+    = "osdl_gpu_submit_and_acquire_fence"
+
+  external cancel_command_buffer : command_buffer -> unit
+    = "osdl_gpu_cancel_command_buffer"
+
+  external fence_signaled : fence -> bool = "osdl_gpu_fence_signaled"
+  external wait_fence : fence -> unit = "osdl_gpu_wait_fence"
+  external release_fence : fence -> unit = "osdl_gpu_release_fence"
+
+  external begin_swapchain_render_pass :
+    command_buffer -> swapchain -> clear:Color.t -> render_pass option
+    = "osdl_gpu_begin_swapchain_render_pass"
+
+  external end_render_pass : render_pass -> unit = "osdl_gpu_end_render_pass"
 
   external clear_and_present : swapchain -> Color.t -> bool
     = "osdl_gpu_clear_and_present"

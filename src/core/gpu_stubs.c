@@ -118,15 +118,22 @@ CAMLprim value osdl_gpu_claim_window(value device, value window) {
     CAMLreturn(osdl_publish(claim, w, "SDL_ClaimWindowForGPUDevice"));
 }
 
-/* Use only after validating or taking the claim. It keeps the device live. */
-static SDL_GPUDevice* osdl_gpu_claim_device(value claim) {
-    return osdl_cell_val(osdl_parent(claim))->ptr;
+/* A live child keeps its device open. Use only after checking the child. */
+static SDL_GPUDevice* osdl_gpu_parent_device(value child) {
+    return osdl_cell_val(osdl_parent(child))->ptr;
+}
+
+static SDL_Window* osdl_gpu_available_window(value claim) {
+    SDL_Window* w = osdl_live(claim);
+    if (osdl_cell_val(claim)->children)
+        caml_invalid_argument("Submit the GPU command buffer before reusing the swapchain");
+    return w;
 }
 
 CAMLprim value osdl_gpu_release_window(value claim) {
     SDL_Window* w = osdl_take(claim);
     if (w) {
-        SDL_ReleaseWindowFromGPUDevice(osdl_gpu_claim_device(claim), w);
+        SDL_ReleaseWindowFromGPUDevice(osdl_gpu_parent_device(claim), w);
         --osdl_cell_val(Field(claim, 2))->children;
     }
     return Val_unit;
@@ -153,26 +160,128 @@ static SDL_GPUSwapchainComposition osdl_gpu_composition(value composition) {
 
 CAMLprim value osdl_gpu_supports_present_mode(value claim, value mode) {
     SDL_Window* w = osdl_live(claim);
-    return Val_bool(SDL_WindowSupportsGPUPresentMode(osdl_gpu_claim_device(claim), w,
+    return Val_bool(SDL_WindowSupportsGPUPresentMode(osdl_gpu_parent_device(claim), w,
                                                      osdl_gpu_present_mode(mode)));
 }
 
 CAMLprim value osdl_gpu_supports_composition(value claim, value composition) {
     SDL_Window* w = osdl_live(claim);
-    return Val_bool(SDL_WindowSupportsGPUSwapchainComposition(osdl_gpu_claim_device(claim), w,
+    return Val_bool(SDL_WindowSupportsGPUSwapchainComposition(osdl_gpu_parent_device(claim), w,
                                                               osdl_gpu_composition(composition)));
 }
 
 CAMLprim value osdl_gpu_set_swapchain_parameters(value claim, value composition, value mode) {
-    SDL_Window* w = osdl_live(claim);
-    osdl_check(SDL_SetGPUSwapchainParameters(osdl_gpu_claim_device(claim), w,
+    SDL_Window* w = osdl_gpu_available_window(claim);
+    osdl_check(SDL_SetGPUSwapchainParameters(osdl_gpu_parent_device(claim), w,
                                              osdl_gpu_composition(composition),
                                              osdl_gpu_present_mode(mode)),
                "SDL_SetGPUSwapchainParameters");
     return Val_unit;
 }
 
-/* Clear and present a frame without exposing the borrowed swapchain texture. */
+/* Command buffers and fences. */
+
+CAMLprim value osdl_gpu_acquire_command_buffer(value device) {
+    CAMLparam1(device);
+    CAMLlocal2(cell, buffer);
+
+    /* The third field keeps the window claim live after image acquisition. */
+    cell   = osdl_new_cell(device, &osdl_handle_ops);
+    buffer = caml_alloc_3(0, cell, device, Val_unit);
+
+    SDL_GPUCommandBuffer* commands = SDL_AcquireGPUCommandBuffer(osdl_live(device));
+    CAMLreturn(osdl_publish(buffer, commands, "SDL_AcquireGPUCommandBuffer"));
+}
+
+static value osdl_gpu_command_claim(value buffer) {
+    return Field(buffer, 2);
+}
+
+/* SDL consumes a command buffer on submission, even if the call fails. */
+static SDL_GPUCommandBuffer* osdl_gpu_take_live_commands(value buffer) {
+    SDL_GPUCommandBuffer* commands = osdl_take(buffer);
+    if (!commands) caml_invalid_argument("SDL handle is closed");
+
+    value claim = osdl_gpu_command_claim(buffer);
+    if (claim != Val_unit) {
+        --osdl_cell_val(claim)->children;
+        Store_field(buffer, 2, Val_unit);
+    }
+    return commands;
+}
+
+CAMLprim value osdl_gpu_submit_command_buffer(value buffer) {
+    SDL_GPUCommandBuffer* commands = osdl_gpu_take_live_commands(buffer);
+    osdl_check(SDL_SubmitGPUCommandBuffer(commands), "SDL_SubmitGPUCommandBuffer");
+    return Val_unit;
+}
+
+CAMLprim value osdl_gpu_submit_and_acquire_fence(value buffer) {
+    CAMLparam1(buffer);
+    CAMLlocal1(fence);
+
+    fence = osdl_new_handle(osdl_parent(buffer));
+
+    SDL_GPUCommandBuffer* commands = osdl_gpu_take_live_commands(buffer);
+    SDL_GPUFence*         ptr      = SDL_SubmitGPUCommandBufferAndAcquireFence(commands);
+    CAMLreturn(osdl_publish(fence, ptr, "SDL_SubmitGPUCommandBufferAndAcquireFence"));
+}
+
+CAMLprim value osdl_gpu_cancel_command_buffer(value buffer) {
+    osdl_require_thread(osdl_cell_thread(osdl_cell_val(buffer)));
+    if (osdl_gpu_command_claim(buffer) != Val_unit)
+        caml_invalid_argument("Submit the GPU command buffer after acquiring a window image");
+
+    SDL_GPUCommandBuffer* commands = osdl_take(buffer);
+    if (commands) osdl_check(SDL_CancelGPUCommandBuffer(commands), "SDL_CancelGPUCommandBuffer");
+    return Val_unit;
+}
+
+CAMLprim value osdl_gpu_fence_signaled(value fence) {
+    SDL_GPUFence* ptr = osdl_live(fence);
+    return Val_bool(SDL_QueryGPUFence(osdl_gpu_parent_device(fence), ptr));
+}
+
+CAMLprim value osdl_gpu_wait_fence(value fence) {
+    CAMLparam1(fence);
+
+    SDL_GPUFence*  ptr = osdl_live(fence);
+    SDL_GPUDevice* d   = osdl_gpu_parent_device(fence);
+
+    caml_enter_blocking_section_no_pending();
+    bool ok = SDL_WaitForGPUFences(d, true, &ptr, 1);
+    caml_leave_blocking_section();
+
+    osdl_check(ok, "SDL_WaitForGPUFences");
+    CAMLreturn(Val_unit);
+}
+
+CAMLprim value osdl_gpu_release_fence(value fence) {
+    SDL_GPUFence* ptr = osdl_take(fence);
+    if (ptr) SDL_ReleaseGPUFence(osdl_gpu_parent_device(fence), ptr);
+    return Val_unit;
+}
+
+/* Swapchain render passes. */
+
+static bool osdl_gpu_wait_for_image(SDL_GPUCommandBuffer* commands, SDL_Window* window,
+                                    SDL_GPUTexture** image) {
+    caml_enter_blocking_section_no_pending();
+    bool ok = SDL_WaitAndAcquireGPUSwapchainTexture(commands, window, image, NULL, NULL);
+    caml_leave_blocking_section();
+    return ok;
+}
+
+static SDL_GPURenderPass* osdl_gpu_begin_clear_pass(SDL_GPUCommandBuffer* commands,
+                                                    SDL_GPUTexture* image, SDL_Color color) {
+    SDL_GPUColorTargetInfo target = {
+        .texture     = image,
+        .clear_color = {color.r / 255.0f, color.g / 255.0f, color.b / 255.0f, color.a / 255.0f},
+        .load_op     = SDL_GPU_LOADOP_CLEAR,
+        .store_op    = SDL_GPU_STOREOP_STORE,
+    };
+    return SDL_BeginGPURenderPass(commands, &target, 1, NULL);
+}
 
 CAMLnoret static void osdl_gpu_fail_frame(SDL_GPUCommandBuffer* commands, bool has_image,
                                           const char* fn) {
@@ -187,34 +296,58 @@ CAMLnoret static void osdl_gpu_fail_frame(SDL_GPUCommandBuffer* commands, bool h
     osdl_raise_error(message);
 }
 
+CAMLprim value osdl_gpu_begin_swapchain_render_pass(value buffer, value claim, value color) {
+    CAMLparam3(buffer, claim, color);
+    CAMLlocal2(pass, result);
+
+    pass   = osdl_new_handle(buffer);
+    result = caml_alloc_some(pass);
+
+    SDL_GPUCommandBuffer* commands = osdl_live(buffer);
+    if (osdl_cell_val(buffer)->children) caml_invalid_argument("End the active GPU pass first");
+    if (osdl_gpu_command_claim(buffer) != Val_unit)
+        caml_invalid_argument("The GPU command buffer already holds a window image");
+
+    SDL_Window* w = osdl_gpu_available_window(claim);
+    if (osdl_parent(buffer) != osdl_parent(claim))
+        caml_invalid_argument("Use the GPU device that claimed the window");
+
+    SDL_GPUTexture* image = NULL;
+    if (!osdl_gpu_wait_for_image(commands, w, &image))
+        osdl_gpu_fail_frame(osdl_gpu_take_live_commands(buffer), image != NULL,
+                            "SDL_WaitAndAcquireGPUSwapchainTexture");
+    if (!image) CAMLreturn(Val_none);
+
+    SDL_GPURenderPass* ptr = osdl_gpu_begin_clear_pass(commands, image, osdl_color(color));
+    if (!ptr)
+        osdl_gpu_fail_frame(osdl_gpu_take_live_commands(buffer), true, "SDL_BeginGPURenderPass");
+
+    Store_field(buffer, 2, claim);
+    ++osdl_cell_val(claim)->children;
+    osdl_publish(pass, ptr, "SDL_BeginGPURenderPass");
+    CAMLreturn(result);
+}
+
+OSDL_DESTROY(osdl_gpu_end_render_pass, SDL_GPURenderPass, SDL_EndGPURenderPass)
+
 CAMLprim value osdl_gpu_clear_and_present(value claim, value color) {
     CAMLparam2(claim, color);
 
-    SDL_Window*    w = osdl_live(claim);
-    SDL_GPUDevice* d = osdl_gpu_claim_device(claim);
-    SDL_Color      c = osdl_color(color);
+    SDL_Window*    w = osdl_gpu_available_window(claim);
+    SDL_GPUDevice* d = osdl_gpu_parent_device(claim);
 
     SDL_GPUCommandBuffer* commands = SDL_AcquireGPUCommandBuffer(d);
     if (!commands) osdl_fail("SDL_AcquireGPUCommandBuffer");
 
     SDL_GPUTexture* image = NULL;
-    caml_enter_blocking_section_no_pending();
-    bool ok = SDL_WaitAndAcquireGPUSwapchainTexture(commands, w, &image, NULL, NULL);
-    caml_leave_blocking_section();
-
-    if (!ok) osdl_gpu_fail_frame(commands, image != NULL, "SDL_WaitAndAcquireGPUSwapchainTexture");
+    if (!osdl_gpu_wait_for_image(commands, w, &image))
+        osdl_gpu_fail_frame(commands, image != NULL, "SDL_WaitAndAcquireGPUSwapchainTexture");
     if (!image) {
         osdl_check(SDL_CancelGPUCommandBuffer(commands), "SDL_CancelGPUCommandBuffer");
         CAMLreturn(Val_false);
     }
 
-    SDL_GPUColorTargetInfo target = {
-        .texture     = image,
-        .clear_color = {c.r / 255.0f, c.g / 255.0f, c.b / 255.0f, c.a / 255.0f},
-        .load_op     = SDL_GPU_LOADOP_CLEAR,
-        .store_op    = SDL_GPU_STOREOP_STORE,
-    };
-    SDL_GPURenderPass* pass = SDL_BeginGPURenderPass(commands, &target, 1, NULL);
+    SDL_GPURenderPass* pass = osdl_gpu_begin_clear_pass(commands, image, osdl_color(color));
     if (!pass) osdl_gpu_fail_frame(commands, true, "SDL_BeginGPURenderPass");
     SDL_EndGPURenderPass(pass);
     osdl_check(SDL_SubmitGPUCommandBuffer(commands), "SDL_SubmitGPUCommandBuffer");

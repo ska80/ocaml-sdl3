@@ -10,6 +10,30 @@ let invalid f =
 let using destroy handle f =
   Fun.protect ~finally:(fun () -> destroy handle) (fun () -> f handle)
 
+let command_buffers device =
+  let open Gpu in
+  using cancel_command_buffer (acquire_command_buffer device) (fun commands ->
+      using cancel_command_buffer (acquire_command_buffer device) (fun other ->
+          invalid (fun () -> destroy_device device);
+          Domain.join
+            (Domain.spawn (fun () ->
+                 invalid (fun () -> submit_command_buffer commands);
+                 invalid (fun () -> cancel_command_buffer commands)));
+          cancel_command_buffer commands;
+          invalid (fun () -> submit_command_buffer commands);
+          submit_command_buffer other;
+          invalid (fun () -> submit_command_buffer other)));
+  using cancel_command_buffer (acquire_command_buffer device) (fun commands ->
+      using release_fence (submit_and_acquire_fence commands) (fun fence ->
+          invalid (fun () -> destroy_device device);
+          invalid (fun () -> submit_and_acquire_fence commands);
+          Domain.join
+            (Domain.spawn (fun () -> invalid (fun () -> release_fence fence)));
+          wait_fence fence;
+          check (fence_signaled fence) "Fence after wait";
+          release_fence fence;
+          invalid (fun () -> fence_signaled fence)))
+
 let frames claim =
   check (Gpu.supports_present_mode claim Vsync) "Vsync support";
   check (Gpu.supports_composition claim Sdr) "SDR support";
@@ -22,6 +46,63 @@ let frames claim =
     let color = Color.rgb (i * 32) 96 192 in
     check (Gpu.clear_and_present claim color) "No frame submitted"
   done
+
+let render_pass device claim =
+  let open Gpu in
+  let clear = Color.rgb 40 80 120 in
+  using cancel_command_buffer (acquire_command_buffer device) (fun spare ->
+      let commands = acquire_command_buffer device in
+      let pass =
+        match begin_swapchain_render_pass commands claim ~clear with
+        | Some pass -> pass
+        | None ->
+            cancel_command_buffer commands;
+            failwith "No swapchain render pass"
+        | exception exn ->
+            cancel_command_buffer commands;
+            raise exn
+      in
+      Fun.protect
+        ~finally:(fun () ->
+          end_render_pass pass;
+          using release_fence (submit_and_acquire_fence commands) wait_fence)
+        (fun () ->
+          Gc.full_major ();
+          invalid (fun () -> submit_command_buffer commands);
+          invalid (fun () -> submit_and_acquire_fence commands);
+          invalid (fun () -> begin_swapchain_render_pass commands claim ~clear);
+          invalid (fun () -> begin_swapchain_render_pass spare claim ~clear);
+          invalid (fun () -> clear_and_present claim clear);
+          invalid (fun () ->
+              set_swapchain_parameters claim ~composition:Sdr
+                ~present_mode:Vsync);
+          end_render_pass pass;
+          invalid (fun () -> cancel_command_buffer commands);
+          invalid (fun () -> release_window claim));
+      invalid (fun () -> begin_swapchain_render_pass commands claim ~clear);
+      check (clear_and_present claim clear) "Claim reusable after submission")
+
+let wrong_device device context claim =
+  let open Gpu in
+  using destroy_device
+    (create_device ~driver:(driver device) context (shader_formats device))
+    (fun other ->
+      using cancel_command_buffer (acquire_command_buffer other)
+        (fun commands ->
+          invalid (fun () ->
+              begin_swapchain_render_pass commands claim
+                ~clear:(Color.rgb 0 0 0))))
+
+let hidden_window device claim =
+  let open Gpu in
+  using cancel_command_buffer (acquire_command_buffer device) (fun commands ->
+      match
+        begin_swapchain_render_pass commands claim ~clear:(Color.rgb 0 0 0)
+      with
+      | None -> ()
+      | Some pass ->
+          end_render_pass pass;
+          submit_command_buffer commands)
 
 let window device context =
   using Window.destroy (Window.create context ~title:"SDL GPU test" ~w:64 ~h:48)
@@ -40,9 +121,12 @@ let window device context =
                  invalid (fun () -> Gpu.release_window claim);
                  invalid (fun () -> Gpu.clear_and_present claim color)));
           frames claim;
+          wrong_device device context claim;
+          render_pass device claim;
           Gpu.wait_idle device;
           Window.hide window;
           ignore (Gpu.clear_and_present claim color);
+          hidden_window device claim;
           Gpu.release_window claim;
           invalid (fun () -> Gpu.clear_and_present claim color));
       Window.show window;
@@ -61,6 +145,8 @@ let () =
           invalid (fun () -> quit context);
           check (List.mem (Gpu.driver device) (Gpu.drivers ())) "Device driver";
           check (Gpu.shader_formats device <> []) "Device shader formats";
+          command_buffers device;
           window device context;
           Gpu.destroy_device device;
-          invalid (fun () -> Gpu.wait_idle device)))
+          invalid (fun () -> Gpu.wait_idle device);
+          invalid (fun () -> Gpu.acquire_command_buffer device)))
