@@ -1,6 +1,8 @@
-# Local files and Dune output
-/.agent-shell/
+# ignore files
+
 /_build/
 /_opam/
 /*.install
 /compile_commands.json
+
+/.agent-shell/
