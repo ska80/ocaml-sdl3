@@ -1,6 +1,7 @@
 (lang dune 3.25)
 (name ocaml-sdl3)
 (version 0.1.0)
+(license MIT)
 (generate_opam_files true)
 
 (package

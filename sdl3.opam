@@ -2,6 +2,7 @@
 opam-version: "2.0"
 version: "0.1.0"
 synopsis: "OCaml bindings for SDL3"
+license: "MIT"
 depends: [
   "dune" {>= "3.25"}
   "ocaml" {>= "5.4"}

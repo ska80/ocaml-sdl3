@@ -29,6 +29,7 @@
 - [x] [Plan for audio and event dispatch](docs/callback-dispatch.md) on the main thread.
 - [x] Native and bytecode tests on Linux with OCaml 5.4.1 and 5.5.2 (Dune 3.25.0).
 - [x] Runtime tests on Linux with the oldest supported add-on releases.
+- [x] [MIT license](LICENSE) for the bindings.
 
 The full suite uses SDL 3.4.16, SDL3_image 3.4.6, SDL3_mixer 3.2.4, and SDL3_ttf 3.2.2. The core
 also builds and passes its tests with SDL 3.2.0 and no add-ons. The GPU tests passed on both SDL
@@ -39,4 +40,4 @@ of each add-on also passed.
 ## Next
 
 - [ ] Add macOS and Windows builds.
-- [ ] Select release metadata and a license before publishing the opam packages.
+- [ ] Complete the release metadata before publishing the opam packages.
