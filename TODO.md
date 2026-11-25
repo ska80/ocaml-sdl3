@@ -26,6 +26,7 @@
 - [x] Audio device discovery and selection, queued recording, and mixer track seeking, fades, loop
       control, and playback speed.
 - [x] SDL3_image animation loading and SDL3_ttf text engines for surfaces and renderers.
+- [x] [Plan for audio and event dispatch](docs/callback-dispatch.md) on the main thread.
 - [x] Native and bytecode tests on Linux with OCaml 5.4.1 and 5.5.2 (Dune 3.25.0).
 - [x] Runtime tests on Linux with the oldest supported add-on releases.
 
@@ -37,6 +38,5 @@ of each add-on also passed.
 
 ## Next
 
-- [ ] Plan how to dispatch audio and event callbacks before allowing native threads to call OCaml.
 - [ ] Add macOS and Windows builds.
 - [ ] Select release metadata and a license before publishing the opam packages.
