@@ -2,7 +2,15 @@
 opam-version: "2.0"
 version: "0.1.0"
 synopsis: "OCaml bindings for SDL3_image"
+description:
+  "Load images and animations, create SDL3 textures from images, and save PNG and JPEG files."
+maintainer: ["Kamil Shakirov <kamils80@gmail.com>"]
+authors: ["Kamil Shakirov"]
 license: "MIT"
+tags: ["sdl3" "graphics" "image"]
+homepage: "https://github.com/ska80/ocaml-sdl3"
+doc: "https://github.com/ska80/ocaml-sdl3/tree/master/docs"
+bug-reports: "https://github.com/ska80/ocaml-sdl3/issues"
 depends: [
   "dune" {>= "3.25"}
   "sdl3" {= version}
@@ -24,4 +32,5 @@ build: [
     "@doc" {with-doc}
   ]
 ]
+dev-repo: "git+https://github.com/ska80/ocaml-sdl3.git"
 x-maintenance-intent: ["(latest)"]
