@@ -60,11 +60,11 @@ List `sdl3` and any add-ons you use in your `dune` file. For a program that uses
  (libraries sdl3))
 ```
 
-Run the [Hello example](examples/hello/hello.ml) from the repository root. Press `Esc` or close the
+Run the [Basic example](examples/basic/basic.ml) from the repository root. Press `Esc` or close the
 window to exit.
 
 ```sh
-dune exec ./examples/hello/hello.exe
+dune exec ./examples/basic/basic.exe
 ```
 
 Use `Sdl3.with_init` to start and stop SDL. Pass `[Sdl3.Video]` for a window or `[Sdl3.Audio]` for a

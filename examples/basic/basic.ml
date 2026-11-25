@@ -41,7 +41,7 @@ let () =
   Arg.parse
     [ ("--frames", Arg.Set_int frames, "Stop after this many frames") ]
     (fun _ -> raise (Arg.Bad "Unexpected argument"))
-    "hello [--frames COUNT]";
+    "basic [--frames COUNT]";
   try run !frames
   with Error message ->
     prerr_endline message;
