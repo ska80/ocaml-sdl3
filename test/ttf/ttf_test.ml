@@ -84,6 +84,9 @@ let surface_text sdl context =
               using Surface.destroy (Surface.create sdl ~w:40 ~h:32)
                 (fun target ->
                   Surface.fill target black;
+                  Surface.with_lock target (fun _ ->
+                      invalid (fun () ->
+                          Text.draw_surface text target ~x:4 ~y:2));
                   Text.draw_surface text target ~x:4 ~y:2;
                   check
                     (count_color target ~x:4 ~y:2 ~w ~h white > 0)

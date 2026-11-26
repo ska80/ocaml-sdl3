@@ -84,6 +84,13 @@ static inline void* osdl_live(value handle) {
     return cell->ptr;
 }
 
+static inline SDL_Surface* osdl_unlocked_surface(value surface) {
+    SDL_Surface* pixels = osdl_live(surface);
+    if (pixels->flags & SDL_SURFACE_LOCKED)
+        caml_invalid_argument("Finish the SDL surface lock before using the surface");
+    return pixels;
+}
+
 static inline void osdl_require_subsystem(value context, SDL_InitFlags flags, const char* message) {
     osdl_live(context);
     if (SDL_WasInit(flags) != flags) caml_invalid_argument(message);

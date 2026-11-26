@@ -123,7 +123,7 @@ module Frect = struct
 end
 
 module Pixel_format = struct
-  type t = Rgba32 | Bgra32 | Rgb24
+  type t = Rgba32 | Bgra32 | Rgb24 | Index8
 end
 
 module Display = struct
@@ -195,29 +195,6 @@ module Window = struct
   external restore : t -> unit = "osdl_window_restore"
 end
 
-module Surface = struct
-  type t
-
-  external create : ?format:Pixel_format.t -> context -> w:int -> h:int -> t
-    = "osdl_surface_create"
-
-  external load_bmp : context -> string -> t = "osdl_surface_load_bmp"
-  external save_bmp : t -> string -> unit = "osdl_surface_save_bmp"
-  external load_bmp_io : [> `Read ] Io.t -> t = "osdl_surface_load_bmp_io"
-
-  external save_bmp_io : t -> [> `Write ] Io.t -> unit
-    = "osdl_surface_save_bmp_io"
-
-  external destroy : t -> unit = "osdl_surface_destroy"
-  external size : t -> int * int = "osdl_surface_size"
-  external fill : ?rect:Rect.t -> t -> Color.t -> unit = "osdl_surface_fill"
-
-  external read_pixel : t -> x:int -> y:int -> Color.t
-    = "osdl_surface_read_pixel"
-
-  external read_rgba : t -> byte_buffer -> unit = "osdl_surface_read_rgba"
-end
-
 module Blend_mode = struct
   type factor =
     | Zero
@@ -238,6 +215,102 @@ module Blend_mode = struct
 
   external compose : color:equation -> alpha:equation -> t
     = "osdl_blend_mode_compose"
+end
+
+module Surface = struct
+  type t
+  type scale_mode = Nearest | Linear
+  type flip = No_flip | Horizontal | Vertical | Both
+  type color_key = Color of Color.t | Index of int
+
+  module Palette = struct
+    type t
+
+    external create : context -> Color.t array -> t = "osdl_palette_create"
+
+    external set_colors : t -> first:int -> Color.t array -> unit
+      = "osdl_palette_set_colors"
+
+    external destroy : t -> unit = "osdl_palette_destroy"
+  end
+
+  external create : ?format:Pixel_format.t -> context -> w:int -> h:int -> t
+    = "osdl_surface_create"
+
+  external load_bmp : context -> string -> t = "osdl_surface_load_bmp"
+  external save_bmp : t -> string -> unit = "osdl_surface_save_bmp"
+  external load_bmp_io : [> `Read ] Io.t -> t = "osdl_surface_load_bmp_io"
+
+  external save_bmp_io : t -> [> `Write ] Io.t -> unit
+    = "osdl_surface_save_bmp_io"
+
+  external destroy : t -> unit = "osdl_surface_destroy"
+  external size : t -> int * int = "osdl_surface_size"
+  external format : t -> Pixel_format.t option = "osdl_surface_format"
+  external fill : ?rect:Rect.t -> t -> Color.t -> unit = "osdl_surface_fill"
+
+  external read_pixel : t -> x:int -> y:int -> Color.t
+    = "osdl_surface_read_pixel"
+
+  external read_rgba : t -> byte_buffer -> unit = "osdl_surface_read_rgba"
+
+  external blit : ?src:Rect.t -> ?dst:Rect.t -> t -> t -> unit
+    = "osdl_surface_blit"
+
+  external blit_scaled :
+    ?src:Rect.t -> ?dst:Rect.t -> ?scale_mode:scale_mode -> t -> t -> unit
+    = "osdl_surface_blit_scaled"
+
+  external convert : t -> format:Pixel_format.t -> t = "osdl_surface_convert"
+
+  external scale : ?scale_mode:scale_mode -> t -> w:int -> h:int -> t
+    = "osdl_surface_scale"
+
+  external flip : t -> flip -> unit = "osdl_surface_flip"
+
+  external set_color_key : t -> color_key option -> unit
+    = "osdl_surface_set_color_key"
+
+  external set_blend_mode : t -> Blend_mode.t -> unit
+    = "osdl_surface_set_blend_mode"
+
+  external set_palette : t -> Palette.t -> unit = "osdl_surface_set_palette"
+
+  module Locked = struct
+    type t
+
+    external size : t -> int * int = "osdl_surface_locked_size"
+
+    external read_pixel : t -> x:int -> y:int -> Color.t
+      = "osdl_surface_locked_read_pixel"
+
+    external set_pixel : t -> x:int -> y:int -> Color.t -> unit
+      = "osdl_surface_locked_set_pixel"
+
+    external read_index : t -> x:int -> y:int -> int
+      = "osdl_surface_locked_read_index"
+
+    external set_index : t -> x:int -> y:int -> int -> unit
+      = "osdl_surface_locked_set_index"
+
+    external copy_from : t -> byte_buffer -> pitch:int -> unit
+      = "osdl_surface_locked_copy_from"
+
+    external copy_to : t -> byte_buffer -> pitch:int -> unit
+      = "osdl_surface_locked_copy_to"
+  end
+
+  external prepare_lock : t -> Locked.t = "osdl_surface_prepare_lock"
+  external lock_pixels : Locked.t -> unit = "osdl_surface_lock_pixels"
+  external unlock_pixels : Locked.t -> unit = "osdl_surface_unlock_pixels"
+
+  let with_lock surface f =
+    let view = prepare_lock surface in
+    Fun.protect
+      ~finally:(fun () -> unlock_pixels view)
+      (fun () ->
+        lock_pixels view;
+        f view)
 end
 
 type +'access texture
@@ -325,8 +398,8 @@ module Texture = struct
   type t = [ `Static | `Streaming | `Target ] texture
   type streaming = [ `Streaming ] texture
   type target = [ `Target ] texture
-  type scale_mode = Nearest | Linear
-  type flip = No_flip | Horizontal | Vertical | Both
+  type scale_mode = Surface.scale_mode = Nearest | Linear
+  type flip = Surface.flip = No_flip | Horizontal | Vertical | Both
   type borders = { left : float; right : float; top : float; bottom : float }
 
   external of_surface : Renderer.t -> Surface.t -> t = "osdl_texture_of_surface"

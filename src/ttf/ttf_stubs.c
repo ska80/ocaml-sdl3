@@ -258,7 +258,7 @@ OSDL_ACTION(osdl_ttf_text_update, TTF_UpdateText)
 
 CAMLprim value osdl_ttf_text_draw_surface(value text, value surface, value x, value y) {
     TTF_Text*    ptr = osdl_live(text);
-    SDL_Surface* s   = osdl_live(surface);
+    SDL_Surface* s   = osdl_unlocked_surface(surface);
     int          dx  = osdl_int(x);
     int          dy  = osdl_int(y);
     if (dx >= s->w || dy >= s->h) return Val_unit;

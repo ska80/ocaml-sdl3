@@ -390,22 +390,79 @@ CAMLprim value osdl_blend_mode_compose(value color, value alpha) {
     CAMLreturn(caml_alloc_1(0, encoded));
 }
 
+static SDL_ScaleMode osdl_scale_mode(value mode) {
+    /* Surface.scale_mode and Texture.scale_mode. */
+    return Int_val(mode) == 0 ? SDL_SCALEMODE_NEAREST : SDL_SCALEMODE_LINEAR;
+}
+
+static SDL_FlipMode osdl_flip_mode(value mode) {
+    /* Surface.flip and Texture.flip. */
+    static const SDL_FlipMode modes[] = {SDL_FLIP_NONE, SDL_FLIP_HORIZONTAL, SDL_FLIP_VERTICAL,
+                                         SDL_FLIP_HORIZONTAL | SDL_FLIP_VERTICAL};
+    return modes[Int_val(mode)];
+}
+
 /* Surfaces. */
+
+/* Pixel_format.t constructor order. */
+static const SDL_PixelFormat osdl_pixel_formats[] = {
+    SDL_PIXELFORMAT_RGBA32,
+    SDL_PIXELFORMAT_BGRA32,
+    SDL_PIXELFORMAT_RGB24,
+    SDL_PIXELFORMAT_INDEX8,
+};
+
+static int osdl_pixel_format_index(SDL_PixelFormat format) {
+    for (size_t i = 0; i < SDL_arraysize(osdl_pixel_formats); ++i)
+        if (format == osdl_pixel_formats[i]) return (int)i;
+    return -1;
+}
+
+static void osdl_check_surface_dimensions(int width, int height, int bpp) {
+    /* SDL pads new surface rows to four bytes and uses int byte offsets. */
+    Uint64 pitch = ((Uint64)width * bpp + 3) & ~(Uint64)3;
+    if (pitch > INT_MAX || (height > 0 && pitch > (Uint64)(INT_MAX / height)))
+        caml_invalid_argument("SDL surface is too large");
+}
+
+static void osdl_check_surface_storage(const SDL_Surface* s) {
+    if (s->pitch < 0 || (s->h > 0 && s->pitch > INT_MAX / s->h))
+        caml_invalid_argument("SDL surface is too large");
+}
+
+CAMLnoret static void osdl_surface_fail_and_destroy(SDL_Surface* surface, const char* fn) {
+    char message[1024];
+    osdl_error_message(message, sizeof(message), fn);
+    SDL_DestroySurface(surface);
+    osdl_raise_error(message);
+}
+
+static SDL_Palette* osdl_surface_palette(SDL_Surface* surface) {
+    SDL_Palette* palette = SDL_GetSurfacePalette(surface);
+    if (!palette) caml_invalid_argument("The surface needs a palette");
+    return palette;
+}
+
+static void osdl_check_surface_byte_pixels(const SDL_Surface* s) {
+    if (SDL_ISPIXELFORMAT_FOURCC(s->format) || SDL_BITSPERPIXEL(s->format) < 8 ||
+        !SDL_BYTESPERPIXEL(s->format))
+        caml_invalid_argument("Convert the surface to a format with whole bytes per pixel first");
+}
 
 CAMLprim value osdl_surface_create(value format, value context, value w, value h) {
     CAMLparam4(format, context, w, h);
     CAMLlocal1(handle);
 
-    static const SDL_PixelFormat formats[] = {SDL_PIXELFORMAT_RGBA32, SDL_PIXELFORMAT_BGRA32,
-                                              SDL_PIXELFORMAT_RGB24};
-
-    handle = osdl_new_handle(context);
     osdl_live(context);
-
     SDL_PixelFormat pixel_format =
-        Is_long(format) ? SDL_PIXELFORMAT_RGBA32 : formats[Int_val(Some_val(format))];
-    SDL_Surface* surface =
-        SDL_CreateSurface(osdl_positive_int(w), osdl_positive_int(h), pixel_format);
+        Is_long(format) ? SDL_PIXELFORMAT_RGBA32 : osdl_pixel_formats[Int_val(Some_val(format))];
+    int width = osdl_positive_int(w), height = osdl_positive_int(h);
+    osdl_check_surface_dimensions(width, height, SDL_BYTESPERPIXEL(pixel_format));
+
+    handle               = osdl_new_handle(context);
+    SDL_Surface* surface = SDL_CreateSurface(width, height, pixel_format);
+    if (surface && pixel_format == SDL_PIXELFORMAT_INDEX8 && !SDL_CreateSurfacePalette(surface))
+        osdl_surface_fail_and_destroy(surface, "SDL_CreateSurfacePalette");
     CAMLreturn(osdl_publish(handle, surface, "SDL_CreateSurface"));
 }
 
@@ -420,7 +477,7 @@ CAMLprim value osdl_surface_load_bmp(value context, value path) {
 }
 
 CAMLprim value osdl_surface_save_bmp(value surface, value path) {
-    osdl_check(SDL_SaveBMP(osdl_live(surface), osdl_cstring(path)), "SDL_SaveBMP");
+    osdl_check(SDL_SaveBMP(osdl_unlocked_surface(surface), osdl_cstring(path)), "SDL_SaveBMP");
     return Val_unit;
 }
 
@@ -435,7 +492,7 @@ CAMLprim value osdl_surface_load_bmp_io(value stream) {
 }
 
 CAMLprim value osdl_surface_save_bmp_io(value surface, value stream) {
-    SDL_Surface*  s  = osdl_live(surface);
+    SDL_Surface*  s  = osdl_unlocked_surface(surface);
     SDL_IOStream* io = osdl_unborrowed_io(stream);
     if (osdl_append_io(stream)) caml_invalid_argument("BMP output cannot use an append stream");
 
@@ -450,8 +507,15 @@ CAMLprim value osdl_surface_size(value surface) {
     return osdl_int_pair(s->w, s->h);
 }
 
+CAMLprim value osdl_surface_format(value surface) {
+    SDL_Surface* s     = osdl_live(surface);
+    int          index = osdl_pixel_format_index(s->format);
+    return index < 0 ? Val_none : caml_alloc_some(Val_int(index));
+}
+
 CAMLprim value osdl_surface_fill(value rect, value surface, value color) {
-    SDL_Surface*    s = osdl_live(surface);
+    SDL_Surface* s = osdl_unlocked_surface(surface);
+    osdl_check_surface_storage(s);
     SDL_Rect        r;
     const SDL_Rect* area = NULL;
     if (Is_block(rect)) {
@@ -465,16 +529,21 @@ CAMLprim value osdl_surface_fill(value rect, value surface, value color) {
     return Val_unit;
 }
 
-CAMLprim value osdl_surface_read_pixel(value surface, value x, value y) {
+static value osdl_surface_color_at(SDL_Surface* s, int x, int y) {
     SDL_Color c;
-    osdl_check(
-        SDL_ReadSurfacePixel(osdl_live(surface), osdl_int(x), osdl_int(y), &c.r, &c.g, &c.b, &c.a),
-        "SDL_ReadSurfacePixel");
+    osdl_check(SDL_ReadSurfacePixel(s, x, y, &c.r, &c.g, &c.b, &c.a), "SDL_ReadSurfacePixel");
     return caml_alloc_4(0, Val_int(c.r), Val_int(c.g), Val_int(c.b), Val_int(c.a));
 }
 
+CAMLprim value osdl_surface_read_pixel(value surface, value x, value y) {
+    SDL_Surface* s = osdl_unlocked_surface(surface);
+    osdl_check_surface_storage(s);
+    return osdl_surface_color_at(s, osdl_int(x), osdl_int(y));
+}
+
 CAMLprim value osdl_surface_read_rgba(value surface, value buffer) {
-    SDL_Surface* s = osdl_live(surface);
+    SDL_Surface* s = osdl_unlocked_surface(surface);
+    osdl_check_surface_storage(s);
     if (!s->w || !s->h) return Val_unit;
     size_t capacity = (size_t)Caml_ba_array_val(buffer)->dim[0];
     if ((size_t)s->w > capacity / 4 / (size_t)s->h)
@@ -482,6 +551,7 @@ CAMLprim value osdl_surface_read_rgba(value surface, value buffer) {
 
     SDL_Surface* pixels = s;
     if (s->format != SDL_PIXELFORMAT_RGBA32 || SDL_SurfaceHasColorKey(s)) {
+        osdl_check_surface_dimensions(s->w, s->h, 4);
         pixels = SDL_ConvertSurface(s, SDL_PIXELFORMAT_RGBA32);
         if (!pixels) osdl_fail("SDL_ConvertSurface");
     }
@@ -501,6 +571,452 @@ CAMLprim value osdl_surface_read_rgba(value surface, value buffer) {
     if (locked) SDL_UnlockSurface(pixels);
     if (pixels != s) SDL_DestroySurface(pixels);
     return Val_unit;
+}
+
+/* Palette handles own a reference. A surface takes a separate SDL reference. */
+#define OSDL_PALETTE_SIZE 256
+
+static int osdl_palette_colors(value colors, int first, SDL_Color* entries) {
+    mlsize_t count = Wosize_val(colors);
+    if (first > OSDL_PALETTE_SIZE || count > (mlsize_t)(OSDL_PALETTE_SIZE - first))
+        caml_invalid_argument("The color range must fit in the palette");
+    for (mlsize_t i = 0; i < count; ++i)
+        entries[i] = osdl_color(Field(colors, i));
+    return (int)count;
+}
+
+CAMLprim value osdl_palette_create(value context, value colors) {
+    CAMLparam2(context, colors);
+    CAMLlocal1(handle);
+
+    osdl_live(context);
+    SDL_Color entries[OSDL_PALETTE_SIZE];
+    int       count = osdl_palette_colors(colors, 0, entries);
+
+    handle               = osdl_new_handle(context);
+    SDL_Palette* palette = SDL_CreatePalette(OSDL_PALETTE_SIZE);
+    if (palette && count && !SDL_SetPaletteColors(palette, entries, 0, count)) {
+        char message[1024];
+        osdl_error_message(message, sizeof(message), "SDL_SetPaletteColors");
+        SDL_DestroyPalette(palette);
+        osdl_raise_error(message);
+    }
+    CAMLreturn(osdl_publish(handle, palette, "SDL_CreatePalette"));
+}
+
+CAMLprim value osdl_palette_set_colors(value palette, value first, value colors) {
+    SDL_Palette* pal = osdl_live(palette);
+    SDL_Color    entries[OSDL_PALETTE_SIZE];
+    int          start = osdl_nonnegative_int(first);
+    int          count = osdl_palette_colors(colors, start, entries);
+
+    if (count) osdl_check(SDL_SetPaletteColors(pal, entries, start, count), "SDL_SetPaletteColors");
+    return Val_unit;
+}
+
+OSDL_DESTROY(osdl_palette_destroy, SDL_Palette, SDL_DestroyPalette)
+
+CAMLprim value osdl_surface_set_palette(value surface, value palette) {
+    SDL_Surface* s   = osdl_unlocked_surface(surface);
+    SDL_Palette* pal = osdl_live(palette);
+    if (s->format != SDL_PIXELFORMAT_INDEX8)
+        caml_invalid_argument("Palette replacement needs an Index8 surface");
+
+    osdl_check(SDL_SetSurfacePalette(s, pal), "SDL_SetSurfacePalette");
+    return Val_unit;
+}
+
+CAMLprim value osdl_surface_set_color_key(value surface, value key) {
+    SDL_Surface* s       = osdl_unlocked_surface(surface);
+    Uint32       pixel   = 0;
+    bool         enabled = Is_block(key);
+    if (enabled) {
+        value spec    = Some_val(key);
+        bool  indexed = SDL_ISPIXELFORMAT_INDEXED(s->format);
+        /* Surface.color_key: Color is block tag 0, Index is tag 1. */
+        if (Tag_val(spec) == 0) {
+            if (indexed) osdl_surface_palette(s);
+            if (SDL_ISPIXELFORMAT_FOURCC(s->format) || SDL_BYTESPERPIXEL(s->format) > 4)
+                caml_invalid_argument("The surface format does not support a color key");
+            SDL_Color c = osdl_color(Field(spec, 0));
+            pixel       = SDL_MapSurfaceRGB(s, c.r, c.g, c.b);
+        } else {
+            if (!indexed) caml_invalid_argument("An index key needs an indexed surface");
+            intnat index = Long_val(Field(spec, 0));
+            if (index < 0 || index >= osdl_surface_palette(s)->ncolors)
+                caml_invalid_argument("The color key index is outside the palette");
+            pixel = (Uint32)index;
+        }
+    }
+
+    osdl_check(SDL_SetSurfaceColorKey(s, enabled, pixel), "SDL_SetSurfaceColorKey");
+    return Val_unit;
+}
+
+CAMLprim value osdl_surface_set_blend_mode(value surface, value mode) {
+    osdl_check(SDL_SetSurfaceBlendMode(osdl_unlocked_surface(surface), osdl_blend_mode(mode)),
+               "SDL_SetSurfaceBlendMode");
+    return Val_unit;
+}
+
+/* Blits and transforms. */
+
+static SDL_Surface* osdl_surface_for_blit(value surface) {
+    SDL_Surface* s = osdl_unlocked_surface(surface);
+    osdl_check_surface_storage(s);
+    osdl_check_surface_byte_pixels(s);
+    /* SDL 3.2.0 truncates blit offsets to Uint16. */
+    if (s->w > SDL_MAX_UINT16 || s->h > SDL_MAX_UINT16)
+        caml_invalid_argument("SDL surface is too wide or tall for a blit");
+    if (SDL_ISPIXELFORMAT_INDEXED(s->format)) osdl_surface_palette(s);
+    return s;
+}
+
+static SDL_Rect osdl_surface_blit_rect(value option, SDL_Rect fallback, bool position_only) {
+    if (Is_long(option)) return fallback;
+    value    rect = Some_val(option);
+    SDL_Rect area = {osdl_int(Field(rect, 0)), osdl_int(Field(rect, 1)), 0, 0};
+    if (!position_only) {
+        area.w = osdl_nonnegative_int(Field(rect, 2));
+        area.h = osdl_nonnegative_int(Field(rect, 3));
+    }
+    /* Leave space for the shifts SDL applies while clipping. */
+    int limit = INT_MAX / 4;
+    if (area.x < -limit || area.x > limit || area.y < -limit || area.y > limit || area.w > limit ||
+        area.h > limit)
+        caml_invalid_argument("The blit rectangle is outside the SDL range");
+    return area;
+}
+
+CAMLprim value osdl_surface_blit(value src, value dst, value source, value target) {
+    SDL_Surface* s = osdl_surface_for_blit(source);
+    SDL_Surface* d = osdl_surface_for_blit(target);
+    if (s == d) caml_invalid_argument("Blit between distinct surfaces");
+    SDL_Rect from = osdl_surface_blit_rect(src, (SDL_Rect){0, 0, s->w, s->h}, false);
+    SDL_Rect to   = osdl_surface_blit_rect(dst, (SDL_Rect){0}, true);
+    if (!s->w || !s->h || !from.w || !from.h || !d->w || !d->h) return Val_unit;
+
+    osdl_check(SDL_BlitSurface(s, Is_block(src) ? &from : NULL, d, Is_block(dst) ? &to : NULL),
+               "SDL_BlitSurface");
+    return Val_unit;
+}
+
+static void osdl_check_surface_scale_size(int width, int height) {
+    /* SDL's linear scaler uses signed 16.16 steps. */
+    if (width > SDL_MAX_SINT16 || height > SDL_MAX_SINT16)
+        caml_invalid_argument("Scaled surface dimensions cannot exceed 32767 pixels");
+}
+
+/* SDL 3.2 expands a non-32-bit crop to the full source size before its
+ * linear pass, so the result can use the wrong pixels. Convert first. */
+static SDL_Surface* osdl_surface_prepare_linear_blit(SDL_Surface* s) {
+    osdl_check_surface_dimensions(s->w, s->h, 4);
+    SDL_BlendMode blend;
+    osdl_check(SDL_GetSurfaceBlendMode(s, &blend), "SDL_GetSurfaceBlendMode");
+
+    SDL_Surface* rgba = SDL_ConvertSurface(s, SDL_PIXELFORMAT_RGBA32);
+    if (!rgba) osdl_fail("SDL_ConvertSurface");
+    if (!SDL_SetSurfaceBlendMode(rgba, blend))
+        osdl_surface_fail_and_destroy(rgba, "SDL_SetSurfaceBlendMode");
+    return rgba;
+}
+
+CAMLprim value osdl_surface_blit_scaled(value src, value dst, value scale_mode, value source,
+                                        value target) {
+    SDL_Surface* s = osdl_surface_for_blit(source);
+    SDL_Surface* d = osdl_surface_for_blit(target);
+    if (s == d) caml_invalid_argument("Blit between distinct surfaces");
+    SDL_Rect from = osdl_surface_blit_rect(src, (SDL_Rect){0, 0, s->w, s->h}, false);
+    SDL_Rect to   = osdl_surface_blit_rect(dst, (SDL_Rect){0, 0, d->w, d->h}, false);
+    if (from.x < 0 || from.y < 0 || from.x > s->w - from.w || from.y > s->h - from.h)
+        caml_invalid_argument("The scaled blit source rectangle must lie inside the surface");
+    if (!from.w || !from.h || !to.w || !to.h) return Val_unit;
+
+    SDL_ScaleMode mode =
+        Is_long(scale_mode) ? SDL_SCALEMODE_NEAREST : osdl_scale_mode(Some_val(scale_mode));
+    SDL_Surface* rgba = NULL;
+    if (from.w != to.w || from.h != to.h) {
+        osdl_check_surface_scale_size(from.w, from.h);
+        osdl_check_surface_scale_size(to.w, to.h);
+        int bpp = SDL_max(SDL_BYTESPERPIXEL(s->format), SDL_BYTESPERPIXEL(d->format));
+        osdl_check_surface_dimensions(to.w, to.h, SDL_max(bpp, 4));
+
+        bool keyed = SDL_SurfaceHasColorKey(s);
+        if (mode == SDL_SCALEMODE_LINEAR &&
+            (keyed || SDL_ISPIXELFORMAT_INDEXED(s->format) || SDL_ISPIXELFORMAT_INDEXED(d->format)))
+            caml_invalid_argument(
+                "Use true-color surfaces without a source color key for linear blits");
+
+        SDL_Rect clip, visible;
+        osdl_check(SDL_GetSurfaceClipRect(d, &clip), "SDL_GetSurfaceClipRect");
+        if (!SDL_GetRectIntersection(&to, &clip, &visible)) return Val_unit;
+        bool clipped = visible.w != to.w || visible.h != to.h;
+        bool old     = SDL_GetVersion() < SDL_VERSIONNUM(3, 4, 0);
+        if (clipped) {
+            /* On SDL 3.4, the clipped path scales a view of the source and
+             * does not preserve the key or lock pixel storage first. */
+            if (keyed || SDL_MUSTLOCK(s))
+                caml_invalid_argument(
+                    "Scale the source separately before a clipped blit with a color key or RLE");
+            /* SDL 3.2 can round a clipped source extent down to zero and
+             * still try to read a pixel outside the source. */
+            if (old &&
+                (2 * (Sint64)visible.w * from.w <= to.w || 2 * (Sint64)visible.h * from.h <= to.h))
+                return Val_unit;
+        }
+        if (old && mode == SDL_SCALEMODE_LINEAR && (clipped || from.w != s->w || from.h != s->h) &&
+            (SDL_BYTESPERPIXEL(s->format) != 4 || s->format == SDL_PIXELFORMAT_ARGB2101010)) {
+            rgba = osdl_surface_prepare_linear_blit(s);
+            s    = rgba;
+        }
+    }
+
+    bool ok =
+        SDL_BlitSurfaceScaled(s, Is_block(src) ? &from : NULL, d, Is_block(dst) ? &to : NULL, mode);
+    if (rgba) {
+        if (!ok) osdl_surface_fail_and_destroy(rgba, "SDL_BlitSurfaceScaled");
+        SDL_DestroySurface(rgba);
+    }
+    osdl_check(ok, "SDL_BlitSurfaceScaled");
+    return Val_unit;
+}
+
+CAMLprim value osdl_surface_convert(value surface, value format) {
+    CAMLparam2(surface, format);
+    CAMLlocal1(handle);
+
+    SDL_Surface*    s     = osdl_unlocked_surface(surface);
+    SDL_PixelFormat pixel = osdl_pixel_formats[Int_val(format)];
+    osdl_check_surface_storage(s);
+    osdl_check_surface_dimensions(s->w, s->h, SDL_BYTESPERPIXEL(pixel));
+
+    handle = osdl_new_handle(osdl_parent(surface));
+    CAMLreturn(osdl_publish(handle, SDL_ConvertSurface(s, pixel), "SDL_ConvertSurface"));
+}
+
+/* SDL 3.2 scales indexed images by looking up colors again. Copy the exact
+ * indices instead, so duplicate colors can still be changed separately. */
+static SDL_Surface* osdl_scale_index8(SDL_Surface* source, int w, int h) {
+    SDL_Surface* dest = SDL_CreateSurface(w, h, SDL_PIXELFORMAT_INDEX8);
+    if (!dest) return NULL;
+
+    SDL_Color     color;
+    SDL_BlendMode blend;
+    if (!SDL_GetSurfaceColorMod(source, &color.r, &color.g, &color.b) ||
+        !SDL_GetSurfaceAlphaMod(source, &color.a) || !SDL_GetSurfaceBlendMode(source, &blend) ||
+        !SDL_SetSurfacePalette(dest, SDL_GetSurfacePalette(source)) ||
+        !SDL_SetSurfaceColorspace(dest, SDL_GetSurfaceColorspace(source)) ||
+        !SDL_SetSurfaceColorMod(dest, color.r, color.g, color.b) ||
+        !SDL_SetSurfaceAlphaMod(dest, color.a) || !SDL_SetSurfaceBlendMode(dest, blend))
+        osdl_surface_fail_and_destroy(dest, "SDL_ScaleSurface");
+
+    bool locked = SDL_MUSTLOCK(source);
+    if (locked && !SDL_LockSurface(source)) osdl_surface_fail_and_destroy(dest, "SDL_LockSurface");
+    const Uint8* src = source->pixels;
+    if (!src) {
+        if (locked) SDL_UnlockSurface(source);
+        SDL_DestroySurface(dest);
+        osdl_raise_error("SDL_ScaleSurface: No source pixels are available");
+    }
+
+    /* Use the same center-of-pixel sampling as SDL's nearest scaler. */
+    Uint64 step_x = ((Uint64)source->w << 16) / w, step_y = ((Uint64)source->h << 16) / h;
+    Uint64 y = step_y / 2;
+    for (int row = 0; row < h; ++row, y += step_y) {
+        const Uint8* in  = src + (size_t)(y >> 16) * source->pitch;
+        Uint8*       out = (Uint8*)dest->pixels + (size_t)row * dest->pitch;
+        Uint64       x   = step_x / 2;
+        for (int col = 0; col < w; ++col, x += step_x)
+            out[col] = in[x >> 16];
+    }
+    if (locked) SDL_UnlockSurface(source);
+    return dest;
+}
+
+CAMLprim value osdl_surface_scale(value scale_mode, value surface, value w, value h) {
+    CAMLparam4(scale_mode, surface, w, h);
+    CAMLlocal1(handle);
+
+    SDL_Surface* s = osdl_unlocked_surface(surface);
+    osdl_check_surface_storage(s);
+    osdl_check_surface_byte_pixels(s);
+    if (!s->w || !s->h) caml_invalid_argument("Cannot scale an empty surface");
+    int width = osdl_positive_int(w), height = osdl_positive_int(h);
+    osdl_check_surface_scale_size(s->w, s->h);
+    osdl_check_surface_scale_size(width, height);
+    osdl_check_surface_dimensions(width, height, SDL_max(4, SDL_BYTESPERPIXEL(s->format)));
+
+    bool indexed = s->format == SDL_PIXELFORMAT_INDEX8;
+    if (indexed) osdl_surface_palette(s);
+    SDL_ScaleMode mode  = indexed || Is_long(scale_mode) ? SDL_SCALEMODE_NEAREST
+                                                         : osdl_scale_mode(Some_val(scale_mode));
+    Uint32        key   = 0;
+    bool          keyed = SDL_SurfaceHasColorKey(s);
+    if (keyed) osdl_check(SDL_GetSurfaceColorKey(s, &key), "SDL_GetSurfaceColorKey");
+
+    handle              = osdl_new_handle(osdl_parent(surface));
+    SDL_Surface* scaled = indexed && SDL_GetVersion() < SDL_VERSIONNUM(3, 4, 0)
+                            ? osdl_scale_index8(s, width, height)
+                            : SDL_ScaleSurface(s, width, height, mode);
+    /* SDL can copy the key flag but not the key value when scaling. */
+    if (scaled && keyed && !SDL_SetSurfaceColorKey(scaled, true, key))
+        osdl_surface_fail_and_destroy(scaled, "SDL_SetSurfaceColorKey");
+    CAMLreturn(osdl_publish(handle, scaled, "SDL_ScaleSurface"));
+}
+
+CAMLprim value osdl_surface_flip(value surface, value flip) {
+    SDL_Surface* s    = osdl_unlocked_surface(surface);
+    SDL_FlipMode axes = osdl_flip_mode(flip);
+    if (axes == SDL_FLIP_NONE) return Val_unit;
+    osdl_check_surface_storage(s);
+    if (SDL_ISPIXELFORMAT_FOURCC(s->format))
+        caml_invalid_argument("Convert the surface before flipping it");
+
+    bool locked = SDL_MUSTLOCK(s);
+    if (locked) osdl_check(SDL_LockSurface(s), "SDL_LockSurface");
+    /* SDL 3.2.0 only accepts one axis at a time. */
+    bool ok = (!(axes & SDL_FLIP_HORIZONTAL) || SDL_FlipSurface(s, SDL_FLIP_HORIZONTAL)) &&
+              (!(axes & SDL_FLIP_VERTICAL) || SDL_FlipSurface(s, SDL_FLIP_VERTICAL));
+    char message[1024];
+    if (!ok) osdl_error_message(message, sizeof(message), "SDL_FlipSurface");
+    if (locked) SDL_UnlockSurface(s);
+    if (!ok) osdl_raise_error(message);
+    return Val_unit;
+}
+
+/* A lock is a child handle. Do not allow a software renderer to share the
+ * surface with a lock, since its draws can reach the surface through SDL. */
+
+CAMLprim value osdl_surface_prepare_lock(value surface) {
+    osdl_unlocked_surface(surface);
+    return osdl_new_handle(surface);
+}
+
+CAMLprim value osdl_surface_lock_pixels(value view) {
+    value        surface = osdl_parent(view);
+    SDL_Surface* s       = osdl_unlocked_surface(surface);
+    if (osdl_cell_val(surface)->children)
+        caml_invalid_argument("Destroy the software renderer before locking its surface");
+    osdl_check_surface_storage(s);
+    osdl_check_surface_byte_pixels(s);
+
+    osdl_check(SDL_LockSurface(s), "SDL_LockSurface");
+    int bpp = SDL_BYTESPERPIXEL(s->format);
+    if ((s->w && s->h) &&
+        (!s->pixels || s->pitch < 0 || s->w > s->pitch / bpp || s->pitch > INT_MAX / s->h)) {
+        SDL_UnlockSurface(s);
+        osdl_raise_error("SDL_LockSurface: SDL returned invalid pixel storage");
+    }
+    osdl_publish(view, s, "SDL_LockSurface");
+    return Val_unit;
+}
+
+CAMLprim value osdl_surface_unlock_pixels(value view) {
+    SDL_Surface* s = osdl_take(view);
+    if (s) {
+        SDL_UnlockSurface(s);
+        Store_field(view, 1, Val_unit);
+    }
+    return Val_unit;
+}
+
+CAMLprim value osdl_surface_locked_size(value view) {
+    SDL_Surface* s = osdl_live(view);
+    return osdl_int_pair(s->w, s->h);
+}
+
+static void osdl_check_surface_point(const SDL_Surface* s, int x, int y) {
+    if (x < 0 || x >= s->w || y < 0 || y >= s->h)
+        caml_invalid_argument("The pixel is outside the locked surface");
+}
+
+CAMLprim value osdl_surface_locked_read_pixel(value view, value x, value y) {
+    SDL_Surface* s  = osdl_live(view);
+    int          px = osdl_int(x), py = osdl_int(y);
+    osdl_check_surface_point(s, px, py);
+
+    return osdl_surface_color_at(s, px, py);
+}
+
+CAMLprim value osdl_surface_locked_set_pixel(value view, value x, value y, value color) {
+    SDL_Surface* s  = osdl_live(view);
+    int          px = osdl_int(x), py = osdl_int(y);
+    osdl_check_surface_point(s, px, py);
+    if (SDL_ISPIXELFORMAT_INDEXED(s->format)) osdl_surface_palette(s);
+    SDL_Color c = osdl_color(color);
+
+    osdl_check(SDL_WriteSurfacePixel(s, px, py, c.r, c.g, c.b, c.a), "SDL_WriteSurfacePixel");
+    return Val_unit;
+}
+
+static Uint8* osdl_surface_index_at(SDL_Surface* s, value x, value y) {
+    if (s->format != SDL_PIXELFORMAT_INDEX8)
+        caml_invalid_argument("Pixel indices need an Index8 surface");
+    int px = osdl_int(x), py = osdl_int(y);
+    osdl_check_surface_point(s, px, py);
+    return (Uint8*)s->pixels + (size_t)py * s->pitch + px;
+}
+
+CAMLprim value osdl_surface_locked_read_index(value view, value x, value y) {
+    return Val_int(*osdl_surface_index_at(osdl_live(view), x, y));
+}
+
+CAMLprim value osdl_surface_locked_set_index(value view, value x, value y, value index) {
+    SDL_Surface* s     = osdl_live(view);
+    Uint8*       pixel = osdl_surface_index_at(s, x, y);
+    intnat       i     = Long_val(index);
+    if (i < 0 || i >= osdl_surface_palette(s)->ncolors)
+        caml_invalid_argument("The pixel index is outside the palette");
+
+    *pixel = (Uint8)i;
+    return Val_unit;
+}
+
+static value osdl_surface_copy_pixels(value view, value buffer, value pitch, bool write) {
+    SDL_Surface* s = osdl_live(view);
+    if (osdl_pixel_format_index(s->format) < 0)
+        caml_invalid_argument("Convert to RGBA, BGRA, RGB24, or Index8 before copying pixel rows");
+    size_t row_bytes = (size_t)s->w * SDL_BYTESPERPIXEL(s->format);
+    size_t stride    = osdl_nonnegative_int(pitch);
+    if (!s->w || !s->h) return Val_unit;
+    if (stride < row_bytes) caml_invalid_argument("The pitch must cover one pixel row");
+    size_t length = Caml_ba_array_val(buffer)->dim[0];
+    if (length < row_bytes || (size_t)(s->h - 1) > (length - row_bytes) / stride)
+        caml_invalid_argument("The buffer does not cover the locked surface");
+    Uint8* bytes = Caml_ba_data_val(buffer);
+
+    /* A file can supply a smaller palette. Validate all indices before a
+     * write so SDL's blitters can safely look them up later. */
+    if (write && s->format == SDL_PIXELFORMAT_INDEX8) {
+        int count = osdl_surface_palette(s)->ncolors;
+        if (count < OSDL_PALETTE_SIZE) {
+            for (int y = 0; y < s->h; ++y) {
+                const Uint8* row = bytes + (size_t)y * stride;
+                for (int x = 0; x < s->w; ++x)
+                    if (row[x] >= count)
+                        caml_invalid_argument("A pixel index is outside the palette");
+            }
+        }
+    }
+
+    const Uint8* src       = write ? bytes : s->pixels;
+    Uint8*       dst       = write ? s->pixels : bytes;
+    size_t       src_pitch = write ? stride : (size_t)s->pitch;
+    size_t       dst_pitch = write ? (size_t)s->pitch : stride;
+    if (src_pitch == row_bytes && dst_pitch == row_bytes)
+        memcpy(dst, src, row_bytes * (size_t)s->h);
+    else
+        for (int y = 0; y < s->h; ++y)
+            memcpy(dst + (size_t)y * dst_pitch, src + (size_t)y * src_pitch, row_bytes);
+    return Val_unit;
+}
+
+CAMLprim value osdl_surface_locked_copy_from(value view, value buffer, value pitch) {
+    return osdl_surface_copy_pixels(view, buffer, pitch, true);
+}
+
+CAMLprim value osdl_surface_locked_copy_to(value view, value buffer, value pitch) {
+    return osdl_surface_copy_pixels(view, buffer, pitch, false);
 }
 
 /* Renderers. */
@@ -536,7 +1052,7 @@ CAMLprim value osdl_renderer_create_software(value surface) {
 
     handle = osdl_new_handle(surface);
 
-    SDL_Renderer* renderer = SDL_CreateSoftwareRenderer(osdl_live(surface));
+    SDL_Renderer* renderer = SDL_CreateSoftwareRenderer(osdl_unlocked_surface(surface));
     CAMLreturn(osdl_publish(handle, renderer, "SDL_CreateSoftwareRenderer"));
 }
 
@@ -966,7 +1482,8 @@ CAMLprim value osdl_texture_of_surface(value renderer, value surface) {
 
     handle = osdl_new_handle(renderer);
 
-    SDL_Texture* texture = SDL_CreateTextureFromSurface(osdl_live(renderer), osdl_live(surface));
+    SDL_Texture* texture =
+        SDL_CreateTextureFromSurface(osdl_live(renderer), osdl_unlocked_surface(surface));
     CAMLreturn(osdl_publish(handle, texture, "SDL_CreateTextureFromSurface"));
 }
 
@@ -1183,8 +1700,7 @@ CAMLprim value osdl_texture_size(value texture) {
 }
 
 CAMLprim value osdl_texture_set_scale_mode(value texture, value mode) {
-    static const SDL_ScaleMode modes[] = {SDL_SCALEMODE_NEAREST, SDL_SCALEMODE_LINEAR};
-    osdl_check(SDL_SetTextureScaleMode(osdl_live(texture), modes[Int_val(mode)]),
+    osdl_check(SDL_SetTextureScaleMode(osdl_live(texture), osdl_scale_mode(mode)),
                "SDL_SetTextureScaleMode");
     return Val_unit;
 }
@@ -1391,14 +1907,11 @@ static void osdl_software_rotation_bounds(osdl_render_view view, double x, doubl
 
 CAMLprim value osdl_texture_draw_rotated(value src, value dst, value flip, value pivot,
                                          value renderer, value texture, value angle) {
-    static const SDL_FlipMode modes[] = {SDL_FLIP_NONE, SDL_FLIP_HORIZONTAL, SDL_FLIP_VERTICAL,
-                                         SDL_FLIP_HORIZONTAL | SDL_FLIP_VERTICAL};
-
     SDL_Renderer*    r = osdl_live(renderer);
     SDL_Texture*     t = osdl_texture_source(texture, renderer, r);
     SDL_FRect        s;
     const SDL_FRect* source  = osdl_frect_option(src, &s);
-    SDL_FlipMode     mode    = Is_long(flip) ? SDL_FLIP_NONE : modes[Int_val(Some_val(flip))];
+    SDL_FlipMode     mode    = Is_long(flip) ? SDL_FLIP_NONE : osdl_flip_mode(Some_val(flip));
     double           degrees = Double_val(angle);
     if (!isfinite(degrees)) caml_invalid_argument("SDL rotation must be finite");
     /* Some SDL versions cast angle / 360 to int in their fast path. */
@@ -2102,7 +2615,7 @@ CAMLprim value osdl_cursor_create_color(value surface, value hot_x, value hot_y)
 
     handle = osdl_new_handle(osdl_parent(surface));
 
-    SDL_Surface* s = osdl_live(surface);
+    SDL_Surface* s = osdl_unlocked_surface(surface);
     osdl_require_mouse_context(osdl_parent(surface));
     int x = osdl_int(hot_x), y = osdl_int(hot_y);
     if (x < 0 || x >= s->w || y < 0 || y >= s->h)

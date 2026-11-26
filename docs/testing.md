@@ -24,6 +24,10 @@ The core tests also cover mouse state, focus events, and cursor cleanup. They ch
 for capture and system cursors on the dummy driver. Test actual capture and desktop coordinates with
 a windowing driver.
 
+Run `dune runtest --force test/surface` to test image copies, transforms, and palette swaps. The
+native and bytecode tests also check pixel row copies, lock cleanup, and upload of an atlas made
+from indexed sprites. They need no window or add-on.
+
 ## Run the resource lifecycle tests
 
 QCheck generates sequences of operations on a context, a memory stream, and a software rendering

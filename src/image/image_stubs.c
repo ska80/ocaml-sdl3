@@ -63,7 +63,7 @@ CAMLprim value osdl_image_load_texture_io(value renderer, value stream) {
 }
 
 CAMLprim value osdl_image_save_png(value surface, value path) {
-    osdl_check(IMG_SavePNG(osdl_live(surface), osdl_cstring(path)), "IMG_SavePNG");
+    osdl_check(IMG_SavePNG(osdl_unlocked_surface(surface), osdl_cstring(path)), "IMG_SavePNG");
     return Val_unit;
 }
 
@@ -76,7 +76,7 @@ static int jpg_quality(value quality) {
 CAMLprim value osdl_image_save_jpg(value quality, value surface, value path) {
     int q = jpg_quality(quality);
 
-    osdl_check(IMG_SaveJPG(osdl_live(surface), osdl_cstring(path), q), "IMG_SaveJPG");
+    osdl_check(IMG_SaveJPG(osdl_unlocked_surface(surface), osdl_cstring(path), q), "IMG_SaveJPG");
     return Val_unit;
 }
 
@@ -107,7 +107,7 @@ static size_t SDLCALL image_write(void* userdata, const void* ptr, size_t size,
 }
 
 static value image_save_io(value surface, value stream, bool png, int quality) {
-    SDL_Surface* s      = osdl_live(surface);
+    SDL_Surface* s      = osdl_unlocked_surface(surface);
     image_writer writer = {.dst      = osdl_unborrowed_io(stream),
                            .function = png ? "IMG_SavePNG_IO" : "IMG_SaveJPG_IO"};
 

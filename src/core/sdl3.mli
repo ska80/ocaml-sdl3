@@ -129,7 +129,11 @@ module Frect : sig
 end
 
 module Pixel_format : sig
-  type t = Rgba32 | Bgra32 | Rgb24
+  type t =
+    | Rgba32
+    | Bgra32
+    | Rgb24
+    | Index8  (** [Index8] stores a one-byte palette index per pixel. *)
 end
 
 module Display : sig
@@ -218,36 +222,6 @@ module Window : sig
   val restore : t -> unit
 end
 
-module Surface : sig
-  (** A pixel buffer in memory. *)
-
-  type t
-
-  val create : ?format:Pixel_format.t -> context -> w:int -> h:int -> t
-  val load_bmp : context -> string -> t
-  val save_bmp : t -> string -> unit
-
-  val load_bmp_io : [> `Read ] Io.t -> t
-  (** Read a BMP from the current position in a seekable stream. The stream
-      stays open and the surface does not retain it. *)
-
-  val save_bmp_io : t -> [> `Write ] Io.t -> unit
-  (** Write a BMP to a seekable stream. The stream stays open. Raise
-      [Invalid_argument] for an append stream because SDL seeks back to update
-      the BMP header. *)
-
-  val destroy : t -> unit
-  val size : t -> int * int
-  val fill : ?rect:Rect.t -> t -> Color.t -> unit
-  val read_pixel : t -> x:int -> y:int -> Color.t
-
-  val read_rgba : t -> byte_buffer -> unit
-  (** Copy the whole surface into the buffer in red, green, blue, alpha byte
-      order. Rows have no padding. SDL converts other pixel formats to RGBA.
-      Raise [Invalid_argument] if the buffer holds fewer than
-      [4 * width * height] bytes. Bytes after the image stay unchanged. *)
-end
-
 module Blend_mode : sig
   type factor =
     | Zero
@@ -282,6 +256,162 @@ module Blend_mode : sig
       equations beyond those that map to SDL's standard modes. *)
 end
 
+module Surface : sig
+  (** A pixel buffer in memory. Use any live SDL context. No subsystem is
+      needed. *)
+
+  type t
+  type scale_mode = Nearest | Linear
+  type flip = No_flip | Horizontal | Vertical | Both
+  type color_key = Color of Color.t | Index of int
+
+  module Palette : sig
+    (** An owned color table for [Index8] surfaces. *)
+
+    type t
+
+    val create : context -> Color.t array -> t
+    (** Create 256 entries. Copy up to 256 colors starting at index zero and
+        leave the remaining entries opaque white. *)
+
+    val set_colors : t -> first:int -> Color.t array -> unit
+    (** Replace consecutive entries starting at [first]. Indices start at zero.
+        The whole range must fit. All surfaces that use this table see the new
+        colors. Textures already made from them stay unchanged. *)
+
+    val destroy : t -> unit
+    (** Release the caller's reference. Surfaces that use this palette keep
+        their own references. Calling [destroy] again does nothing. *)
+  end
+
+  val create : ?format:Pixel_format.t -> context -> w:int -> h:int -> t
+  (** Create a surface with zeroed pixels. The default format is [Rgba32]. An
+      [Index8] surface starts with an opaque white palette. Dimensions must be
+      positive. The byte size, including row padding, must fit a C [int]. *)
+
+  val load_bmp : context -> string -> t
+  val save_bmp : t -> string -> unit
+
+  val load_bmp_io : [> `Read ] Io.t -> t
+  (** Read a BMP from the current position in a seekable stream. The stream
+      stays open and the surface does not retain it. *)
+
+  val save_bmp_io : t -> [> `Write ] Io.t -> unit
+  (** Write a BMP to a seekable stream. The stream stays open. Raise
+      [Invalid_argument] for an append stream because SDL seeks back to update
+      the BMP header. *)
+
+  val destroy : t -> unit
+  val size : t -> int * int
+
+  val format : t -> Pixel_format.t option
+  (** Return [None] for a loaded format not listed in [Pixel_format]. *)
+
+  val fill : ?rect:Rect.t -> t -> Color.t -> unit
+  val read_pixel : t -> x:int -> y:int -> Color.t
+
+  val read_rgba : t -> byte_buffer -> unit
+  (** Copy the whole surface into the buffer in red, green, blue, alpha byte
+      order. Rows have no padding. SDL converts other pixel formats to RGBA.
+      Raise [Invalid_argument] if the buffer holds fewer than
+      [4 * width * height] bytes. Bytes after the image stay unchanged. *)
+
+  val blit : ?src:Rect.t -> ?dst:Rect.t -> t -> t -> unit
+  (** [blit source target] copies pixels from [source] to [target] without
+      scaling. The surfaces must be distinct. If [src] is absent, use the whole
+      source. Use only [x] and [y] of [dst], or [(0, 0)] if it is absent. SDL
+      clips the copy to both surfaces. The source controls blending. Use formats
+      with whole bytes per pixel. The surface dimensions must be at most 65,535
+      pixels. *)
+
+  val blit_scaled :
+    ?src:Rect.t -> ?dst:Rect.t -> ?scale_mode:scale_mode -> t -> t -> unit
+  (** Like [blit], but resize the source region to fit the destination
+      rectangle. Both rectangles default to the respective whole surface. The
+      source rectangle must lie inside the source. SDL clips to the destination.
+      SDL 3.2 can skip a clipped region that covers less than one source pixel.
+      Empty rectangles draw nothing. The default scale mode is [Nearest].
+
+      When scaling, the width and height of each rectangle must be at most
+      32,767 pixels. For linear filtering, use true-color surfaces and no source
+      color key. If a scaled copy is clipped at the destination and the source
+      has a color key, convert the source to [Rgba32] first. *)
+
+  val convert : t -> format:Pixel_format.t -> t
+  (** Copy into a new surface with the requested format. You can destroy the
+      source first. If the destination format is [Index8], SDL chooses its
+      palette and maps colors to that palette. *)
+
+  val scale : ?scale_mode:scale_mode -> t -> w:int -> h:int -> t
+  (** Copy at the given size without blending into another image. Destroy the
+      result separately. The default scale mode is [Nearest]. Each dimension of
+      the source and result must be in [1, 32767]. Use a format with whole bytes
+      per pixel. An [Index8] copy always uses nearest sampling. It keeps the
+      indices and shares the original palette. The copy keeps any color key. *)
+
+  val flip : t -> flip -> unit
+  (** Change the surface in place. [Both] reverses rows and columns. *)
+
+  val set_color_key : t -> color_key option -> unit
+  (** Set the source pixel that SDL treats as transparent in copies. [Color c]
+      maps the RGB channels to a source pixel and ignores [c.a]. [Index i]
+      selects an exact palette entry. Pass [None] to disable the key. For a
+      surface with an alpha channel, use blend mode [Blend_mode.None] if you
+      want blits to use the key instead of source alpha. *)
+
+  val set_blend_mode : t -> Blend_mode.t -> unit
+  (** Select how SDL combines this source with the destination in a blit. Custom
+      equations that do not map to a standard mode raise [Error]. *)
+
+  val set_palette : t -> Palette.t -> unit
+  (** Change the colors of an [Index8] surface without changing its pixel
+      indices. The surface retains its own reference to the palette. *)
+
+  module Locked : sig
+    (** Access to the pixels of one surface. All operations raise
+        [Invalid_argument] after the lock ends. *)
+
+    type t
+
+    val size : t -> int * int
+    val read_pixel : t -> x:int -> y:int -> Color.t
+
+    val set_pixel : t -> x:int -> y:int -> Color.t -> unit
+    (** Write one color in the surface's format. An indexed surface maps it to a
+        palette entry. Coordinates must be inside the surface. *)
+
+    val read_index : t -> x:int -> y:int -> int
+
+    val set_index : t -> x:int -> y:int -> int -> unit
+    (** Read or write an exact pixel index on an [Index8] surface. A written
+        index must exist in the current palette. *)
+
+    val copy_from : t -> byte_buffer -> pitch:int -> unit
+    (** Copy rows from the buffer into the whole surface. Use the surface's byte
+        order: RGBA, BGRA, RGB, or one palette index per pixel. Only the four
+        formats in [Pixel_format] support this operation.
+
+        [pitch] is the byte distance between buffer rows. It must cover at least
+        one row of pixels. The last row does not need padding. SDL does not
+        retain the buffer. Do not change it during the call. *)
+
+    val copy_to : t -> byte_buffer -> pitch:int -> unit
+    (** Copy rows in the same format as [copy_from]. Leave all buffer bytes
+        outside the pixels, including padding, unchanged. *)
+  end
+
+  val with_lock : t -> (Locked.t -> 'a) -> 'a
+  (** Run the callback on the main thread with read and write access. The lock
+      preserves existing pixels. It ends when the callback returns or raises,
+      and writes before an exception stay in the surface.
+
+      Use a surface with whole bytes per pixel, not a packed bitmap or a YUV
+      surface. Destroy any software renderer for the surface before locking it.
+      During the callback, do not lock, destroy, or use the surface for a copy,
+      save, or draw. Use [Locked] to access the pixels. You can still call
+      [size] and [format]. *)
+end
+
 type +'access texture
 (** A texture handle. The type parameter marks how you can use it. *)
 
@@ -301,6 +431,9 @@ module Renderer : sig
   (** Create a renderer for a window with no renderer or GPU claim. *)
 
   val create_software : Surface.t -> t
+  (** Draw to the surface. Destroy the renderer before locking or destroying
+      that surface. *)
+
   val destroy : t -> unit
 
   val output_size : t -> int * int
@@ -438,8 +571,8 @@ module Texture : sig
 
   type streaming = [ `Streaming ] texture
   type target = [ `Target ] texture
-  type scale_mode = Nearest | Linear
-  type flip = No_flip | Horizontal | Vertical | Both
+  type scale_mode = Surface.scale_mode = Nearest | Linear
+  type flip = Surface.flip = No_flip | Horizontal | Vertical | Both
 
   type borders = { left : float; right : float; top : float; bottom : float }
   (** Widths of the left and right borders and heights of the top and bottom

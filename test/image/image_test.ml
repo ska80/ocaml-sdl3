@@ -59,6 +59,10 @@ let stream_images context =
       using Io.close
         (Io.of_memory_rw context (buffer 16))
         (fun io ->
+          Surface.with_lock surface (fun _ ->
+              invalid (fun () -> Sdl3_image.save_png_io surface io);
+              invalid (fun () -> Sdl3_image.save_jpg_io surface io));
+          check (Io.tell io = 0L) "A locked surface cannot write image data";
           invalid (fun () -> Sdl3_image.save_jpg_io ~quality:101 surface io);
           check (Io.tell io = 0L) "Invalid JPEG quality does not write";
           let zero = buffer 16 in

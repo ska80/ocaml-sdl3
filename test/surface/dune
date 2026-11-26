@@ -1,0 +1,19 @@
+(test
+ (name surface_test)
+ (package sdl3)
+ (libraries sdl3)
+ (modes exe byte_complete)
+ (action
+  (setenv
+   SDL_RENDER_DRIVER
+   software
+   (run %{test}))))
+
+(rule
+ (alias runtest)
+ (package sdl3)
+ (action
+  (setenv
+   SDL_RENDER_DRIVER
+   software
+   (run ./surface_test.bc.exe))))

@@ -13,6 +13,8 @@
       movement.
 - [x] Streaming texture uploads, render targets, and batches of rectangles.
 - [x] Scoped write access to streaming textures.
+- [x] Surface blits, conversion, scaling, flips, color keys, and blend modes. Scoped surface pixel
+      access and palette swaps for indexed sprites.
 - [x] Texture sprite batches and an OCaml Bunnymark example.
 - [x] Ordered sprite batches with atlas regions, scaling, rotation, pivots, flips, tint, and
       opacity.

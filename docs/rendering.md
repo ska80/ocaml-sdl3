@@ -137,8 +137,9 @@ groups the copies into batches for SDL.
 
 ## Draw from a texture atlas
 
-A texture atlas is one texture that holds several images. Use `Sprite_batch` to draw regions of one
-texture at different sizes, angles, and positions. A batch draws sprites in the order you add
+A texture atlas is one texture that holds several images. To build an atlas at run time, see
+[Compose images in memory](assets.md#compose-images-in-memory). Use `Sprite_batch` to draw its
+regions at different sizes, angles, and positions. A batch draws sprites in the order you add
 them. Add background objects first and foreground objects later. The batch does not sort them.  If
 you change textures, draw the current batch before you add sprites for the next texture.
 
