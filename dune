@@ -1,0 +1,13 @@
+(env
+ (sanitize
+  (c_flags
+   (:standard
+    -g
+    -fno-omit-frame-pointer
+    -fsanitize=address,undefined
+    -fno-sanitize-recover=all))
+  ; Link the sanitizer runtimes into bytecode tests as well as native tests.
+  (ocamlc_flags
+   (:standard -custom))
+  (link_flags
+   (:standard -cclib -fsanitize=address,undefined))))

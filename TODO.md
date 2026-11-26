@@ -30,6 +30,7 @@
 - [x] [Plan for audio and event dispatch](docs/callback-dispatch.md) on the main thread.
 - [x] Native and bytecode tests on Linux with OCaml 5.4.1 and 5.5.2 (Dune 3.25.0).
 - [x] Runtime tests on Linux with the oldest supported add-on releases.
+- [x] QCheck tests for core resource lifetimes and an optional ASan and UBSan test build on Linux.
 - [x] [MIT license](LICENSE) for the bindings.
 - [x] Release metadata for all four opam packages.
 

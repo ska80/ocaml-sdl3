@@ -16,6 +16,7 @@ depends: [
   "ocaml" {>= "5.4"}
   "dune-configurator"
   "conf-pkg-config"
+  "qcheck-core" {>= "0.25" & with-test}
   "odoc" {with-doc}
 ]
 build: [

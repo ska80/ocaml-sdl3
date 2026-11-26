@@ -1,0 +1,10 @@
+(test
+ (name lifecycle_test)
+ (package sdl3)
+ (build_if %{lib-available:qcheck-core.runner})
+ (libraries sdl3 qcheck-core.runner)
+ (action
+  (setenv
+   SDL_VIDEO_DRIVER
+   dummy
+   (run %{test}))))

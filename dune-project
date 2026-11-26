@@ -15,7 +15,11 @@
  (description
   "Open windows, draw in 2D or with the GPU, read input, and play or record audio with SDL3.")
  (tags (sdl3 graphics multimedia))
- (depends (ocaml (>= 5.4)) dune-configurator conf-pkg-config))
+ (depends
+  (ocaml (>= 5.4))
+  dune-configurator
+  conf-pkg-config
+  (qcheck-core (and (>= 0.25) :with-test))))
 
 (package
  (name sdl3-image)
