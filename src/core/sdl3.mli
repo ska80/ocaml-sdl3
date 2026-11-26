@@ -412,8 +412,8 @@ module Texture : sig
 end
 
 module Sprite_batch : sig
-  (** Reusable storage for an ordered batch of sprites from one texture. Create,
-      fill, and clear a batch without an SDL context. Do not access the same
+  (** Reusable storage for an ordered batch of sprites from one texture. You can
+      create and edit a batch without an SDL context. Do not access the same
       batch from multiple threads or domains at the same time. *)
 
   type t
@@ -463,6 +463,16 @@ module Sprite_batch : sig
       length is twice [capacity]. Edit the first [2 * length] entries in place
       to move existing sprites without rebuilding the batch. Do not edit the
       array during a draw. *)
+
+  val set_tint : t -> index:int -> Color.t -> unit
+  (** Replace the tint, including its alpha, without changing the sprite's
+      opacity or draw order. Raise [Invalid_argument] if the zero-based [index]
+      is negative or at least the batch's [length]. *)
+
+  val set_opacity : t -> index:int -> int -> unit
+  (** Set the opacity without changing the sprite's tint or draw order. The
+      opacity multiplies the tint's alpha and must be between 0 and 255. Raise
+      [Invalid_argument] if the opacity or [index] is out of range. *)
 
   val draw : Renderer.t -> 'access texture -> t -> unit
   (** Draw the sprites on the main thread in insertion order. The texture must

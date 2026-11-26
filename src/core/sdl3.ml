@@ -366,6 +366,14 @@ module Sprite_batch = struct
     Texture.flip ->
     unit = "osdl_sprite_batch_write_byte" "osdl_sprite_batch_write"
 
+  external set_tint_unchecked : byte_buffer -> int -> Color.t -> unit
+    = "osdl_sprite_batch_set_tint"
+  [@@noalloc]
+
+  external set_opacity_unchecked : byte_buffer -> int -> int -> unit
+    = "osdl_sprite_batch_set_opacity"
+  [@@noalloc]
+
   external submit :
     Renderer.t -> 'access texture -> Float.Array.t -> byte_buffer -> int -> unit
     = "osdl_sprite_batch_draw"
@@ -401,6 +409,20 @@ module Sprite_batch = struct
     Float.Array.unsafe_set batch.positions (2 * i) x;
     Float.Array.unsafe_set batch.positions ((2 * i) + 1) y;
     batch.length <- i + 1
+
+  let check_index batch index =
+    if index < 0 || index >= batch.length then
+      invalid_arg "Sprite batch index is out of range"
+
+  let set_tint batch ~index tint =
+    check_index batch index;
+    set_tint_unchecked batch.sprites index tint
+
+  let set_opacity batch ~index opacity =
+    check_index batch index;
+    if opacity < 0 || opacity > 255 then
+      invalid_arg "Sprite opacity must be between 0 and 255";
+    set_opacity_unchecked batch.sprites index opacity
 
   let draw renderer texture batch =
     submit renderer texture batch.positions batch.sprites batch.length

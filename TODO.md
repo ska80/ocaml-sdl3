@@ -13,6 +13,7 @@
 - [x] Scoped write access to streaming textures.
 - [x] Texture sprite batches and an OCaml Bunnymark example.
 - [x] Ordered sprite batches with atlas regions, scaling, rotation, pivots, flips, tint, and opacity.
+- [x] In-place tint and opacity updates for sprite batches.
 - [x] GPU device setup, window claims, and solid-color frames.
 - [x] GPU command buffers, swapchain render passes, and fences that signal completion.
 - [x] Typed GPU shaders and pipelines for window drawing.

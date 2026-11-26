@@ -132,7 +132,14 @@ let ordered renderer texture =
   pixel renderer 2 3 red;
   pixel renderer 5 3 green;
   pixel ~tolerance:1 renderer 6 3 (Color.rgb 127 0 128);
-  pixel renderer 10 3 black
+  pixel renderer 10 3 black;
+  clear renderer;
+  Sprite_batch.set_tint batch ~index:512 yellow;
+  Sprite_batch.set_opacity batch ~index:1024 255;
+  draw ();
+  pixel renderer 2 3 red;
+  pixel renderer 5 3 yellow;
+  pixel renderer 6 3 blue
 
 let reuse renderer texture =
   clear renderer;
@@ -185,6 +192,61 @@ let reuse renderer texture =
   Sprite_batch.add ~opacity:128 batch ~src:translucent ~x:0. ~y:0. ~w:2. ~h:2.;
   draw ();
   pixel ~tolerance:1 renderer 1 1 (Color.rgb 64 64 64)
+
+let color_updates renderer texture =
+  let batch = Sprite_batch.create ~capacity:3 in
+  let draw () =
+    clear renderer;
+    Sprite_batch.draw renderer texture batch
+  in
+  let faded x r g b = pixel ~tolerance:1 renderer x 3 (Color.rgb r g b) in
+  Sprite_batch.add ~tint:(Color.rgba 255 0 0 128) ~opacity:128 batch ~src:solid
+    ~x:2. ~y:2. ~w:4. ~h:4.;
+  Sprite_batch.add ~tint:blue batch ~src:solid ~x:4. ~y:2. ~w:4. ~h:4.;
+  draw ();
+  Sprite_batch.set_opacity batch ~index:0 255;
+  Sprite_batch.set_tint batch ~index:1 yellow;
+  (* Changes do not affect the draw that is already queued. *)
+  faded 2 64 0 0;
+  pixel renderer 5 3 blue;
+  draw ();
+  faded 2 128 0 0;
+  pixel renderer 5 3 yellow;
+
+  Sprite_batch.set_opacity batch ~index:0 128;
+  Sprite_batch.set_tint batch ~index:0 (Color.rgba 0 255 0 128);
+  draw ();
+  faded 2 0 64 0;
+  pixel renderer 5 3 yellow;
+  Sprite_batch.set_opacity batch ~index:0 0;
+  Sprite_batch.set_tint batch ~index:0 (Color.rgba 0 255 0 96);
+  draw ();
+  pixel renderer 2 3 black;
+  Sprite_batch.set_opacity batch ~index:0 255;
+
+  List.iter
+    (fun index ->
+      invalid (fun () -> Sprite_batch.set_tint batch ~index red);
+      invalid (fun () -> Sprite_batch.set_opacity batch ~index 0))
+    [ -1; 2; max_int ];
+  List.iter
+    (fun opacity ->
+      invalid (fun () -> Sprite_batch.set_opacity batch ~index:0 opacity))
+    [ -1; 256; max_int ];
+  check (Sprite_batch.length batch = 2) "Color updates keep the batch length";
+  Sprite_batch.set_opacity batch ~index:1 128;
+  draw ();
+  faded 2 0 96 0;
+  faded 5 128 176 0;
+  faded 7 128 128 0;
+
+  Sprite_batch.clear batch;
+  invalid (fun () -> Sprite_batch.set_tint batch ~index:0 red);
+  invalid (fun () -> Sprite_batch.set_opacity batch ~index:0 0);
+  Sprite_batch.add batch ~src:solid ~x:2. ~y:2. ~w:4. ~h:4.;
+  draw ();
+  pixel renderer 2 3 white;
+  pixel renderer 7 3 black
 
 let logical_coordinates context =
   (* SDL 3.2.0 applies logical presentation only to the default target. *)
@@ -281,4 +343,5 @@ let () =
                           transforms renderer texture;
                           ordered renderer texture;
                           reuse renderer texture;
+                          color_updates renderer texture;
                           misuse driver context renderer target texture))))))

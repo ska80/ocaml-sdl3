@@ -62,7 +62,10 @@ The pivot is the point that the sprite turns around. Its coordinates start at th
 destination's top-left, not at the source rectangle. The default pivot is the destination's
 center. Flip mirrors the image without changing the pivot. If you only move sprites, edit the
 pairs in `Sprite_batch.positions batch` with `Float.Array.set` and draw the same batch again.
-Do not change a batch while a draw uses it.
+
+To recolor a sprite, call `Sprite_batch.set_tint batch ~index color`. To fade it, call
+`Sprite_batch.set_opacity batch ~index opacity` with a value from 0 to 255. Indices start at zero.
+Both functions keep the draw order and do not rebuild the batch. Do not edit a batch during a draw.
 
 Set the texture's blend mode to `Blend` for transparency. Sprite opacity multiplies the tint's
 alpha. The draw does not change the texture's modulation settings. Use `Nearest` for pixel art.

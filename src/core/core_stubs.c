@@ -1006,12 +1006,26 @@ CAMLprim value osdl_texture_draw_rotated_byte(value* argv, int argc) {
 /* Only the positions are exposed to OCaml. Cache the transformed corners
  * relative to each position so moving a sprite does not recompute its rotation. */
 typedef struct {
-    SDL_Rect     source;
-    SDL_FPoint   size, pivot, corners[4];
-    double       angle;
-    SDL_Color    color;
-    SDL_FlipMode flip;
+    SDL_Rect   source;
+    SDL_FPoint size, pivot, corners[4];
+    double     angle;
+    SDL_Color  color; /* Render color, with opacity applied to alpha. */
+    Uint8      flip, tint_alpha, opacity;
 } osdl_sprite;
+
+static inline osdl_sprite* osdl_sprite_at(value storage, intnat i) {
+    return &((osdl_sprite*)Caml_ba_data_val(storage))[i];
+}
+
+static inline void osdl_sprite_apply_opacity(osdl_sprite* sprite) {
+    sprite->color.a = (sprite->tint_alpha * sprite->opacity + 127) / 255;
+}
+
+static inline void osdl_sprite_set_tint(osdl_sprite* sprite, SDL_Color tint) {
+    sprite->color      = tint;
+    sprite->tint_alpha = tint.a;
+    osdl_sprite_apply_opacity(sprite);
+}
 
 CAMLprim value osdl_sprite_batch_alloc(value capacity) {
     CAMLparam1(capacity);
@@ -1056,8 +1070,8 @@ static void osdl_sprite_corners(osdl_sprite* sprite) {
 CAMLprim value osdl_sprite_batch_write(value storage, value index, value source, double w, double h,
                                        double px, double py, double angle, value tint,
                                        value opacity, value flip) {
-    static const SDL_FlipMode modes[] = {SDL_FLIP_NONE, SDL_FLIP_HORIZONTAL, SDL_FLIP_VERTICAL,
-                                         SDL_FLIP_HORIZONTAL | SDL_FLIP_VERTICAL};
+    static const Uint8 modes[] = {SDL_FLIP_NONE, SDL_FLIP_HORIZONTAL, SDL_FLIP_VERTICAL,
+                                  SDL_FLIP_HORIZONTAL | SDL_FLIP_VERTICAL};
 
     size_t i = osdl_nonnegative_int(index);
     if (i >= (size_t)Caml_ba_array_val(storage)->dim[0] / sizeof(osdl_sprite))
@@ -1066,7 +1080,6 @@ CAMLprim value osdl_sprite_batch_write(value storage, value index, value source,
     osdl_sprite sprite = {.source = osdl_rect(source),
                           .size   = osdl_sprite_point(w, h),
                           .pivot  = osdl_sprite_point(px, py),
-                          .color  = osdl_color(tint),
                           .flip   = modes[Int_val(flip)]};
     if (sprite.source.x < 0 || sprite.source.y < 0 || sprite.source.w <= 0 || sprite.source.h <= 0)
         caml_invalid_argument("Sprite source coordinates must be nonnegative and sizes positive");
@@ -1075,9 +1088,10 @@ CAMLprim value osdl_sprite_batch_write(value storage, value index, value source,
     if (!isfinite(angle)) caml_invalid_argument("Sprite rotation must be finite");
 
     sprite.angle   = angle > -360.0 && angle < 360.0 ? angle : fmod(angle, 360.0);
-    sprite.color.a = (sprite.color.a * osdl_byte(opacity) + 127) / 255;
+    sprite.opacity = osdl_byte(opacity);
+    osdl_sprite_set_tint(&sprite, osdl_color(tint));
     osdl_sprite_corners(&sprite);
-    ((osdl_sprite*)Caml_ba_data_val(storage))[i] = sprite;
+    *osdl_sprite_at(storage, i) = sprite;
     return Val_unit;
 }
 
@@ -1086,6 +1100,19 @@ CAMLprim value osdl_sprite_batch_write_byte(value* argv, int argc) {
     return osdl_sprite_batch_write(argv[0], argv[1], argv[2], Double_val(argv[3]),
                                    Double_val(argv[4]), Double_val(argv[5]), Double_val(argv[6]),
                                    Double_val(argv[7]), argv[8], argv[9], argv[10]);
+}
+
+/* The OCaml wrappers check the live index and opacity. These calls do not allocate. */
+CAMLprim value osdl_sprite_batch_set_tint(value storage, value index, value tint) {
+    osdl_sprite_set_tint(osdl_sprite_at(storage, Long_val(index)), osdl_color(tint));
+    return Val_unit;
+}
+
+CAMLprim value osdl_sprite_batch_set_opacity(value storage, value index, value opacity) {
+    osdl_sprite* sprite = osdl_sprite_at(storage, Long_val(index));
+    sprite->opacity     = Int_val(opacity);
+    osdl_sprite_apply_opacity(sprite);
+    return Val_unit;
 }
 
 /* Include logical presentation in the software renderer's coordinate limits.
@@ -1149,7 +1176,8 @@ static void osdl_sprite_batch_software(SDL_Renderer* r, SDL_Texture* t, const os
         } else if (!rotate_or_flip) {
             if (!SDL_RenderTexture(r, t, &source, &dest)) failed = "SDL_RenderTexture";
         } else if (!SDL_RenderTextureRotated(r, t, &source, &dest, s->angle,
-                                             s->angle == 0.0 ? NULL : &s->pivot, s->flip)) {
+                                             s->angle == 0.0 ? NULL : &s->pivot,
+                                             (SDL_FlipMode)s->flip)) {
             failed = "SDL_RenderTextureRotated";
         }
         if (failed) break;
