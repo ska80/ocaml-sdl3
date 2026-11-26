@@ -1,8 +1,5 @@
 open Sdl3
 
-external read_pixel : Renderer.t -> int -> int -> Color.t
-  = "test_sprite_batch_read_pixel"
-
 let check ok message = if not ok then failwith message
 
 let invalid f =
@@ -14,7 +11,11 @@ let using destroy handle f =
   Fun.protect ~finally:(fun () -> destroy handle) (fun () -> f handle)
 
 let pixel ?(tolerance = 0) renderer x y (expected : Color.t) =
-  let got = read_pixel renderer x y in
+  let area = Rect.make ~x ~y ~w:1 ~h:1 in
+  let got =
+    using Surface.destroy (Renderer.read_pixels ~rect:area renderer)
+      (fun pixels -> Surface.read_pixel pixels ~x:0 ~y:0)
+  in
   let close a b = abs (a - b) <= tolerance in
   if
     not

@@ -1,9 +1,6 @@
 open Sdl3
 open Bigarray
 
-external read_pixel : Renderer.t -> int -> int -> Color.t
-  = "test_geometry_read_pixel"
-
 let using destroy handle f =
   Fun.protect ~finally:(fun () -> destroy handle) (fun () -> f handle)
 
@@ -13,7 +10,11 @@ let invalid name f =
   | () -> failwith ("Expected Invalid_argument: " ^ name)
 
 let pixel ?(tolerance = 0) renderer x y (r, g, b) =
-  let got = read_pixel renderer x y in
+  let area = Rect.make ~x ~y ~w:1 ~h:1 in
+  let got =
+    using Surface.destroy (Renderer.read_pixels ~rect:area renderer)
+      (fun pixels -> Surface.read_pixel pixels ~x:0 ~y:0)
+  in
   let close a b = abs (a - b) <= tolerance in
   if not (close r got.r && close g got.g && close b got.b) then
     failwith

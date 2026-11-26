@@ -325,15 +325,20 @@ module Renderer = struct
   type geometry_indices =
     (int32, Bigarray.int32_elt, Bigarray.c_layout) Bigarray.Array1.t
 
+  external drivers : unit -> string list = "osdl_renderer_drivers"
   external create : ?driver:string -> Window.t -> t = "osdl_renderer_create"
   external create_software : Surface.t -> t = "osdl_renderer_create_software"
   external destroy : t -> unit = "osdl_renderer_destroy"
+  external name : t -> string = "osdl_renderer_name"
+  external max_texture_size : t -> int option = "osdl_renderer_max_texture_size"
+  external texture_formats : t -> string list = "osdl_renderer_texture_formats"
   external output_size : t -> int * int = "osdl_renderer_output_size"
 
   external current_output_size : t -> int * int
     = "osdl_renderer_current_output_size"
 
   external set_vsync : t -> bool -> unit = "osdl_renderer_set_vsync"
+  external vsync : t -> int = "osdl_renderer_vsync"
 
   external set_target : t -> [ `Target ] texture option -> unit
     = "osdl_renderer_set_target"
@@ -390,6 +395,9 @@ module Renderer = struct
     colors:geometry_buffer ->
     vertex_count:int ->
     unit = "osdl_renderer_draw_geometry_byte" "osdl_renderer_draw_geometry"
+
+  external read_pixels : ?rect:Rect.t -> t -> Surface.t
+    = "osdl_renderer_read_pixels"
 
   external present : t -> unit = "osdl_renderer_present"
 end
@@ -1020,6 +1028,8 @@ module Event = struct
     | Complete
     | Position of { x : float; y : float }
 
+  type render_change = Targets_reset | Device_reset | Device_lost
+
   type kind =
     | Quit
     | Window of { window : Window.id; change : window_change }
@@ -1080,6 +1090,7 @@ module Event = struct
       }
     | Drop of { window : Window.id option; change : drop_change }
     | Other of int32
+    | Render of { window : Window.id option; change : render_change }
 
   type t = { timestamp_ns : int64; kind : kind }
 

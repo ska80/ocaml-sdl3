@@ -3,13 +3,6 @@
  (package sdl3)
  (libraries sdl3)
  (modes exe byte_complete)
- (foreign_stubs
-  (language c)
-  (names geometry_readback)
-  (include_dirs ../../src/core)
-  (flags
-   (:standard
-    (:include ../../src/core/c_flags.sexp))))
  (action
   (setenv
    SDL_VIDEO_DRIVER

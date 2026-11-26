@@ -3,6 +3,19 @@
 A surface is a pixel buffer in memory. A texture is an image that a renderer can draw. Use
 `Sdl3.Renderer` and `Sdl3.Texture` from the [core API](../src/core/sdl3.mli).
 
+## Check the renderer
+
+Use `Renderer.drivers ()` to list the driver names built into SDL. Use `Renderer.name renderer` to
+find which driver the renderer uses. A listed driver can still fail to start on a given system.
+
+Use `Renderer.max_texture_size renderer` before you [build an atlas](#draw-from-a-texture-atlas).
+SDL reports one limit in pixels for both width and height. `None` means the driver reports no
+limit. It does not mean that any size will work. If allocation fails, try a smaller texture.
+
+`Renderer.texture_formats` lists the native texture formats that the driver reports. SDL can convert
+other formats when it uploads a surface. VSync aligns frame presentation with the display
+refresh. Use `Renderer.vsync` to get the current setting.
+
 ## Update textures
 
 A streaming texture accepts repeated pixel uploads. Create one with `Texture.create_streaming`.  Use
@@ -54,6 +67,46 @@ reports the default target on those versions.
 
 See [Convert input to drawing coordinates](input.md#convert-input-to-drawing-coordinates) to map
 clicks to a viewport.
+
+## Capture an image
+
+`Renderer.read_pixels` copies the current target into a new surface. For a window capture, call it
+after drawing and before `Renderer.present`. Readback can wait for drawing to finish, so use it only
+when you need a copy.
+
+Pass `~rect` in actual target pixels, relative to the target's top-left corner. SDL clips the region
+to the viewport and the binding clips it to the target bounds. The drawing clip does not limit the
+capture. If you omit `~rect`, the capture covers the part of the viewport inside the target. When
+logical presentation is on, the result can differ from the logical drawing size.
+
+```ocaml
+open Sdl3
+
+let save_frame renderer path =
+  let pixels = Renderer.read_pixels renderer in
+  Fun.protect
+    ~finally:(fun () -> Surface.destroy pixels)
+    (fun () -> Surface.save_bmp pixels path)
+```
+
+You can destroy the target and renderer before the capture. Destroy the capture before you quit
+SDL. Use `Surface.scale` to make a thumbnail. To compare pixels in a test, use `Surface.read_rgba`
+for the same byte order across renderers.
+
+With SDL's `vulkan` renderer, read from a texture target. SDL does not create a Vulkan window buffer
+that readback can copy. A read from that buffer raises `Sdl3.Error`.
+
+## Handle renderer resets
+
+`Event.poll` reports 2D renderer failures as `Event.Render { window; change }`. Use the window ID to
+find the affected renderer. If SDL reports no window ID, `window` is `None`. Keep the source images
+and drawing data you need to rebuild textures. The binding reports the event without changing your
+handles.
+
+- `Targets_reset`: Draw the contents of the texture targets again.
+- `Device_reset`: Destroy and recreate all textures for the renderer.
+- `Device_lost`: Stop drawing with this renderer. SDL cannot recover the device. Release the
+  renderer's children before you release the renderer.
 
 ## Tint and transform texture copies
 

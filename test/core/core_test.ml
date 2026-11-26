@@ -2,6 +2,7 @@ open Sdl3
 
 external push_events : int32 -> unit = "test_push_events"
 external push_device_events : int32 -> unit = "test_push_device_events"
+external push_render_events : int32 -> unit = "test_push_render_events"
 external cursor_is_default : unit -> bool = "test_cursor_is_default"
 external attach_gamepad : unit -> int32 = "test_attach_gamepad"
 external detach_gamepad : int32 -> unit = "test_detach_gamepad"
@@ -56,6 +57,9 @@ let main_thread context window =
     invalid (fun () -> quit context);
     invalid (fun () -> Gpu.supports_shader_formats context [ Spirv ]);
     check ((version ()).major = 3) "SDL version on another thread";
+    check
+      (List.mem "software" (Renderer.drivers ()))
+      "Render drivers on another thread";
     ignore (Timer.ticks_ns ())
   in
   Domain.join (Domain.spawn worker);
@@ -393,6 +397,33 @@ let converted_events context window renderer =
   while Option.is_some (poll context) do
     ()
   done
+
+let render_events context window renderer =
+  let id = Window.id window in
+  push_render_events (Window.id_to_int32 id);
+  let window = Some id in
+  let open Event in
+  List.iteri
+    (fun index (window, change) ->
+      match poll context with
+      | None -> failwith "Missing render event"
+      | Some event ->
+          let timestamp_ns =
+            Int64.add 0x1234_5678_9abc_def0L (Int64.of_int index)
+          in
+          check
+            (event = { timestamp_ns; kind = Render { window; change } })
+            "Render event fields";
+          check
+            (to_render_coordinates renderer event == event)
+            "Coordinate conversion leaves render events unchanged")
+    [
+      (window, Targets_reset);
+      (window, Device_reset);
+      (window, Device_lost);
+      (None, Device_lost);
+    ];
+  check (poll context = None) "No extra render events"
 
 let gamepads context =
   let gamepad = attach_gamepad () in
@@ -839,6 +870,7 @@ let renderer_views context window =
       in
       roundtrip ();
       converted_events context window renderer;
+      render_events context window renderer;
 
       let v = version () in
       let old_logical = (v.major, v.minor, v.patch) < (3, 2, 6) in
@@ -954,6 +986,12 @@ let renderer_views context window =
             (fun () -> Renderer.set_scale renderer ~x:1. ~y:1.);
             (fun () -> ignore (Renderer.scale renderer));
             (fun () -> ignore (Renderer.logical_presentation_rect renderer));
+            (fun () -> ignore (Renderer.name renderer));
+            (fun () -> ignore (Renderer.max_texture_size renderer));
+            (fun () -> ignore (Renderer.texture_formats renderer));
+            (fun () -> ignore (Renderer.vsync renderer));
+            (fun () ->
+              using Surface.destroy (Renderer.read_pixels renderer) ignore);
             (fun () ->
               ignore (Renderer.coordinates_from_window renderer ~x:1. ~y:2.));
             (fun () ->
@@ -979,6 +1017,25 @@ let render_view renderer surface =
   Renderer.clear renderer;
   Renderer.set_draw_color renderer red;
   Renderer.fill_rect renderer (frect (-2.) (-2.) 10. 10.);
+  using Surface.destroy (Renderer.read_pixels renderer) (fun pixels ->
+      check (Surface.size pixels = (12, 8)) "Read the scaled viewport";
+      check
+        (Surface.read_pixel pixels ~x:0 ~y:0 = black)
+        "Read pixels outside the drawing clip";
+      check
+        (Surface.read_pixel pixels ~x:3 ~y:2 = red)
+        "Read queued drawing without presenting");
+  using Surface.destroy
+    (Renderer.read_pixels ~rect:(rect 1 3 10 2) renderer)
+    (fun pixels ->
+      check
+        (Surface.size pixels = (8, 2))
+        "Clip absolute pixels to the viewport";
+      check (Surface.read_pixel pixels ~x:3 ~y:1 = red) "Cropped pixel color");
+  sdl_error "SDL_RenderReadPixels" (fun () ->
+      using Surface.destroy
+        (Renderer.read_pixels ~rect:(rect 0 0 1 1) renderer)
+        ignore);
   Renderer.present renderer;
   check (at 6 4 = red && at 14 5 = red) "Scaled clip inside the viewport";
   check (at 5 4 = black && at 6 3 = black && at 6 6 = black) "Clip edges";
@@ -993,7 +1050,75 @@ let render_view renderer surface =
   Renderer.set_clip_rect renderer None;
   Renderer.set_viewport renderer None;
   Renderer.set_scale renderer ~x:1. ~y:1.;
-  Renderer.set_logical_presentation renderer None
+  Renderer.set_logical_presentation renderer None;
+  Renderer.set_viewport renderer (Some (rect (-2) 14 6 6));
+  using Surface.destroy (Renderer.read_pixels renderer) (fun pixels ->
+      check (Surface.size pixels = (4, 2)) "Clip the viewport to the target";
+      check (Surface.read_pixel pixels ~x:0 ~y:0 = blue) "Read the visible area");
+  Renderer.set_viewport renderer (Some (rect 0 0 0 3));
+  sdl_error "SDL_RenderReadPixels" (fun () ->
+      using Surface.destroy (Renderer.read_pixels renderer) ignore);
+  Renderer.set_viewport renderer None;
+  List.iter
+    (fun rect ->
+      invalid (fun () ->
+          using Surface.destroy (Renderer.read_pixels ~rect renderer) ignore))
+    [ rect 0 0 0 1; rect 0 0 1 (-1) ];
+  if Sys.int_size > 32 then (
+    invalid (fun () ->
+        using Surface.destroy
+          (Renderer.read_pixels ~rect:(rect max_int 0 1 1) renderer)
+          ignore);
+    let x = Int32.to_int Int32.max_int - 1 in
+    sdl_error "SDL_RenderReadPixels" (fun () ->
+        using Surface.destroy
+          (Renderer.read_pixels ~rect:(rect x 0 3 1) renderer)
+          ignore))
+
+let detached_readback context =
+  let color = Color.rgba 32 64 96 128 in
+  let capture =
+    using Surface.destroy (Surface.create context ~w:16 ~h:16) (fun surface ->
+        using Renderer.destroy (Renderer.create_software surface)
+          (fun renderer ->
+            using Texture.destroy (Texture.create_target renderer ~w:7 ~h:5)
+              (fun target ->
+                Renderer.set_target renderer (Some target);
+                Fun.protect
+                  ~finally:(fun () -> Renderer.set_target renderer None)
+                  (fun () ->
+                    Renderer.set_draw_color renderer color;
+                    Renderer.clear renderer;
+                    Renderer.read_pixels renderer))))
+  in
+  using Surface.destroy capture (fun pixels ->
+      Gc.compact ();
+      invalid (fun () -> quit context);
+      check (Surface.size pixels = (7, 5)) "Size of texture target readback";
+      check
+        (Surface.read_pixel pixels ~x:6 ~y:4 = color)
+        "Readback keeps its pixels after target and renderer destruction")
+
+let indexed_readback context =
+  let red = Color.rgb 255 0 0 and blue = Color.rgb 0 0 255 in
+  using Surface.Palette.destroy (Surface.Palette.create context [| red |])
+    (fun palette ->
+      using Surface.destroy (Surface.create context ~format:Index8 ~w:5 ~h:3)
+        (fun surface ->
+          Surface.set_palette surface palette;
+          using Renderer.destroy (Renderer.create_software surface)
+            (fun renderer ->
+              Renderer.set_draw_color renderer red;
+              Renderer.clear renderer;
+              using Surface.destroy (Renderer.read_pixels renderer)
+                (fun pixels ->
+                  Surface.Palette.set_colors palette ~first:0 [| blue |];
+                  check
+                    (Surface.read_pixel surface ~x:0 ~y:0 = blue)
+                    "Indexed source uses the updated palette";
+                  check
+                    (Surface.read_pixel pixels ~x:0 ~y:0 = red)
+                    "Indexed readback owns a copy of the palette"))))
 
 let render context window =
   sdl_error "SDL_CreateRenderer" (fun () ->
@@ -1003,6 +1128,25 @@ let render context window =
       check
         (Renderer.output_size window_renderer = (32, 24))
         "Window renderer output size";
+      check (Renderer.name window_renderer = "software") "Active renderer name";
+      check
+        (Renderer.max_texture_size window_renderer = None)
+        "Software renderer reports no texture limit";
+      let formats = Renderer.texture_formats window_renderer in
+      check
+        (formats <> [] && not (List.mem "SDL_PIXELFORMAT_UNKNOWN" formats))
+        "Native texture formats without the sentinel";
+      Renderer.set_vsync window_renderer false;
+      check (Renderer.vsync window_renderer = 0) "VSync disabled";
+      let color = Color.rgb 8 16 32 in
+      Renderer.set_draw_color window_renderer color;
+      Renderer.clear window_renderer;
+      using Surface.destroy (Renderer.read_pixels window_renderer)
+        (fun pixels ->
+          check (Surface.size pixels = (32, 24)) "Window readback size";
+          check
+            (Surface.read_pixel pixels ~x:3 ~y:5 = color)
+            "Window pixel color");
       Renderer.present window_renderer;
       invalid (fun () -> Window.destroy window);
       using Surface.destroy (Surface.create context ~w:16 ~h:16) (fun target ->
@@ -1175,6 +1319,7 @@ let audio context =
 let () =
   check (is_main_thread ()) "Main thread";
   check ((version ()).major = 3) "SDL version";
+  check (List.mem "software" (Renderer.drivers ())) "Render drivers before init";
   let start = Timer.ticks_ns () in
   Timer.delay_ns 1_000_000L;
   check (Int64.sub (Timer.ticks_ns ()) start >= 1_000_000L) "Nanosecond timer";
@@ -1185,6 +1330,8 @@ let () =
       invalid (fun () -> init []);
       invalid (fun () -> Surface.create context ~w:0 ~h:1);
       surface_rgba context;
+      detached_readback context;
+      indexed_readback context;
       invalid (fun () ->
           Window.create context ~title:"embedded\000NUL" ~w:1 ~h:1);
       using Window.destroy

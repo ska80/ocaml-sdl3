@@ -305,7 +305,7 @@ module Surface : sig
   val size : t -> int * int
 
   val format : t -> Pixel_format.t option
-  (** Return [None] for a loaded format not listed in [Pixel_format]. *)
+  (** Return [None] if the format is not listed in [Pixel_format]. *)
 
   val fill : ?rect:Rect.t -> t -> Color.t -> unit
   val read_pixel : t -> x:int -> y:int -> Color.t
@@ -427,6 +427,11 @@ module Renderer : sig
     (int32, Bigarray.int32_elt, Bigarray.c_layout) Bigarray.Array1.t
   (** A flat buffer of zero-based vertex indices. *)
 
+  val drivers : unit -> string list
+  (** List the renderer drivers built into SDL, in preference order. You can
+      call this without an SDL context and on any thread. A listed driver can
+      still fail to start. *)
+
   val create : ?driver:string -> Window.t -> t
   (** Create a renderer for a window with no renderer or GPU claim. *)
 
@@ -436,6 +441,18 @@ module Renderer : sig
 
   val destroy : t -> unit
 
+  val name : t -> string
+  (** Copy the name of the selected driver. *)
+
+  val max_texture_size : t -> int option
+  (** Get the reported limit in pixels for each texture axis. [None] means the
+      driver reports no limit. Allocation can still fail below this limit. *)
+
+  val texture_formats : t -> string list
+  (** Copy the SDL names of the native texture formats that the driver reports,
+      such as ["SDL_PIXELFORMAT_ARGB8888"]. SDL can also convert other formats
+      when it uploads a surface. *)
+
   val output_size : t -> int * int
   (** The output size in pixels, as reported by SDL. If you draw to a texture,
       use [current_output_size]. *)
@@ -444,6 +461,10 @@ module Renderer : sig
   (** The size of the current target, adjusted for logical presentation. *)
 
   val set_vsync : t -> bool -> unit
+
+  val vsync : t -> int
+  (** Get the vertical refresh interval. [0] means disabled, [-1] means
+      adaptive, and positive values count display refreshes per presentation. *)
 
   val set_target : t -> [ `Target ] texture option -> unit
   (** Draw to a texture that belongs to this renderer. Pass [None] to draw to
@@ -555,6 +576,22 @@ module Renderer : sig
       Draw in the given order. Raise [Invalid_argument] for invalid input before
       drawing. An SDL error can occur after SDL queues some triangles. SDL does
       not retain the buffers. Do not change them during the call. *)
+
+  val read_pixels : ?rect:Rect.t -> t -> Surface.t
+  (** Copy pixels from the current target on the main thread. The optional
+      rectangle uses absolute target pixels, not drawing coordinates. Its
+      dimensions must be positive. The read is clipped to the viewport and
+      target bounds. Without a rectangle, read the whole visible viewport. The
+      drawing clip does not restrict the read.
+
+      Read after drawing and before [present] when the target is the window.
+      This call can be slow. Use a texture target with the [vulkan] renderer. An
+      empty read or an unsupported read raises [Error].
+
+      On a software surface target, use a format with whole bytes per pixel. A
+      copy of an indexed surface has its own palette. The result can outlive the
+      renderer and target. Destroy it with {!Surface.destroy} before you quit
+      SDL. *)
 
   val present : t -> unit
   (** Present the frame. Raise [Invalid_argument] if a texture is the current
@@ -1473,6 +1510,12 @@ module Event : sig
             and [Text] hold copies of the path and text. [Position] uses window
             coordinates. *)
 
+  type render_change =
+    | Targets_reset  (** Draw the contents of texture targets again. *)
+    | Device_reset  (** Destroy and recreate all textures for the renderer. *)
+    | Device_lost
+        (** Stop drawing with this renderer. SDL cannot recover it. *)
+
   type kind =
     | Quit
     | Window of { window : Window.id; change : window_change }
@@ -1536,6 +1579,9 @@ module Event : sig
     | Drop of { window : Window.id option; change : drop_change }
         (** [window] is [None] when SDL reports no target window. *)
     | Other of int32
+    | Render of { window : Window.id option; change : render_change }
+        (** [window] is [None] when SDL reports no window ID. The binding does
+            not recreate or invalidate handles when it reports this event. *)
 
   type t = { timestamp_ns : int64; kind : kind }
 

@@ -156,6 +156,7 @@ enum {
     K_TOUCH,
     K_DROP,
     K_OTHER,
+    K_RENDER,
 };
 
 /* Sdl3.Event.window_change counts constants and blocks separately. */
@@ -296,6 +297,15 @@ static value drop_event_value(const SDL_DropEvent* event) {
     CAMLreturn(caml_alloc_2(K_DROP, window, change));
 }
 
+static value render_event_value(const SDL_RenderEvent* event, int change) {
+    CAMLparam0();
+    CAMLlocal1(window);
+
+    window =
+        event->windowID ? caml_alloc_some(caml_copy_int32((int32_t)event->windowID)) : Val_none;
+    CAMLreturn(caml_alloc_2(K_RENDER, window, Val_int(change)));
+}
+
 static value event_kind_value(const SDL_Event* event) {
     if (event->type >= SDL_EVENT_WINDOW_FIRST && event->type <= SDL_EVENT_WINDOW_LAST)
         return window_event_value(&event->window);
@@ -399,6 +409,14 @@ static value event_kind_value(const SDL_Event* event) {
     case SDL_EVENT_DROP_TEXT:
     case SDL_EVENT_DROP_POSITION:
         CAMLreturn(drop_event_value(&event->drop));
+
+    /* Sdl3.Event.render_change constant constructor order. */
+    case SDL_EVENT_RENDER_TARGETS_RESET:
+        CAMLreturn(render_event_value(&event->render, 0));
+    case SDL_EVENT_RENDER_DEVICE_RESET:
+        CAMLreturn(render_event_value(&event->render, 1));
+    case SDL_EVENT_RENDER_DEVICE_LOST:
+        CAMLreturn(render_event_value(&event->render, 2));
 
     default:
         break;

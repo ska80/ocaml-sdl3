@@ -24,6 +24,8 @@
       drawing coordinates.
 - [x] RGB texture tint, rotation pivots, affine copies, tiling, nine-slice drawing, and custom blend
       modes.
+- [x] Renderer queries, including texture size limits, pixel readback, and renderer reset and loss
+      events.
 - [x] GPU device setup, window claims, and solid-color frames.
 - [x] GPU command buffers, swapchain render passes, and fences that signal completion.
 - [x] Typed GPU shaders and pipelines for window drawing.

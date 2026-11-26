@@ -17,8 +17,10 @@ The core tests need SDL's virtual joystick support, not a physical gamepad. The 
 GIF, PNG, and JPEG support in SDL3_image. The mixer tests need WAV support in SDL3_mixer.
 
 Run `dune runtest --force test/core` to test viewport, clip, and scale changes with the software
-renderer. These tests read pixels and convert points and events in a dummy window. They also check
-that each render target keeps its own settings.
+renderer. These tests read captures from a window, surface, and texture target. They compare the
+size and colors, test clipping and ownership, and convert points and events. The tests send all
+three renderer reset and loss events through the queue with known timestamps and IDs. They do not
+force a real device failure.
 
 The core tests also cover mouse state, focus events, and cursor cleanup. They check failure paths
 for capture and system cursors on the dummy driver. Test actual capture and desktop coordinates with
@@ -100,9 +102,11 @@ native and bytecode tests.
 
 ## Test texture operations on another renderer
 
-Run `dune runtest --force test/texture` to test the software renderer. These tests read pixels from
-a texture target. They cover tint, rotation pivots, affine copies, partial tiles, and nine-slice
-panels. They also check that software rejects unsupported blend modes.
+Run `dune runtest --force test/texture` to test the software renderer. These tests use
+`Renderer.read_pixels` to read a texture target. They cover tint, rotation pivots, affine copies,
+partial tiles, and nine-slice panels. They also check that software rejects unsupported blend
+modes. On OpenGL, OpenGL ES 2, and the `gpu` and `vulkan` renderers, they test the reported texture
+limit on both axes.
 
 To test drawing and custom blending with offscreen OpenGL on Linux, run:
 

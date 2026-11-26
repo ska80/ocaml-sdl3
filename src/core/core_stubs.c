@@ -1021,6 +1021,21 @@ CAMLprim value osdl_surface_locked_copy_to(value view, value buffer, value pitch
 
 /* Renderers. */
 
+CAMLprim value osdl_renderer_drivers(value unit) {
+    CAMLparam0();
+    CAMLlocal2(list, name);
+    (void)unit;
+
+    list = Val_emptylist;
+    for (int i = SDL_GetNumRenderDrivers(); i > 0; --i) {
+        const char* driver = SDL_GetRenderDriver(i - 1);
+        if (!driver) osdl_fail("SDL_GetRenderDriver");
+        name = caml_copy_string(driver);
+        list = caml_alloc_2(0, name, list);
+    }
+    CAMLreturn(list);
+}
+
 static SDL_Texture* osdl_texture_unlocked(value texture) {
     SDL_Texture* t = osdl_live(texture);
     if (osdl_cell_val(texture)->children)
@@ -1058,6 +1073,46 @@ CAMLprim value osdl_renderer_create_software(value surface) {
 
 OSDL_DESTROY(osdl_renderer_destroy, SDL_Renderer, SDL_DestroyRenderer)
 
+CAMLprim value osdl_renderer_name(value renderer) {
+    const char* name = SDL_GetRendererName(osdl_live(renderer));
+    if (!name) osdl_fail("SDL_GetRendererName");
+    return caml_copy_string(name);
+}
+
+static SDL_PropertiesID osdl_renderer_properties(value renderer) {
+    SDL_PropertiesID props = SDL_GetRendererProperties(osdl_live(renderer));
+    if (!props) osdl_fail("SDL_GetRendererProperties");
+    return props;
+}
+
+CAMLprim value osdl_renderer_max_texture_size(value renderer) {
+    SDL_PropertiesID props = osdl_renderer_properties(renderer);
+    Sint64 size = SDL_GetNumberProperty(props, SDL_PROP_RENDERER_MAX_TEXTURE_SIZE_NUMBER, 0);
+    if (size <= 0) return Val_none;
+    if (size > Max_long) osdl_raise_error("SDL_GetRendererProperties: Texture limit is too large");
+    return caml_alloc_some(Val_long((intnat)size));
+}
+
+CAMLprim value osdl_renderer_texture_formats(value renderer) {
+    CAMLparam1(renderer);
+    CAMLlocal2(list, name);
+
+    SDL_PropertiesID       props = osdl_renderer_properties(renderer);
+    const SDL_PixelFormat* formats =
+        SDL_GetPointerProperty(props, SDL_PROP_RENDERER_TEXTURE_FORMATS_POINTER, NULL);
+    if (!formats) CAMLreturn(Val_emptylist);
+
+    const SDL_PixelFormat* end = formats;
+    while (*end != SDL_PIXELFORMAT_UNKNOWN)
+        ++end;
+    list = Val_emptylist;
+    while (end != formats) {
+        name = caml_copy_string(SDL_GetPixelFormatName(*--end));
+        list = caml_alloc_2(0, name, list);
+    }
+    CAMLreturn(list);
+}
+
 CAMLprim value osdl_renderer_output_size(value renderer) {
     int w, h;
     osdl_check(SDL_GetRenderOutputSize(osdl_live(renderer), &w, &h), "SDL_GetRenderOutputSize");
@@ -1075,6 +1130,12 @@ CAMLprim value osdl_renderer_set_vsync(value renderer, value enabled) {
     osdl_check(SDL_SetRenderVSync(osdl_live(renderer), Bool_val(enabled) ? 1 : 0),
                "SDL_SetRenderVSync");
     return Val_unit;
+}
+
+CAMLprim value osdl_renderer_vsync(value renderer) {
+    int interval;
+    osdl_check(SDL_GetRenderVSync(osdl_live(renderer), &interval), "SDL_GetRenderVSync");
+    return osdl_val_int(interval);
 }
 
 CAMLprim value osdl_renderer_set_target(value renderer, value target) {
@@ -1456,6 +1517,75 @@ CAMLprim value osdl_renderer_draw_line(value renderer, value x1, value y1, value
                               osdl_float(Double_val(y2))),
                "SDL_RenderLine");
     return Val_unit;
+}
+
+static SDL_Rect osdl_read_pixels_area(SDL_Rect rect, int w, int h) {
+    /* SDL only clips to the viewport, which can extend past the target. Clip
+     * to the physical bounds first. Use wide sums for untrusted endpoints. */
+    int x = SDL_max(rect.x, 0), y = SDL_max(rect.y, 0);
+    int right  = (int)SDL_min((Sint64)rect.x + rect.w, w);
+    int bottom = (int)SDL_min((Sint64)rect.y + rect.h, h);
+    if (right <= x || bottom <= y)
+        osdl_raise_error("SDL_RenderReadPixels: The read area does not overlap the target");
+    return (SDL_Rect){x, y, right - x, bottom - y};
+}
+
+static void osdl_readback_palette(SDL_Surface* pixels, const SDL_Palette* palette) {
+    /* SDL's software readback copies indices but not the palette. Keep the
+     * result independent of later changes to the original palette. */
+    SDL_Palette* copy = SDL_CreatePalette(palette->ncolors);
+    if (!copy) osdl_surface_fail_and_destroy(pixels, "SDL_CreatePalette");
+    bool ok = SDL_SetPaletteColors(copy, palette->colors, 0, palette->ncolors) &&
+              SDL_SetSurfacePalette(pixels, copy);
+    SDL_DestroyPalette(copy);
+    if (!ok) osdl_surface_fail_and_destroy(pixels, "SDL_RenderReadPixels");
+}
+
+CAMLprim value osdl_renderer_read_pixels(value rect, value renderer) {
+    CAMLparam2(rect, renderer);
+    CAMLlocal1(handle);
+
+    /* A renderer's parent is either a window or a surface. The copy only
+     * depends on their context, not on the renderer or its target. */
+    handle = osdl_new_handle(osdl_parent(osdl_parent(renderer)));
+
+    SDL_Renderer* r        = osdl_live(renderer);
+    bool          has_rect = Is_block(rect);
+    SDL_Rect      requested;
+    if (has_rect) {
+        requested = osdl_rect(Some_val(rect));
+        if (requested.w <= 0 || requested.h <= 0)
+            caml_invalid_argument("The read area must have positive dimensions");
+    }
+
+    SDL_Texture* target  = SDL_GetRenderTarget(r);
+    SDL_Palette* palette = NULL;
+    int          w, h;
+    if (target) {
+        w = target->w;
+        h = target->h;
+    } else if (SDL_GetRenderWindow(r)) {
+        /* SDL's Vulkan swapchain images lack VK_IMAGE_USAGE_TRANSFER_SRC_BIT. */
+        const char* name = SDL_GetRendererName(r);
+        if (name && strcmp(name, "vulkan") == 0)
+            osdl_raise_error("SDL_RenderReadPixels: Use a texture target with the Vulkan renderer");
+        osdl_check(SDL_GetRenderOutputSize(r, &w, &h), "SDL_GetRenderOutputSize");
+    } else {
+        SDL_Surface* backing = osdl_unlocked_surface(osdl_parent(renderer));
+        osdl_check_surface_byte_pixels(backing);
+        osdl_check_surface_storage(backing);
+        if (SDL_ISPIXELFORMAT_INDEXED(backing->format)) palette = osdl_surface_palette(backing);
+        w = backing->w;
+        h = backing->h;
+    }
+    SDL_Rect area = osdl_read_pixels_area(has_rect ? requested : (SDL_Rect){0, 0, w, h}, w, h);
+
+    SDL_ClearError();
+    SDL_Surface* pixels = SDL_RenderReadPixels(r, &area);
+    if (!pixels && !*SDL_GetError()) osdl_raise_error("SDL_RenderReadPixels: No pixels were read");
+    if (pixels && palette && SDL_ISPIXELFORMAT_INDEXED(pixels->format))
+        osdl_readback_palette(pixels, palette);
+    CAMLreturn(osdl_publish(handle, pixels, "SDL_RenderReadPixels"));
 }
 
 CAMLprim value osdl_renderer_present(value renderer) {

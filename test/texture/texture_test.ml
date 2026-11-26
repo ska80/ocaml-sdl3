@@ -1,8 +1,5 @@
 open Sdl3
 
-external read_pixel : Renderer.t -> int -> int -> Color.t
-  = "test_texture_read_pixel"
-
 let using destroy handle f =
   Fun.protect ~finally:(fun () -> destroy handle) (fun () -> f handle)
 
@@ -20,7 +17,11 @@ let unsupported fn f =
   | () -> failwith ("Expected an SDL error from " ^ fn)
 
 let pixel ?(tolerance = 0) renderer x y (expected : Color.t) =
-  let got = read_pixel renderer x y in
+  let area = Rect.make ~x ~y ~w:1 ~h:1 in
+  let got =
+    using Surface.destroy (Renderer.read_pixels ~rect:area renderer)
+      (fun pixels -> Surface.read_pixel pixels ~x:0 ~y:0)
+  in
   let close a b = abs (a - b) <= tolerance in
   if
     not
@@ -335,6 +336,21 @@ let invalid_handles context renderer target texture =
       invalid "modulation on a closed texture" (fun () ->
           Texture.set_color_mod stream white))
 
+let renderer_limits driver renderer =
+  if List.mem driver [ "opengl"; "opengles2"; "gpu"; "vulkan" ] then
+    match Renderer.max_texture_size renderer with
+    | None -> failwith ("No texture limit reported by " ^ driver)
+    | Some size ->
+        check (size >= 64) "Texture dimension limit";
+        let reject w h =
+          unsupported "SDL_CreateTexture" (fun () ->
+              using Texture.destroy
+                (Texture.create_target renderer ~w ~h)
+                ignore)
+        in
+        reject (size + 1) 1;
+        reject 1 (size + 1)
+
 let () =
   let mode = Domain.join (Domain.spawn blend_mode) in
   let driver =
@@ -345,6 +361,12 @@ let () =
         (Window.create context ~title:"Texture test" ~w:64 ~h:40) (fun window ->
           using Renderer.destroy (Renderer.create ~driver window)
             (fun renderer ->
+              renderer_limits driver renderer;
+              if driver = "vulkan" then (
+                clear renderer blue;
+                unsupported "SDL_RenderReadPixels" (fun () ->
+                    using Surface.destroy (Renderer.read_pixels renderer) ignore);
+                Renderer.present renderer);
               using Texture.destroy (Texture.create_target renderer ~w:64 ~h:40)
                 (fun target ->
                   using_texture (pattern context renderer ~pad:true)

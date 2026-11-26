@@ -187,6 +187,26 @@ CAMLprim value test_push_device_events(value window) {
     return Val_unit;
 }
 
+CAMLprim value test_push_render_events(value window) {
+    SDL_WindowID        id      = (SDL_WindowID)Int32_val(window);
+    const SDL_EventType types[] = {
+        SDL_EVENT_RENDER_TARGETS_RESET,
+        SDL_EVENT_RENDER_DEVICE_RESET,
+        SDL_EVENT_RENDER_DEVICE_LOST,
+        SDL_EVENT_RENDER_DEVICE_LOST,
+    };
+    SDL_PumpEvents();
+    SDL_FlushEvents(SDL_EVENT_FIRST, SDL_EVENT_LAST);
+    for (size_t i = 0; i < SDL_arraysize(types); ++i) {
+        push((SDL_Event){
+            .render = {.type      = types[i],
+                       .timestamp = UINT64_C(0x123456789abcdef0) + i,
+                       .windowID  = i < 3 ? id : 0}
+        });
+    }
+    return Val_unit;
+}
+
 CAMLprim value test_cursor_is_default(value unit) {
     (void)unit;
     return Val_bool(SDL_GetCursor() == SDL_GetDefaultCursor());
