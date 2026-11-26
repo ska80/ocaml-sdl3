@@ -1001,6 +1001,260 @@ CAMLprim value osdl_texture_draw_rotated_byte(value* argv, int argc) {
     return osdl_texture_draw_rotated(argv[0], argv[1], argv[2], argv[3], argv[4], argv[5]);
 }
 
+/* Ordered sprite batches. */
+
+/* Only the positions are exposed to OCaml. Cache the transformed corners
+ * relative to each position so moving a sprite does not recompute its rotation. */
+typedef struct {
+    SDL_Rect     source;
+    SDL_FPoint   size, pivot, corners[4];
+    double       angle;
+    SDL_Color    color;
+    SDL_FlipMode flip;
+} osdl_sprite;
+
+CAMLprim value osdl_sprite_batch_alloc(value capacity) {
+    CAMLparam1(capacity);
+
+    size_t n = osdl_nonnegative_int(capacity);
+    if (n > (size_t)Max_long / sizeof(osdl_sprite))
+        caml_invalid_argument("Sprite batch capacity is out of range");
+
+    CAMLreturn(caml_ba_alloc_dims(CAML_BA_UINT8 | CAML_BA_C_LAYOUT | CAML_BA_MANAGED, 1, NULL,
+                                  (intnat)(n * sizeof(osdl_sprite))));
+}
+
+static inline SDL_FPoint osdl_sprite_point(double x, double y) {
+    return (SDL_FPoint){osdl_float(x), osdl_float(y)};
+}
+
+static void osdl_sprite_corners(osdl_sprite* sprite) {
+    /* Make right angles exact. Positive angles turn clockwise in screen space. */
+    double c, s;
+    int    quarter = (int)(sprite->angle / 90.0);
+    if (sprite->angle == quarter * 90.0) {
+        static const double cosine[] = {1, 0, -1, 0}, sine[] = {0, 1, 0, -1};
+        int                 i = (quarter + 4) % 4;
+        c                     = cosine[i];
+        s                     = sine[i];
+    } else {
+        double radians = sprite->angle * (SDL_PI_D / 180.0);
+        c              = cos(radians);
+        s              = sin(radians);
+    }
+
+    double x  = sprite->pivot.x * (1.0 - c) + sprite->pivot.y * s;
+    double y  = sprite->pivot.y * (1.0 - c) - sprite->pivot.x * s;
+    double wx = sprite->size.x * c, wy = sprite->size.x * s;
+    double hx = -sprite->size.y * s, hy = sprite->size.y * c;
+    sprite->corners[0] = osdl_sprite_point(x, y);
+    sprite->corners[1] = osdl_sprite_point(x + wx, y + wy);
+    sprite->corners[2] = osdl_sprite_point(x + wx + hx, y + wy + hy);
+    sprite->corners[3] = osdl_sprite_point(x + hx, y + hy);
+}
+
+CAMLprim value osdl_sprite_batch_write(value storage, value index, value source, double w, double h,
+                                       double px, double py, double angle, value tint,
+                                       value opacity, value flip) {
+    static const SDL_FlipMode modes[] = {SDL_FLIP_NONE, SDL_FLIP_HORIZONTAL, SDL_FLIP_VERTICAL,
+                                         SDL_FLIP_HORIZONTAL | SDL_FLIP_VERTICAL};
+
+    size_t i = osdl_nonnegative_int(index);
+    if (i >= (size_t)Caml_ba_array_val(storage)->dim[0] / sizeof(osdl_sprite))
+        caml_invalid_argument("The sprite batch is full");
+
+    osdl_sprite sprite = {.source = osdl_rect(source),
+                          .size   = osdl_sprite_point(w, h),
+                          .pivot  = osdl_sprite_point(px, py),
+                          .color  = osdl_color(tint),
+                          .flip   = modes[Int_val(flip)]};
+    if (sprite.source.x < 0 || sprite.source.y < 0 || sprite.source.w <= 0 || sprite.source.h <= 0)
+        caml_invalid_argument("Sprite source coordinates must be nonnegative and sizes positive");
+    if (sprite.size.x <= 0 || sprite.size.y <= 0)
+        caml_invalid_argument("Sprite destination sizes must be positive");
+    if (!isfinite(angle)) caml_invalid_argument("Sprite rotation must be finite");
+
+    sprite.angle   = angle > -360.0 && angle < 360.0 ? angle : fmod(angle, 360.0);
+    sprite.color.a = (sprite.color.a * osdl_byte(opacity) + 127) / 255;
+    osdl_sprite_corners(&sprite);
+    ((osdl_sprite*)Caml_ba_data_val(storage))[i] = sprite;
+    return Val_unit;
+}
+
+CAMLprim value osdl_sprite_batch_write_byte(value* argv, int argc) {
+    (void)argc;
+    return osdl_sprite_batch_write(argv[0], argv[1], argv[2], Double_val(argv[3]),
+                                   Double_val(argv[4]), Double_val(argv[5]), Double_val(argv[6]),
+                                   Double_val(argv[7]), argv[8], argv[9], argv[10]);
+}
+
+/* Include logical presentation in the software renderer's coordinate limits.
+ * The binding does not set a separate render scale. */
+static double osdl_sprite_software_scale(SDL_Renderer* r) {
+    int                             w, h;
+    SDL_RendererLogicalPresentation mode;
+    osdl_check(SDL_GetRenderLogicalPresentation(r, &w, &h, &mode),
+               "SDL_GetRenderLogicalPresentation");
+    if (mode == SDL_LOGICAL_PRESENTATION_DISABLED || w <= 0 || h <= 0) return 1.0;
+
+    SDL_FRect rect;
+    osdl_check(SDL_GetRenderLogicalPresentationRect(r, &rect),
+               "SDL_GetRenderLogicalPresentationRect");
+    return SDL_max(1.0, SDL_max((double)rect.w / w, (double)rect.h / h));
+}
+
+static void osdl_sprite_software_bounds(const osdl_sprite* sprite, double x, double y,
+                                        double scale) {
+    double width = sprite->size.x, height = sprite->size.y;
+    double reach = width + height;
+    /* The rotation path uses signed byte offsets into its scaled surface. */
+    if ((sprite->angle != 0.0 || sprite->flip != SDL_FLIP_NONE) && 4.0 * width * height > INT_MAX)
+        caml_invalid_argument("The software sprite is too large to rotate or flip");
+    if (sprite->angle != 0.0) {
+        double px = fabs(sprite->pivot.x), py = fabs(sprite->pivot.y);
+        /* SDL uses signed 16.16 coordinates for oblique rotations. Leave
+         * room for its pixel-center and rounding offsets. */
+        if (fmod(sprite->angle, 90.0) != 0.0 && (reach > 32752 || px > 32766 || py > 32766))
+            caml_invalid_argument("Sprite size or pivot is outside the software rotation range");
+        reach += 2.0 * (px + py);
+    }
+    /* SDL converts to ints and adds viewport offsets and rectangle extents. */
+    if ((SDL_max(fabs(x), fabs(y)) + reach) * scale > INT_MAX / 4.0)
+        caml_invalid_argument("Sprite coordinates are outside the software renderer range");
+}
+
+static void osdl_sprite_batch_software(SDL_Renderer* r, SDL_Texture* t, const osdl_sprite* sprites,
+                                       value positions, mlsize_t count) {
+    SDL_FColor saved;
+    osdl_check(SDL_GetTextureColorModFloat(t, &saved.r, &saved.g, &saved.b),
+               "SDL_GetTextureColorModFloat");
+    osdl_check(SDL_GetTextureAlphaModFloat(t, &saved.a), "SDL_GetTextureAlphaModFloat");
+
+    /* SDL's software geometry path can treat a rotated quad as an ordinary
+     * copy and lose the orientation of the source. Use its copy path directly. */
+    const char* failed = NULL;
+    for (mlsize_t i = 0; i < count; ++i) {
+        const osdl_sprite* s              = &sprites[i];
+        bool               rotate_or_flip = s->angle != 0.0 || s->flip != SDL_FLIP_NONE;
+        /* SDL truncates these sizes before rotating the intermediate surface. */
+        if (rotate_or_flip && (s->size.x < 1.0f || s->size.y < 1.0f)) continue;
+
+        SDL_FRect source = {s->source.x, s->source.y, s->source.w, s->source.h};
+        SDL_FRect dest   = {Double_flat_field(positions, i * 2),
+                            Double_flat_field(positions, i * 2 + 1), s->size.x, s->size.y};
+        if (!SDL_SetTextureColorMod(t, s->color.r, s->color.g, s->color.b)) {
+            failed = "SDL_SetTextureColorMod";
+        } else if (!SDL_SetTextureAlphaMod(t, s->color.a)) {
+            failed = "SDL_SetTextureAlphaMod";
+        } else if (!rotate_or_flip) {
+            if (!SDL_RenderTexture(r, t, &source, &dest)) failed = "SDL_RenderTexture";
+        } else if (!SDL_RenderTextureRotated(r, t, &source, &dest, s->angle,
+                                             s->angle == 0.0 ? NULL : &s->pivot, s->flip)) {
+            failed = "SDL_RenderTextureRotated";
+        }
+        if (failed) break;
+    }
+
+    char message[1024];
+    if (failed) osdl_error_message(message, sizeof(message), failed);
+    bool color_ok = SDL_SetTextureColorModFloat(t, saved.r, saved.g, saved.b);
+    bool alpha_ok = SDL_SetTextureAlphaModFloat(t, saved.a);
+    if (failed) osdl_raise_error(message);
+    osdl_check(color_ok && alpha_ok,
+               color_ok ? "SDL_SetTextureAlphaModFloat" : "SDL_SetTextureColorModFloat");
+}
+
+static void osdl_sprite_batch_geometry(SDL_Renderer* r, SDL_Texture* t, const osdl_sprite* sprites,
+                                       value positions, mlsize_t count) {
+    enum { chunk_size = 512 };
+    SDL_Vertex vertices[4 * chunk_size];
+    int        indices[6 * chunk_size];
+    int        capacity = count < chunk_size ? (int)count : chunk_size;
+    for (int j = 0; j < capacity; ++j) {
+        int v = 4 * j, k = 6 * j;
+        indices[k]     = v;
+        indices[k + 1] = v + 1;
+        indices[k + 2] = v + 2;
+        indices[k + 3] = v;
+        indices[k + 4] = v + 2;
+        indices[k + 5] = v + 3;
+    }
+
+    float tw = (float)t->w, th = (float)t->h;
+    for (mlsize_t first = 0; first < count;) {
+        int batch = count - first < (mlsize_t)capacity ? (int)(count - first) : capacity;
+        for (int j = 0; j < batch; ++j) {
+            mlsize_t           i = first + j;
+            const osdl_sprite* s = &sprites[i];
+            double             x = Double_flat_field(positions, i * 2);
+            double             y = Double_flat_field(positions, i * 2 + 1);
+            float              u = s->source.x / tw, u1 = (s->source.x + s->source.w) / tw;
+            float              v = s->source.y / th, v1 = (s->source.y + s->source.h) / th;
+            if (s->flip & SDL_FLIP_HORIZONTAL) {
+                float tmp = u;
+                u         = u1;
+                u1        = tmp;
+            }
+            if (s->flip & SDL_FLIP_VERTICAL) {
+                float tmp = v;
+                v         = v1;
+                v1        = tmp;
+            }
+            const float norm  = 1.0f / 255.0f;
+            SDL_FColor  color = {s->color.r * norm, s->color.g * norm, s->color.b * norm,
+                                 s->color.a * norm};
+            SDL_Vertex* quad  = &vertices[j * 4];
+            quad[0] = osdl_sprite_vertex(x + s->corners[0].x, y + s->corners[0].y, u, v, color);
+            quad[1] = osdl_sprite_vertex(x + s->corners[1].x, y + s->corners[1].y, u1, v, color);
+            quad[2] = osdl_sprite_vertex(x + s->corners[2].x, y + s->corners[2].y, u1, v1, color);
+            quad[3] = osdl_sprite_vertex(x + s->corners[3].x, y + s->corners[3].y, u, v1, color);
+        }
+        osdl_check(SDL_RenderGeometry(r, t, vertices, batch * 4, indices, batch * 6),
+                   "SDL_RenderGeometry");
+        first += batch;
+    }
+}
+
+CAMLprim value osdl_sprite_batch_draw(value renderer, value texture, value positions, value storage,
+                                      value length) {
+    SDL_Renderer* r = osdl_live(renderer);
+    SDL_Texture*  t = osdl_texture_source(texture, renderer, r);
+
+    mlsize_t count = osdl_nonnegative_int(length);
+    if (count > Wosize_val(positions) / Double_wosize / 2 ||
+        count > (size_t)Caml_ba_array_val(storage)->dim[0] / sizeof(osdl_sprite))
+        caml_invalid_argument("The sprite count exceeds the batch capacity");
+    if (!count) return Val_unit;
+
+    const osdl_sprite* sprites  = Caml_ba_data_val(storage);
+    const char*        driver   = SDL_GetRendererName(r);
+    bool               software = driver && strcmp(driver, SDL_SOFTWARE_RENDERER) == 0;
+    double             scale    = software ? osdl_sprite_software_scale(r) : 1.0;
+
+    /* Validate the whole batch before any draw. The caller can edit the
+     * positions or reuse the batch with a texture of a different size. */
+    for (mlsize_t i = 0; i < count; ++i) {
+        const osdl_sprite* s = &sprites[i];
+        double             x = Double_flat_field(positions, i * 2);
+        double             y = Double_flat_field(positions, i * 2 + 1);
+        if (s->source.x > t->w - s->source.w || s->source.y > t->h - s->source.h)
+            caml_invalid_argument("The sprite source rectangle is outside the texture");
+        if (!osdl_fits_float(x) || !osdl_fits_float(y))
+            caml_invalid_argument("Sprite positions must be finite C floats");
+        for (int j = 0; j < 4; ++j) {
+            if (!osdl_fits_float(x + s->corners[j].x) || !osdl_fits_float(y + s->corners[j].y))
+                caml_invalid_argument("Transformed sprite corners must be finite C floats");
+        }
+        if (software) osdl_sprite_software_bounds(s, x, y, scale);
+    }
+
+    if (software)
+        osdl_sprite_batch_software(r, t, sprites, positions, count);
+    else
+        osdl_sprite_batch_geometry(r, t, sprites, positions, count);
+    return Val_unit;
+}
+
 /* Keyboard and mouse. */
 
 CAMLprim value osdl_scancode_escape(value unit) {

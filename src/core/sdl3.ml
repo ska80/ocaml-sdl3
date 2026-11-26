@@ -343,6 +343,69 @@ module Texture = struct
     unit = "osdl_texture_draw_rotated_byte" "osdl_texture_draw_rotated"
 end
 
+module Sprite_batch = struct
+  type t = {
+    positions : Float.Array.t;
+    sprites : byte_buffer;
+    mutable length : int;
+  }
+
+  external alloc : int -> byte_buffer = "osdl_sprite_batch_alloc"
+
+  external write :
+    byte_buffer ->
+    int ->
+    Rect.t ->
+    (float[@unboxed]) ->
+    (float[@unboxed]) ->
+    (float[@unboxed]) ->
+    (float[@unboxed]) ->
+    (float[@unboxed]) ->
+    Color.t ->
+    int ->
+    Texture.flip ->
+    unit = "osdl_sprite_batch_write_byte" "osdl_sprite_batch_write"
+
+  external submit :
+    Renderer.t -> 'access texture -> Float.Array.t -> byte_buffer -> int -> unit
+    = "osdl_sprite_batch_draw"
+
+  let create ~capacity =
+    if capacity < 0 || capacity > Sys.max_floatarray_length / 2 then
+      invalid_arg "Sprite batch capacity is out of range";
+    let sprites = alloc capacity in
+    { positions = Float.Array.create (2 * capacity); sprites; length = 0 }
+
+  let capacity batch = Float.Array.length batch.positions / 2
+  let length batch = batch.length
+  let clear batch = batch.length <- 0
+  let positions batch = batch.positions
+  let white = Color.rgb 255 255 255
+
+  (* Let native callers store computed positions without boxing them first. *)
+  let[@inline always] add ?(tint = white) ?(opacity = 255) ?(angle = 0.)
+      ?pivot_x ?pivot_y ?(flip = Texture.No_flip) batch ~src ~x ~y ~w ~h =
+    let i = batch.length in
+    if i = capacity batch then invalid_arg "The sprite batch is full";
+    let px =
+      match pivot_x with
+      | None -> w *. 0.5
+      | Some px -> px
+    in
+    let py =
+      match pivot_y with
+      | None -> h *. 0.5
+      | Some py -> py
+    in
+    write batch.sprites i src w h px py angle tint opacity flip;
+    Float.Array.unsafe_set batch.positions (2 * i) x;
+    Float.Array.unsafe_set batch.positions ((2 * i) + 1) y;
+    batch.length <- i + 1
+
+  let draw renderer texture batch =
+    submit renderer texture batch.positions batch.sprites batch.length
+end
+
 module Gpu = struct
   type device
   type swapchain

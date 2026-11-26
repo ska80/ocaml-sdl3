@@ -411,6 +411,77 @@ module Texture : sig
       [dst]. *)
 end
 
+module Sprite_batch : sig
+  (** Reusable storage for an ordered batch of sprites from one texture. Create,
+      fill, and clear a batch without an SDL context. Do not access the same
+      batch from multiple threads or domains at the same time. *)
+
+  type t
+
+  val create : capacity:int -> t
+  (** Allocate an empty batch with a fixed capacity. Zero is allowed. *)
+
+  val capacity : t -> int
+  val length : t -> int
+
+  val clear : t -> unit
+  (** Remove all sprites without freeing the storage. *)
+
+  val add :
+    ?tint:Color.t ->
+    ?opacity:int ->
+    ?angle:float ->
+    ?pivot_x:float ->
+    ?pivot_y:float ->
+    ?flip:Texture.flip ->
+    t ->
+    src:Rect.t ->
+    x:float ->
+    y:float ->
+    w:float ->
+    h:float ->
+    unit
+  (** Append a sprite. [src] selects a rectangle in texture pixels. Its origin
+      must be nonnegative. Its size and the destination size [w, h] must be
+      positive. [x, y] is the top-left of the unrotated destination.
+
+      [angle] is clockwise in degrees and defaults to zero. [pivot_x] and
+      [pivot_y] are relative to [x, y], in destination units. They default to
+      half of [w] and [h], respectively, and can be outside the rectangle.
+      [flip] mirrors the source within the sprite and does not move its pivot.
+
+      The default tint is white and the default opacity is 255. [opacity] must
+      be in [0, 255]. It multiplies [tint.a]. Both affect the texture's own
+      pixel colors and alpha, not its persistent modulation settings.
+
+      Raise [Invalid_argument] if the batch is full or if the source, size,
+      pivot, rotation, or opacity is invalid. [draw] checks positions and source
+      bounds against the chosen texture. *)
+
+  val positions : t -> Float.Array.t
+  (** The stored destination positions as consecutive [x, y] pairs. The array
+      length is twice [capacity]. Edit the first [2 * length] entries in place
+      to move existing sprites without rebuilding the batch. Do not edit the
+      array during a draw. *)
+
+  val draw : Renderer.t -> 'access texture -> t -> unit
+  (** Draw the sprites on the main thread in insertion order. The texture must
+      belong to the renderer. It cannot be locked or be the current render
+      target. An empty batch draws nothing. SDL does not retain the batch.
+
+      Each source rectangle must fit inside the texture. Positions and
+      transformed corners must fit finite C floats. The software renderer also
+      limits coordinates and sizes to its integer and fixed-point ranges. It
+      skips rotated or flipped sprites with a destination width or height less
+      than one. Raise [Invalid_argument] without drawing if any sprite is
+      invalid. If an SDL call raises [Error], earlier sprites can already be
+      queued.
+
+      Sprites use the texture's scale and blend modes. Their tint and opacity
+      replace its color and alpha modulation for this draw only. Use
+      [Blend_mode.Blend] for transparency. *)
+end
+
 module Gpu : sig
   (** SDL GPU drawing and window presentation. *)
 

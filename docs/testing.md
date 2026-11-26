@@ -62,6 +62,17 @@ the installed SDL libraries or the OCaml runtime. The command disables leak dete
 stock OCaml runtime leaves some allocations at exit. Invalid memory access still fails the test. Use
 the normal build to install the bindings.
 
+## Test sprite batches on another renderer
+
+The main suite tests sprite batches with the software renderer. To test another SDL renderer,
+set `SDL_RENDER_DRIVER` and run `dune build --force @runtest-sprite-batch`. The tests read pixels
+from a texture to check regions, transforms, and draw order. If your Linux system supports
+offscreen OpenGL, run:
+
+```sh
+SDL_VIDEO_DRIVER=offscreen SDL_RENDER_DRIVER=opengl dune build --force @runtest-sprite-batch
+```
+
 ## Run GPU tests
 
 Run `dune build --force @runtest-gpu` from the repository root on a system with a working SDL GPU

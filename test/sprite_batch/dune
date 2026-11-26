@@ -1,0 +1,40 @@
+(test
+ (name sprite_batch_test)
+ (package sdl3)
+ (libraries sdl3)
+ (modes exe byte_complete)
+ (foreign_stubs
+  (language c)
+  (names readback)
+  (include_dirs ../../src/core)
+  (flags
+   (:standard
+    (:include ../../src/core/c_flags.sexp))))
+ (action
+  (setenv
+   SDL_VIDEO_DRIVER
+   dummy
+   (setenv
+    SDL_RENDER_DRIVER
+    software
+    (run %{test})))))
+
+(rule
+ (alias runtest)
+ (package sdl3)
+ (action
+  (setenv
+   SDL_VIDEO_DRIVER
+   dummy
+   (setenv
+    SDL_RENDER_DRIVER
+    software
+    (run ./sprite_batch_test.bc.exe)))))
+
+(rule
+ (alias runtest-sprite-batch)
+ (package sdl3)
+ (action
+  (progn
+   (run %{exe:sprite_batch_test.exe})
+   (run ./sprite_batch_test.bc.exe))))
