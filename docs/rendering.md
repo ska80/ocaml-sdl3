@@ -55,6 +55,79 @@ reports the default target on those versions.
 See [Convert input to drawing coordinates](input.md#convert-input-to-drawing-coordinates) to map
 clicks to a viewport.
 
+## Tint and transform texture copies
+
+Color modulation multiplies the red, green, and blue channels of a texture. Use
+`Texture.set_color_mod texture (Color.rgb 128 255 255)` to cut red in half. White leaves all three
+channels unchanged. Set opacity separately with `Texture.set_alpha_mod`. These changes affect future
+copies. They do not change the texture's pixels.
+
+Use `Texture.draw_rotated` to turn a copy clockwise. Set `~pivot:(0., 0.)` to turn it about the
+top-left corner of its destination. Omit the pivot to turn it about the center. The pivot can be
+outside the destination.
+
+An affine transform maps a rectangle to a parallelogram. It can turn, stretch, or slant a copy.  Use
+`Texture.draw_affine` with the destination positions of three source corners. SDL calculates the
+fourth corner from those positions.
+
+```ocaml
+open Sdl3
+
+let draw_sign renderer texture =
+  Texture.draw_affine renderer texture ~origin:(32., 64.) ~right:(96., 48.)
+    ~down:(40., 104.)
+```
+
+## Repeat textures and resize panels
+
+Use `Texture.draw_tiled` for a repeating pattern. Pass `~src` to select part of the texture. Use
+`~scale:2.` to double the width and height of each tile. SDL fits partial tiles at the right and
+bottom edges. With software rendering, use tile edges that line up with pixels for best results.
+
+Nine-slice drawing splits a texture into four corners, four edges, and a center. Use
+`Texture.draw_nine_slice` to resize a button or panel. The edges and center stretch to fill the
+space between the corners. By default, the corners keep their size.
+
+```ocaml
+open Sdl3
+
+let panel_src = Frect.make ~x:0. ~y:0. ~w:32. ~h:32.
+let panel_dst = Frect.make ~x:12. ~y:16. ~w:240. ~h:96.
+let panel_borders = Texture.{ left = 6.; right = 6.; top = 6.; bottom = 6. }
+
+let draw_panel renderer theme =
+  Texture.draw_nine_slice ~src:panel_src ~dst:panel_dst renderer theme
+    ~borders:panel_borders
+```
+
+Measure the borders in source pixels. The source must have a center. The destination must fit the
+corners. If you pass a corner scale, allow for SDL to round each scaled border up.
+
+## Choose a blend mode
+
+A blend mode controls how a new pixel combines with the pixel already in the target. Use
+`Blend_mode.Add` to add light. Use `Blend_mode.Mod` to multiply the target by a texture of
+brightness values. Many 2D lighting effects need only these standard modes.
+
+For a different rule, use `Blend_mode.compose`. Give it one equation for color and one for alpha.
+Each equation multiplies the source and destination by factors, then combines the products. This
+example adds source color and reduces the contribution from the destination as the source gets
+brighter. It leaves the destination alpha unchanged.
+
+```ocaml
+open Sdl3
+
+let screen =
+  Blend_mode.compose
+    ~color:Blend_mode.{ src = One; dst = One_minus_src_color; op = Sum }
+    ~alpha:Blend_mode.{ src = Zero; dst = One; op = Sum }
+
+let set_screen_blending texture = Texture.set_blend_mode texture screen
+```
+
+Use the same mode with `Renderer.set_draw_blend_mode` for shapes. If the renderer does not support
+the mode, the setter raises `Sdl3.Error`. The software renderer only accepts SDL's standard modes.
+
 ## Draw in batches
 
 A batch draws several items in one call. Use `Renderer.fill_rects` or `Renderer.draw_rects` to

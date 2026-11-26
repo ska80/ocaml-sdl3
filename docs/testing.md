@@ -90,6 +90,20 @@ SDL_VIDEO_DRIVER=offscreen SDL_RENDER_DRIVER=opengl dune build --force @runtest-
 Set `SDL_RENDER_DRIVER` to another supported renderer to test it instead. The command runs both
 native and bytecode tests.
 
+## Test texture operations on another renderer
+
+Run `dune runtest --force test/texture` to test the software renderer. These tests read pixels from
+a texture target. They cover tint, rotation pivots, affine copies, partial tiles, and nine-slice
+panels. They also check that software rejects unsupported blend modes.
+
+To test drawing and custom blending with offscreen OpenGL on Linux, run:
+
+```sh
+SDL_VIDEO_DRIVER=offscreen SDL_RENDER_DRIVER=opengl dune build --force @runtest-texture
+```
+
+Both commands run native and bytecode tests.
+
 ## Run GPU tests
 
 Run `dune build --force @runtest-gpu` from the repository root on a system with a working SDL GPU

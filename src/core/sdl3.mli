@@ -240,7 +240,37 @@ module Surface : sig
 end
 
 module Blend_mode : sig
-  type t = None | Blend | Add | Mod | Mul
+  type factor =
+    | Zero
+    | One
+    | Src_color
+    | One_minus_src_color
+    | Src_alpha
+    | One_minus_src_alpha
+    | Dst_color
+    | One_minus_dst_color
+    | Dst_alpha
+    | One_minus_dst_alpha
+
+  type operation = Sum | Subtract | Reverse_subtract | Minimum | Maximum
+  type equation = { src : factor; dst : factor; op : operation }
+
+  type custom
+  (** A mode made by [compose]. *)
+
+  type t = None | Blend | Add | Mod | Mul | Custom of custom
+
+  val compose : color:equation -> alpha:equation -> t
+  (** Make a blend mode for [Renderer.set_draw_blend_mode] or
+      [Texture.set_blend_mode]. The source is the pixel being drawn. The
+      destination is the pixel already in the target. Multiply each by its
+      factor, then apply [op] to the products. [Subtract] takes source minus
+      destination. [Reverse_subtract] takes destination minus source.
+
+      This function needs no SDL context and works on any thread. SDL checks
+      support when you set the mode. If the renderer does not support it, the
+      setter raises [Error]. The software renderer does not support custom
+      equations beyond those that map to SDL's standard modes. *)
 end
 
 type +'access texture
@@ -390,7 +420,8 @@ module Renderer : sig
 end
 
 module Texture : sig
-  (** An image owned by a renderer. *)
+  (** An image owned by a renderer. Use that renderer for all draws. Do not draw
+      a locked texture or draw a texture into itself. *)
 
   type t = [ `Static | `Streaming | `Target ] texture
   (** A drawable texture. Use [(tex :> Texture.t)] to store [streaming],
@@ -400,6 +431,10 @@ module Texture : sig
   type target = [ `Target ] texture
   type scale_mode = Nearest | Linear
   type flip = No_flip | Horizontal | Vertical | Both
+
+  type borders = { left : float; right : float; top : float; bottom : float }
+  (** Widths of the left and right borders and heights of the top and bottom
+      borders, in source pixels. *)
 
   val of_surface : Renderer.t -> Surface.t -> t
   (** Copy the pixels. You can then destroy the surface. *)
@@ -469,13 +504,21 @@ module Texture : sig
   val size : 'access texture -> float * float
   val set_scale_mode : 'access texture -> scale_mode -> unit
   val set_blend_mode : 'access texture -> Blend_mode.t -> unit
+
+  val set_color_mod : 'access texture -> Color.t -> unit
+  (** For texture copies, multiply each red, green, and blue channel by the
+      corresponding value divided by 255. White resets the color. Ignore the
+      color's alpha and keep the texture's alpha setting. *)
+
   val set_alpha_mod : 'access texture -> int -> unit
+  (** Multiply the texture's opacity by this value divided by 255. Use a value
+      in [0, 255]. This does not change its RGB setting. *)
 
   val draw :
     ?src:Frect.t -> ?dst:Frect.t -> Renderer.t -> 'access texture -> unit
   (** Draw with the renderer that owns the texture. Do not draw a texture into
-      itself. If you omit [src] or [dst], SDL uses the whole texture or render
-      target, respectively. *)
+      itself. If you omit [src] or [dst], SDL uses the whole texture or
+      viewport, respectively. *)
 
   val draw_sprites :
     Renderer.t ->
@@ -499,12 +542,64 @@ module Texture : sig
     ?src:Frect.t ->
     ?dst:Frect.t ->
     ?flip:flip ->
+    ?pivot:float * float ->
     Renderer.t ->
     'access texture ->
     angle:float ->
     unit
-  (** Like [draw], but rotate clockwise by [angle] degrees about the center of
-      [dst]. *)
+  (** Like [draw], but rotate clockwise by [angle] degrees. [pivot] is relative
+      to the top-left of the unrotated destination, in destination units. It can
+      lie outside the rectangle. The default is the center. Flipping does not
+      move the pivot. Destination dimensions must be nonnegative. The software
+      renderer skips rotated or flipped copies smaller than one unit on either
+      axis. *)
+
+  val draw_affine :
+    ?src:Frect.t ->
+    Renderer.t ->
+    'access texture ->
+    origin:float * float ->
+    right:float * float ->
+    down:float * float ->
+    unit
+  (** Map the source's top-left, top-right, and bottom-left corners to the given
+      points. The fourth corner is [right + down - origin]. All three points are
+      absolute positions in the current render coordinates, not offsets. [src]
+      defaults to the whole texture. If supplied, it must have positive
+      dimensions and lie inside the texture. The software renderer uses nearest
+      filtering and limits the size of the resulting triangles. *)
+
+  val draw_tiled :
+    ?src:Frect.t ->
+    ?dst:Frect.t ->
+    ?scale:float ->
+    Renderer.t ->
+    'access texture ->
+    unit
+  (** Repeat [src] across [dst], starting at its top-left. The last tiles can be
+      partial. [src] defaults to the whole texture. If supplied, it must have
+      positive dimensions and lie inside the texture. [dst] defaults to the
+      whole viewport. Destination dimensions must be nonnegative. A zero width
+      or height draws nothing. [scale] is a finite positive multiplier for the
+      tile size and defaults to [1.]. On paths where SDL can queue each tile
+      separately, the draw is limited to 1,048,576 tiles. *)
+
+  val draw_nine_slice :
+    ?src:Frect.t ->
+    ?dst:Frect.t ->
+    ?scale:float ->
+    Renderer.t ->
+    'access texture ->
+    borders:borders ->
+    unit
+  (** Draw a resizable panel from a 3 by 3 grid. Scale each corner by [scale]
+      and stretch the edges and center. [src] defaults to the whole texture. If
+      supplied, it must have positive dimensions and lie inside the texture.
+      [dst] defaults to the whole viewport. The borders must be nonnegative and
+      leave a positive center in the source. The destination must fit both pairs
+      of borders after SDL scales and rounds each border up. Use a finite
+      nonnegative [scale]. The default is [1.]. Passing [0.] has the same
+      effect. *)
 end
 
 module Sprite_batch : sig

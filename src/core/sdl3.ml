@@ -217,7 +217,25 @@ module Surface = struct
 end
 
 module Blend_mode = struct
-  type t = None | Blend | Add | Mod | Mul
+  type factor =
+    | Zero
+    | One
+    | Src_color
+    | One_minus_src_color
+    | Src_alpha
+    | One_minus_src_alpha
+    | Dst_color
+    | One_minus_dst_color
+    | Dst_alpha
+    | One_minus_dst_alpha
+
+  type operation = Sum | Subtract | Reverse_subtract | Minimum | Maximum
+  type equation = { src : factor; dst : factor; op : operation }
+  type custom = int32
+  type t = None | Blend | Add | Mod | Mul | Custom of custom
+
+  external compose : color:equation -> alpha:equation -> t
+    = "osdl_blend_mode_compose"
 end
 
 type +'access texture
@@ -307,6 +325,7 @@ module Texture = struct
   type target = [ `Target ] texture
   type scale_mode = Nearest | Linear
   type flip = No_flip | Horizontal | Vertical | Both
+  type borders = { left : float; right : float; top : float; bottom : float }
 
   external of_surface : Renderer.t -> Surface.t -> t = "osdl_texture_of_surface"
 
@@ -358,6 +377,9 @@ module Texture = struct
   external set_blend_mode : 'access texture -> Blend_mode.t -> unit
     = "osdl_texture_set_blend_mode"
 
+  external set_color_mod : 'access texture -> Color.t -> unit
+    = "osdl_texture_set_color_mod"
+
   external set_alpha_mod : 'access texture -> int -> unit
     = "osdl_texture_set_alpha_mod"
 
@@ -377,10 +399,37 @@ module Texture = struct
     ?src:Frect.t ->
     ?dst:Frect.t ->
     ?flip:flip ->
+    ?pivot:float * float ->
     Renderer.t ->
     'access texture ->
     angle:float ->
     unit = "osdl_texture_draw_rotated_byte" "osdl_texture_draw_rotated"
+
+  external draw_affine :
+    ?src:Frect.t ->
+    Renderer.t ->
+    'access texture ->
+    origin:float * float ->
+    right:float * float ->
+    down:float * float ->
+    unit = "osdl_texture_draw_affine_byte" "osdl_texture_draw_affine"
+
+  external draw_tiled :
+    ?src:Frect.t ->
+    ?dst:Frect.t ->
+    ?scale:float ->
+    Renderer.t ->
+    'access texture ->
+    unit = "osdl_texture_draw_tiled"
+
+  external draw_nine_slice :
+    ?src:Frect.t ->
+    ?dst:Frect.t ->
+    ?scale:float ->
+    Renderer.t ->
+    'access texture ->
+    borders:borders ->
+    unit = "osdl_texture_draw_nine_slice_byte" "osdl_texture_draw_nine_slice"
 end
 
 module Sprite_batch = struct

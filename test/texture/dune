@@ -1,0 +1,40 @@
+(test
+ (name texture_test)
+ (package sdl3)
+ (libraries sdl3)
+ (modes exe byte_complete)
+ (foreign_stubs
+  (language c)
+  (names readback)
+  (include_dirs ../../src/core)
+  (flags
+   (:standard
+    (:include ../../src/core/c_flags.sexp))))
+ (action
+  (setenv
+   SDL_VIDEO_DRIVER
+   dummy
+   (setenv
+    SDL_RENDER_DRIVER
+    software
+    (run %{test})))))
+
+(rule
+ (alias runtest)
+ (package sdl3)
+ (action
+  (setenv
+   SDL_VIDEO_DRIVER
+   dummy
+   (setenv
+    SDL_RENDER_DRIVER
+    software
+    (run ./texture_test.bc.exe)))))
+
+(rule
+ (alias runtest-texture)
+ (package sdl3)
+ (action
+  (progn
+   (run %{exe:texture_test.exe})
+   (run ./texture_test.bc.exe))))

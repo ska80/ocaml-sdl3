@@ -343,10 +343,41 @@ static const SDL_FRect* osdl_frect_option(value v, SDL_FRect* rect) {
     return rect;
 }
 
+/* Constant constructors of Blend_mode.t. Custom holds an opaque int32. */
+static const SDL_BlendMode osdl_standard_blends[] = {
+    SDL_BLENDMODE_NONE, SDL_BLENDMODE_BLEND, SDL_BLENDMODE_ADD,
+    SDL_BLENDMODE_MOD,  SDL_BLENDMODE_MUL,
+};
+
 static SDL_BlendMode osdl_blend_mode(value mode) {
-    static const SDL_BlendMode modes[] = {SDL_BLENDMODE_NONE, SDL_BLENDMODE_BLEND,
-                                          SDL_BLENDMODE_ADD, SDL_BLENDMODE_MOD, SDL_BLENDMODE_MUL};
-    return modes[Int_val(mode)];
+    return Is_long(mode) ? osdl_standard_blends[Int_val(mode)]
+                         : (SDL_BlendMode)Int32_val(Field(mode, 0));
+}
+
+CAMLprim value osdl_blend_mode_compose(value color, value alpha) {
+    static const SDL_BlendFactor factors[] = {
+        SDL_BLENDFACTOR_ZERO,      SDL_BLENDFACTOR_ONE,
+        SDL_BLENDFACTOR_SRC_COLOR, SDL_BLENDFACTOR_ONE_MINUS_SRC_COLOR,
+        SDL_BLENDFACTOR_SRC_ALPHA, SDL_BLENDFACTOR_ONE_MINUS_SRC_ALPHA,
+        SDL_BLENDFACTOR_DST_COLOR, SDL_BLENDFACTOR_ONE_MINUS_DST_COLOR,
+        SDL_BLENDFACTOR_DST_ALPHA, SDL_BLENDFACTOR_ONE_MINUS_DST_ALPHA,
+    };
+    static const SDL_BlendOperation operations[] = {
+        SDL_BLENDOPERATION_ADD,     SDL_BLENDOPERATION_SUBTRACT, SDL_BLENDOPERATION_REV_SUBTRACT,
+        SDL_BLENDOPERATION_MINIMUM, SDL_BLENDOPERATION_MAXIMUM,
+    };
+    /* Blend_mode.equation stores src, dst, and op in this order. */
+    SDL_BlendMode mode = SDL_ComposeCustomBlendMode(
+        factors[Int_val(Field(color, 0))], factors[Int_val(Field(color, 1))],
+        operations[Int_val(Field(color, 2))], factors[Int_val(Field(alpha, 0))],
+        factors[Int_val(Field(alpha, 1))], operations[Int_val(Field(alpha, 2))]);
+    for (size_t i = 0; i < SDL_arraysize(osdl_standard_blends); ++i)
+        if (mode == osdl_standard_blends[i]) return Val_int(i);
+
+    CAMLparam0();
+    CAMLlocal1(encoded);
+    encoded = caml_copy_int32((int32_t)mode);
+    CAMLreturn(caml_alloc_1(0, encoded));
 }
 
 /* Surfaces. */
@@ -582,6 +613,23 @@ static SDL_Rect osdl_explicit_viewport(SDL_Renderer* renderer) {
     if (SDL_RenderViewportSet(renderer))
         osdl_check(SDL_GetRenderViewport(renderer, &rect), "SDL_GetRenderViewport");
     return rect;
+}
+
+/* Include the viewport origin and both scales in software drawing limits. */
+static osdl_render_view osdl_pixel_view(SDL_Renderer* renderer, osdl_render_view view) {
+    SDL_Rect viewport = osdl_explicit_viewport(renderer);
+    view.offset.x     = SDL_floorf(viewport.x * view.scale.x + view.offset.x);
+    view.offset.y     = SDL_floorf(viewport.y * view.scale.y + view.offset.y);
+    return view;
+}
+
+static osdl_render_view osdl_software_view(SDL_Renderer* renderer) {
+    return osdl_pixel_view(renderer, osdl_current_view(renderer));
+}
+
+static bool osdl_software_renderer(SDL_Renderer* renderer) {
+    const char* driver = SDL_GetRendererName(renderer);
+    return driver && strcmp(driver, SDL_SOFTWARE_RENDERER) == 0;
 }
 
 /* SDL stores pixel rectangles in signed ints and adds the clip origin to the
@@ -1137,6 +1185,13 @@ CAMLprim value osdl_texture_set_blend_mode(value texture, value mode) {
     return Val_unit;
 }
 
+CAMLprim value osdl_texture_set_color_mod(value texture, value color) {
+    SDL_Texture* t = osdl_live(texture);
+    SDL_Color    c = osdl_color(color);
+    osdl_check(SDL_SetTextureColorMod(t, c.r, c.g, c.b), "SDL_SetTextureColorMod");
+    return Val_unit;
+}
+
 CAMLprim value osdl_texture_set_alpha_mod(value texture, value alpha) {
     osdl_check(SDL_SetTextureAlphaMod(osdl_live(texture), osdl_byte(alpha)),
                "SDL_SetTextureAlphaMod");
@@ -1245,28 +1300,283 @@ CAMLprim value osdl_texture_draw_sprites(value renderer, value texture, value po
     return Val_unit;
 }
 
-CAMLprim value osdl_texture_draw_rotated(value src, value dst, value flip, value renderer,
-                                         value texture, value angle) {
+static SDL_FPoint osdl_float_point(value point) {
+    return (SDL_FPoint){osdl_float(Double_val(Field(point, 0))),
+                        osdl_float(Double_val(Field(point, 1)))};
+}
+
+static SDL_FRect osdl_texture_copy_region(value src, SDL_Texture* texture) {
+    SDL_FRect rect = Is_long(src) ? (SDL_FRect){0, 0, (float)texture->w, (float)texture->h}
+                                  : osdl_frect(Some_val(src));
+    if (!(rect.x >= 0 && rect.y >= 0 && rect.w > 0 && rect.h > 0 && rect.x < (double)texture->w &&
+          rect.y < (double)texture->h && (double)rect.x + rect.w <= texture->w &&
+          (double)rect.y + rect.h <= texture->h))
+        caml_invalid_argument(
+            "The source rectangle must have positive size and lie inside the texture");
+    return rect;
+}
+
+static SDL_FRect osdl_texture_destination(value dst, SDL_Renderer* renderer,
+                                          osdl_render_view view) {
+    if (Is_block(dst)) {
+        SDL_FRect rect = osdl_frect(Some_val(dst));
+        if (rect.w < 0 || rect.h < 0)
+            caml_invalid_argument("The destination rectangle cannot have a negative size");
+        return rect;
+    }
+
+    SDL_Rect viewport;
+    if (SDL_RenderViewportSet(renderer)) {
+        osdl_check(SDL_GetRenderViewport(renderer, &viewport), "SDL_GetRenderViewport");
+        return (SDL_FRect){0, 0, (float)viewport.w, (float)viewport.h};
+    }
+    /* SDL's default destination is local to the viewport. Its size has
+     * fractional precision, unlike the automatic SDL_GetRenderViewport. */
+    int w, h;
+    osdl_check(SDL_GetCurrentRenderOutputSize(renderer, &w, &h), "SDL_GetCurrentRenderOutputSize");
+    if (w == 0 || h == 0) return (SDL_FRect){0};
+    return (SDL_FRect){0, 0, (float)w / view.scale.x, (float)h / view.scale.y};
+}
+
+static float osdl_texture_draw_scale(value scale) {
+    return Is_long(scale) ? 1.0f : osdl_float(Double_val(Some_val(scale)));
+}
+
+static void osdl_texture_copy_bounds(double x, double y, osdl_render_view view, bool software) {
+    double px = x * view.scale.x + fabs(view.offset.x);
+    double py = y * view.scale.y + fabs(view.offset.y);
+    if (!osdl_fits_float(x) || !osdl_fits_float(y) || !osdl_fits_float(px) || !osdl_fits_float(py))
+        caml_invalid_argument("Texture draw coordinates must fit finite C floats");
+    if (software && !(px <= osdl_view_limit && py <= osdl_view_limit))
+        caml_invalid_argument("Texture coordinates are outside the software renderer range");
+}
+
+static void osdl_software_rotation_bounds(osdl_render_view view, double x, double y, double width,
+                                          double height, SDL_FPoint pivot, double angle,
+                                          bool rotate_or_flip) {
+    double reach = width + height;
+    /* The rotation path uses signed byte offsets into its scaled surface. */
+    if (rotate_or_flip && 4.0 * width * height > INT_MAX)
+        caml_invalid_argument("The software texture copy is too large to rotate or flip");
+    if (angle != 0.0) {
+        double px = fabs(pivot.x), py = fabs(pivot.y);
+        /* SDL uses signed 16.16 coordinates for oblique rotations. Leave
+         * room for its pixel-center and rounding offsets. */
+        if (fmod(angle, 90.0) != 0.0 && (reach > 32752 || px > 32766 || py > 32766))
+            caml_invalid_argument("Texture size or pivot is outside the software rotation range");
+        reach += 2.0 * (px + py);
+    }
+    double ox = fabs(view.offset.x), oy = fabs(view.offset.y);
+    if (rotate_or_flip && view.scale.x > 0 && view.scale.y > 0) {
+        /* The rotation path adds an offset before its final scale. SDL
+         * versions differ in whether they divide the offset by that scale. */
+        ox = SDL_max(ox, ox / view.scale.x);
+        oy = SDL_max(oy, oy / view.scale.y);
+    }
+    double px = (fabs(x) + reach + ox) * SDL_max(1.0, view.scale.x);
+    double py = (fabs(y) + reach + oy) * SDL_max(1.0, view.scale.y);
+    if (!(px <= osdl_view_limit && py <= osdl_view_limit))
+        caml_invalid_argument("Texture coordinates are outside the software renderer range");
+}
+
+CAMLprim value osdl_texture_draw_rotated(value src, value dst, value flip, value pivot,
+                                         value renderer, value texture, value angle) {
     static const SDL_FlipMode modes[] = {SDL_FLIP_NONE, SDL_FLIP_HORIZONTAL, SDL_FLIP_VERTICAL,
                                          SDL_FLIP_HORIZONTAL | SDL_FLIP_VERTICAL};
 
     SDL_Renderer*    r = osdl_live(renderer);
     SDL_Texture*     t = osdl_texture_source(texture, renderer, r);
-    SDL_FRect        s, d;
+    SDL_FRect        s;
     const SDL_FRect* source  = osdl_frect_option(src, &s);
-    const SDL_FRect* dest    = osdl_frect_option(dst, &d);
     SDL_FlipMode     mode    = Is_long(flip) ? SDL_FLIP_NONE : modes[Int_val(Some_val(flip))];
     double           degrees = Double_val(angle);
     if (!isfinite(degrees)) caml_invalid_argument("SDL rotation must be finite");
+    /* Some SDL versions cast angle / 360 to int in their fast path. */
+    if (degrees <= -360.0 || degrees >= 360.0) degrees = fmod(degrees, 360.0);
 
-    osdl_check(SDL_RenderTextureRotated(r, t, source, dest, degrees, NULL, mode),
-               "SDL_RenderTextureRotated");
+    osdl_render_view view = osdl_current_view(r);
+    SDL_FRect        d    = osdl_texture_destination(dst, r, view);
+    SDL_FPoint       p =
+        Is_long(pivot) ? (SDL_FPoint){d.w / 2, d.h / 2} : osdl_float_point(Some_val(pivot));
+    bool rotated  = degrees != 0.0 || mode != SDL_FLIP_NONE;
+    bool software = osdl_software_renderer(r);
+    if (!d.w || !d.h) return Val_unit;
+    if (software) {
+        osdl_software_rotation_bounds(osdl_pixel_view(r, view), d.x, d.y, d.w, d.h, p, degrees,
+                                      rotated);
+        /* SDL rotates an intermediate surface of integer size. */
+        if (rotated && (d.w < 1 || d.h < 1)) return Val_unit;
+    } else {
+        double reach = degrees == 0.0 ? 0 : (double)d.w + d.h + 2 * (fabs(p.x) + fabs(p.y));
+        osdl_texture_copy_bounds(fabs(d.x) + d.w + reach, fabs(d.y) + d.h + reach, view, false);
+    }
+
+    osdl_check(
+        SDL_RenderTextureRotated(r, t, source, &d, degrees, Is_long(pivot) ? NULL : &p, mode),
+        "SDL_RenderTextureRotated");
     return Val_unit;
 }
 
 CAMLprim value osdl_texture_draw_rotated_byte(value* argv, int argc) {
     (void)argc;
-    return osdl_texture_draw_rotated(argv[0], argv[1], argv[2], argv[3], argv[4], argv[5]);
+    return osdl_texture_draw_rotated(argv[0], argv[1], argv[2], argv[3], argv[4], argv[5], argv[6]);
+}
+
+/* Software SDL turns affine copies and custom geometry into triangles. */
+static int osdl_software_geometry_target_width(SDL_Renderer* renderer) {
+    SDL_Texture* target = SDL_GetRenderTarget(renderer);
+    int          w, h;
+    if (target) {
+        w = target->w;
+        h = target->h;
+    } else {
+        osdl_check(SDL_GetRenderOutputSize(renderer, &w, &h), "SDL_GetRenderOutputSize");
+    }
+    if ((Sint64)w * h > INT_MAX / 4)
+        caml_invalid_argument("The software geometry target is too large");
+    return w;
+}
+
+static void osdl_software_geometry_position(osdl_render_view view, int w, double x, double y) {
+    /* The rasterizer uses fixed-point coordinates and signed byte offsets. */
+    double px = fabs(x) * view.scale.x + fabs(view.offset.x) + 1.0;
+    double py = fabs(y) * view.scale.y + fabs(view.offset.y) + 1.0;
+    if (!(px <= (1 << 24) && py <= (1 << 24) && 4.0 * (px + py * w) <= INT_MAX))
+        caml_invalid_argument("Geometry positions are outside the software renderer range");
+}
+
+static void osdl_software_geometry_texture(SDL_Texture* t) {
+    if (t->w > (1 << 24) || t->h > (1 << 24) || (Sint64)t->w * t->h > INT_MAX / 4)
+        caml_invalid_argument("The software geometry texture is too large");
+}
+
+static void osdl_software_geometry_area(osdl_render_view view, double dx, double dy, double uv) {
+    /* SDL stores edge weights and a texture coordinate times the area in ints. */
+    double area = 4.0 * (dx * view.scale.x + 2.0) * (dy * view.scale.y + 2.0);
+    if (2.0 * area > INT_MAX || area * uv > INT_MAX)
+        caml_invalid_argument("A textured triangle is too large for the software renderer");
+}
+
+static void osdl_affine_software_bounds(SDL_Renderer* renderer, SDL_Texture* t,
+                                        osdl_render_view view, SDL_FRect src, const SDL_FPoint* p) {
+    int target_width = osdl_software_geometry_target_width(renderer);
+    osdl_software_geometry_texture(t);
+
+    /* Both triangles must start inside the texture after conversion back to
+     * integer texels, even if the source selects a fraction of a texel. */
+    float u = src.x / t->w, v = src.y / t->h;
+    if (u * t->w >= t->w || v * t->h >= t->h)
+        caml_invalid_argument("The affine source rectangle is too close to the texture edge");
+
+    double min_x = p[0].x, max_x = min_x, min_y = p[0].y, max_y = min_y;
+    for (int i = 0; i < 4; ++i) {
+        osdl_software_geometry_position(view, target_width, p[i].x, p[i].y);
+        min_x = SDL_min(min_x, p[i].x);
+        max_x = SDL_max(max_x, p[i].x);
+        min_y = SDL_min(min_y, p[i].y);
+        max_y = SDL_max(max_y, p[i].y);
+    }
+    /* Use the whole parallelogram's bounds for both triangles. */
+    double edge = SDL_max((double)src.x + src.w, (double)src.y + src.h);
+    osdl_software_geometry_area(view, max_x - min_x, max_y - min_y, SDL_ceil(edge) + 1);
+}
+
+CAMLprim value osdl_texture_draw_affine(value src, value renderer, value texture, value origin,
+                                        value right, value down) {
+    SDL_Renderer* r   = osdl_live(renderer);
+    SDL_Texture*  t   = osdl_texture_source(texture, renderer, r);
+    SDL_FRect     s   = osdl_texture_copy_region(src, t);
+    SDL_FPoint    p[] = {
+        osdl_float_point(origin), osdl_float_point(right), osdl_float_point(down), {0, 0}
+    };
+    /* SDL adds the two corners before subtracting the origin. */
+    float sum_x = osdl_float((double)p[1].x + p[2].x), sum_y = osdl_float((double)p[1].y + p[2].y);
+    p[3] = (SDL_FPoint){osdl_float((double)sum_x - p[0].x), osdl_float((double)sum_y - p[0].y)};
+
+    osdl_render_view view = osdl_current_view(r);
+    if (osdl_software_renderer(r)) {
+        osdl_affine_software_bounds(r, t, osdl_pixel_view(r, view), s, p);
+    } else {
+        for (int i = 0; i < 4; ++i)
+            osdl_texture_copy_bounds(fabs(p[i].x), fabs(p[i].y), view, false);
+    }
+
+    osdl_check(SDL_RenderTextureAffine(r, t, &s, &p[0], &p[1], &p[2]), "SDL_RenderTextureAffine");
+    return Val_unit;
+}
+
+CAMLprim value osdl_texture_draw_affine_byte(value* argv, int argc) {
+    (void)argc;
+    return osdl_texture_draw_affine(argv[0], argv[1], argv[2], argv[3], argv[4], argv[5]);
+}
+
+static bool osdl_power_of_two(int size) {
+    return size > 0 && !(size & (size - 1));
+}
+
+CAMLprim value osdl_texture_draw_tiled(value src, value dst, value scale, value renderer,
+                                       value texture) {
+    SDL_Renderer*    r    = osdl_live(renderer);
+    SDL_Texture*     t    = osdl_texture_source(texture, renderer, r);
+    SDL_FRect        s    = osdl_texture_copy_region(src, t);
+    osdl_render_view view = osdl_current_view(r);
+    SDL_FRect        d    = osdl_texture_destination(dst, r, view);
+    float            zoom = osdl_texture_draw_scale(scale);
+
+    float tw = s.w * zoom, th = s.h * zoom;
+    if (!(tw > 0 && th > 0 && osdl_fits_float(tw) && osdl_fits_float(th)))
+        caml_invalid_argument("Tile sizes must be positive and fit finite C floats");
+    if (!d.w || !d.h) return Val_unit;
+    bool software = osdl_software_renderer(r);
+    if (software) view = osdl_pixel_view(r, view);
+    osdl_texture_copy_bounds(fabs(d.x) + d.w, fabs(d.y) + d.h, view, software);
+
+    /* Atlas regions and some renderers queue one copy per tile, even when
+     * the output clips most of the copies. Keep SDL's counts and work bounded. */
+    double columns = SDL_ceilf(d.w / tw), rows = SDL_ceilf(d.h / th);
+    bool   may_iterate = software || s.x != 0 || s.y != 0 || s.w != (float)t->w ||
+                       s.h != (float)t->h || !osdl_power_of_two(t->w) || !osdl_power_of_two(t->h);
+    if (!(columns <= INT_MAX && rows <= INT_MAX) || (may_iterate && columns * rows > 1048576))
+        caml_invalid_argument("The destination needs too many texture tiles");
+
+    osdl_check(SDL_RenderTextureTiled(r, t, &s, zoom, &d), "SDL_RenderTextureTiled");
+    return Val_unit;
+}
+
+CAMLprim value osdl_texture_draw_nine_slice(value src, value dst, value scale, value renderer,
+                                            value texture, value borders) {
+    SDL_Renderer*    r    = osdl_live(renderer);
+    SDL_Texture*     t    = osdl_texture_source(texture, renderer, r);
+    SDL_FRect        s    = osdl_texture_copy_region(src, t);
+    osdl_render_view view = osdl_current_view(r);
+    SDL_FRect        d    = osdl_texture_destination(dst, r, view);
+    float            zoom = osdl_texture_draw_scale(scale);
+    /* Texture.borders is a float-only record in this order. */
+    float            l    = osdl_float(Double_flat_field(borders, 0)),
+          rt              = osdl_float(Double_flat_field(borders, 1));
+    float top             = osdl_float(Double_flat_field(borders, 2)),
+          b               = osdl_float(Double_flat_field(borders, 3));
+    if (zoom < 0) caml_invalid_argument("The nine-slice scale must not be negative");
+    if (l < 0 || rt < 0 || top < 0 || b < 0 || s.w - l - rt <= 0 || s.h - top - b <= 0)
+        caml_invalid_argument(
+            "Nine-slice borders must be nonnegative and leave room for the source center");
+
+    float corner_scale = zoom == 0.0f ? 1.0f : zoom;
+    if (!(d.w - SDL_ceilf(l * corner_scale) - SDL_ceilf(rt * corner_scale) >= 0 &&
+          d.h - SDL_ceilf(top * corner_scale) - SDL_ceilf(b * corner_scale) >= 0))
+        caml_invalid_argument("The destination is too small for the scaled nine-slice borders");
+    if (!d.w || !d.h) return Val_unit;
+    bool software = osdl_software_renderer(r);
+    if (software) view = osdl_pixel_view(r, view);
+    osdl_texture_copy_bounds(fabs(d.x) + d.w, fabs(d.y) + d.h, view, software);
+
+    osdl_check(SDL_RenderTexture9Grid(r, t, &s, l, rt, top, b, zoom, &d), "SDL_RenderTexture9Grid");
+    return Val_unit;
+}
+
+CAMLprim value osdl_texture_draw_nine_slice_byte(value* argv, int argc) {
+    (void)argc;
+    return osdl_texture_draw_nine_slice(argv[0], argv[1], argv[2], argv[3], argv[4], argv[5]);
 }
 
 /* Ordered sprite batches. */
@@ -1383,42 +1693,11 @@ CAMLprim value osdl_sprite_batch_set_opacity(value storage, value index, value o
     return Val_unit;
 }
 
-/* Include the viewport origin and both scales in software drawing limits. */
-static osdl_render_view osdl_software_view(SDL_Renderer* renderer) {
-    osdl_render_view view     = osdl_current_view(renderer);
-    SDL_Rect         viewport = osdl_explicit_viewport(renderer);
-    view.offset.x             = SDL_floorf(viewport.x * view.scale.x + view.offset.x);
-    view.offset.y             = SDL_floorf(viewport.y * view.scale.y + view.offset.y);
-    return view;
-}
-
 static void osdl_sprite_software_bounds(const osdl_sprite* sprite, double x, double y,
                                         osdl_render_view view) {
-    double width = sprite->size.x, height = sprite->size.y;
-    double reach          = width + height;
-    bool   rotate_or_flip = sprite->angle != 0.0 || sprite->flip != SDL_FLIP_NONE;
-    /* The rotation path uses signed byte offsets into its scaled surface. */
-    if (rotate_or_flip && 4.0 * width * height > INT_MAX)
-        caml_invalid_argument("The software sprite is too large to rotate or flip");
-    if (sprite->angle != 0.0) {
-        double px = fabs(sprite->pivot.x), py = fabs(sprite->pivot.y);
-        /* SDL uses signed 16.16 coordinates for oblique rotations. Leave
-         * room for its pixel-center and rounding offsets. */
-        if (fmod(sprite->angle, 90.0) != 0.0 && (reach > 32752 || px > 32766 || py > 32766))
-            caml_invalid_argument("Sprite size or pivot is outside the software rotation range");
-        reach += 2.0 * (px + py);
-    }
-    double ox = fabs(view.offset.x), oy = fabs(view.offset.y);
-    if (rotate_or_flip && view.scale.x > 0 && view.scale.y > 0) {
-        /* The rotation path adds an offset before its final scale. SDL
-         * versions differ in whether they divide the offset by that scale. */
-        ox = SDL_max(ox, ox / view.scale.x);
-        oy = SDL_max(oy, oy / view.scale.y);
-    }
-    double px = (fabs(x) + reach + ox) * SDL_max(1.0, view.scale.x);
-    double py = (fabs(y) + reach + oy) * SDL_max(1.0, view.scale.y);
-    if (!(px <= osdl_view_limit && py <= osdl_view_limit))
-        caml_invalid_argument("Sprite coordinates are outside the software renderer range");
+    bool rotate_or_flip = sprite->angle != 0.0 || sprite->flip != SDL_FLIP_NONE;
+    osdl_software_rotation_bounds(view, x, y, sprite->size.x, sprite->size.y, sprite->pivot,
+                                  sprite->angle, rotate_or_flip);
 }
 
 static void osdl_sprite_batch_software(SDL_Renderer* r, SDL_Texture* t, const osdl_sprite* sprites,
@@ -1592,34 +1871,14 @@ static inline int osdl_geometry_vertex(const osdl_geometry* geometry, int i) {
 }
 
 static void osdl_geometry_software_bounds(SDL_Renderer* renderer, const osdl_geometry* geometry) {
-    osdl_render_view view   = osdl_software_view(renderer);
-    SDL_Texture*     target = SDL_GetRenderTarget(renderer);
-    int              w, h;
-    if (target) {
-        w = target->w;
-        h = target->h;
-    } else {
-        osdl_check(SDL_GetRenderOutputSize(renderer, &w, &h), "SDL_GetRenderOutputSize");
-    }
-    if ((Sint64)w * h > INT_MAX / 4)
-        caml_invalid_argument("The software geometry target is too large");
-
-    /* Leave room for SDL's fixed-point products, color interpolation, and
-     * signed byte offsets into the target, even for offscreen vertices. */
-    for (int i = 0; i < geometry->vertices; ++i) {
-        double x = fabs(geometry->xy[2 * i]) * view.scale.x + fabs(view.offset.x) + 1.0;
-        double y = fabs(geometry->xy[2 * i + 1]) * view.scale.y + fabs(view.offset.y) + 1.0;
-        if (!(x <= (1 << 24) && y <= (1 << 24) && 4.0 * (x + y * w) <= INT_MAX))
-            caml_invalid_argument("Geometry positions are outside the software renderer range");
-    }
+    osdl_render_view view = osdl_software_view(renderer);
+    int              w    = osdl_software_geometry_target_width(renderer);
+    for (int i = 0; i < geometry->vertices; ++i)
+        osdl_software_geometry_position(view, w, geometry->xy[2 * i], geometry->xy[2 * i + 1]);
 
     SDL_Texture* t = geometry->texture;
     if (!t) return;
-    if (t->w > (1 << 24) || t->h > (1 << 24) || (Sint64)t->w * t->h > INT_MAX / 4)
-        caml_invalid_argument("The software geometry texture is too large");
-
-    /* SDL's textured triangles store edge weights and a texture coordinate
-     * times the area in signed ints. Bound these before submitting any work. */
+    osdl_software_geometry_texture(t);
     for (int i = 0; i < geometry->count; i += 3) {
         int          a  = 2 * osdl_geometry_vertex(geometry, i);
         int          b  = 2 * osdl_geometry_vertex(geometry, i + 1);
@@ -1629,11 +1888,9 @@ static void osdl_geometry_software_bounds(SDL_Renderer* renderer, const osdl_geo
             (double)SDL_max(xy[a], SDL_max(xy[b], xy[c])) - SDL_min(xy[a], SDL_min(xy[b], xy[c]));
         double dy = (double)SDL_max(xy[a + 1], SDL_max(xy[b + 1], xy[c + 1])) -
                     SDL_min(xy[a + 1], SDL_min(xy[b + 1], xy[c + 1]));
-        double area = 4.0 * (dx * view.scale.x + 2.0) * (dy * view.scale.y + 2.0);
-        int    u    = (int)(geometry->uv[c] * t->w);
-        int    v    = (int)(geometry->uv[c + 1] * t->h);
-        if (2.0 * area > INT_MAX || area * SDL_max(u, v) > INT_MAX)
-            caml_invalid_argument("A textured triangle is too large for the software renderer");
+        int u = (int)(geometry->uv[c] * t->w);
+        int v = (int)(geometry->uv[c + 1] * t->h);
+        osdl_software_geometry_area(view, dx, dy, SDL_max(u, v));
     }
 }
 
