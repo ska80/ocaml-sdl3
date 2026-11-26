@@ -199,6 +199,15 @@ module Window : sig
 
   val set_resizable : t -> bool -> unit
   val set_fullscreen : t -> bool -> unit
+
+  val set_mouse_grab : t -> bool -> unit
+  (** Confine the pointer to this window while the window has input focus. Set
+      this to [false] to release the grab. Unlike [Mouse.capture], a grab keeps
+      the pointer inside the window. *)
+
+  val mouse_grab : t -> bool
+  (** Whether SDL reports an active mouse grab for this window. *)
+
   val show : t -> unit
   val hide : t -> unit
   val minimize : t -> unit
@@ -1102,11 +1111,100 @@ module Keyboard : sig
 end
 
 module Mouse : sig
+  (** Mouse state, movement, and cursors. Start SDL with [Video] and call these
+      functions on the main thread. [is_pressed] can read a saved button state
+      on any thread. *)
+
   type button = Left | Middle | Right | X1 | X2 | Other of int
   type buttons
+  type state = { x : float; y : float; buttons : buttons }
+  type relative_state = { dx : float; dy : float; buttons : buttons }
 
   val is_pressed : buttons -> button -> bool
+
+  val state : context -> state
+  (** Read the cached position and pressed buttons without pumping events. [x]
+      and [y] are relative to the top-left of the window with mouse focus. If no
+      window has mouse focus, the coordinates are not tied to a window. *)
+
+  val global_state : context -> state
+  (** Ask the system for the current pointer position on the desktop and the
+      pressed buttons. This can cost more than [state]. SDL falls back to
+      [state] on drivers without a desktop query. *)
+
+  val relative_state : context -> relative_state
+  (** Read the pressed buttons and the movement that SDL accumulated since the
+      last call. Each call resets that movement. Read it once per frame if other
+      code also needs the result. *)
+
   val set_relative_mode : Window.t -> bool -> unit
+
+  val capture : context -> bool -> unit
+  (** Send mouse events to the focused window even when the pointer leaves it.
+      Capture does not confine the pointer. Coordinates stay relative to the
+      window and can be outside its bounds. Set this to [false] when a drag ends
+      or the window loses keyboard focus. SDL can capture automatically while a
+      button is down. If the driver does not support explicit capture, this
+      function raises [Error]. *)
+
+  val warp_in_window : Window.t -> x:float -> y:float -> unit
+  (** Request a pointer move in window coordinates. The coordinates must fit
+      finite C floats and the C [int] range. SDL normally queues a motion event
+      outside relative mode. Some systems ignore the move. *)
+
+  module Cursor : sig
+    type t
+    (** An owned cursor. Destroy it before quitting SDL. *)
+
+    type system =
+      | Default
+      | Text
+      | Wait
+      | Crosshair
+      | Progress
+      | Resize_nwse
+      | Resize_nesw
+      | Resize_ew
+      | Resize_ns
+      | Move
+      | Not_allowed
+      | Pointer
+      | Resize_nw
+      | Resize_n
+      | Resize_ne
+      | Resize_e
+      | Resize_se
+      | Resize_s
+      | Resize_sw
+      | Resize_w
+
+    val create_color : Surface.t -> hot_x:int -> hot_y:int -> t
+    (** Create a cursor from a surface. The hot spot is the pixel that points at
+        the target. Both offsets must lie inside the surface. Newer SDL versions
+        can use hot spot metadata from a loaded cursor image. You can destroy
+        the surface after this call. *)
+
+    val create_system : context -> system -> t
+    (** Create a cursor in a system style. If the driver cannot create it, raise
+        [Error]. *)
+
+    val set : t -> unit
+    (** Select this cursor for the application, without changing visibility. *)
+
+    val reset : context -> unit
+    (** Select SDL's default cursor. This does not destroy any cursor. *)
+
+    val destroy : t -> unit
+    (** Destroy the cursor. If it is active, SDL selects the default cursor. It
+        is safe to destroy the same cursor again. *)
+
+    val show : context -> unit
+    val hide : context -> unit
+
+    val visible : context -> bool
+    (** Read SDL's visibility setting. For example, relative mode can still hide
+        a cursor that this setting marks as visible. *)
+  end
 end
 
 module Touch : sig
@@ -1219,6 +1317,8 @@ module Event : sig
     | Display_scale_changed
     | Entered_fullscreen
     | Left_fullscreen
+    | Mouse_entered  (** The window gained mouse focus. *)
+    | Mouse_left  (** The window lost mouse focus. *)
 
   type display_change =
     | Connected

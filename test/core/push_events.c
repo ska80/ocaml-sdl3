@@ -128,6 +128,8 @@ CAMLprim value test_push_device_events(value window) {
         SDL_EVENT_WINDOW_DISPLAY_SCALE_CHANGED,
         SDL_EVENT_WINDOW_ENTER_FULLSCREEN,
         SDL_EVENT_WINDOW_LEAVE_FULLSCREEN,
+        SDL_EVENT_WINDOW_MOUSE_ENTER,
+        SDL_EVENT_WINDOW_MOUSE_LEAVE,
     };
     for (size_t i = 0; i < SDL_arraysize(window_types); ++i)
         push((SDL_Event){
@@ -183,6 +185,11 @@ CAMLprim value test_push_device_events(value window) {
     });
 
     return Val_unit;
+}
+
+CAMLprim value test_cursor_is_default(value unit) {
+    (void)unit;
+    return Val_bool(SDL_GetCursor() == SDL_GetDefaultCursor());
 }
 
 CAMLprim value test_attach_gamepad(value unit) {

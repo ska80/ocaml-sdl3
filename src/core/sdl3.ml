@@ -186,6 +186,8 @@ module Window = struct
 
   external set_resizable : t -> bool -> unit = "osdl_window_set_resizable"
   external set_fullscreen : t -> bool -> unit = "osdl_window_set_fullscreen"
+  external set_mouse_grab : t -> bool -> unit = "osdl_window_set_mouse_grab"
+  external mouse_grab : t -> bool = "osdl_window_mouse_grab"
   external show : t -> unit = "osdl_window_show"
   external hide : t -> unit = "osdl_window_hide"
   external minimize : t -> unit = "osdl_window_minimize"
@@ -765,12 +767,64 @@ end
 module Mouse = struct
   type button = Left | Middle | Right | X1 | X2 | Other of int
   type buttons = int32
+  type state = { x : float; y : float; buttons : buttons }
+  type relative_state = { dx : float; dy : float; buttons : buttons }
 
   external is_pressed : buttons -> button -> bool = "osdl_mouse_pressed"
   [@@noalloc]
 
+  external state : context -> state = "osdl_mouse_state"
+  external global_state : context -> state = "osdl_mouse_global_state"
+
+  external relative_state : context -> relative_state
+    = "osdl_mouse_relative_state"
+
   external set_relative_mode : Window.t -> bool -> unit
     = "osdl_mouse_set_relative_mode"
+
+  external capture : context -> bool -> unit = "osdl_mouse_capture"
+
+  external warp_in_window : Window.t -> x:float -> y:float -> unit
+    = "osdl_mouse_warp_in_window"
+
+  module Cursor = struct
+    type t
+
+    type system =
+      | Default
+      | Text
+      | Wait
+      | Crosshair
+      | Progress
+      | Resize_nwse
+      | Resize_nesw
+      | Resize_ew
+      | Resize_ns
+      | Move
+      | Not_allowed
+      | Pointer
+      | Resize_nw
+      | Resize_n
+      | Resize_ne
+      | Resize_e
+      | Resize_se
+      | Resize_s
+      | Resize_sw
+      | Resize_w
+
+    external create_color : Surface.t -> hot_x:int -> hot_y:int -> t
+      = "osdl_cursor_create_color"
+
+    external create_system : context -> system -> t
+      = "osdl_cursor_create_system"
+
+    external set : t -> unit = "osdl_cursor_set"
+    external reset : context -> unit = "osdl_cursor_reset"
+    external destroy : t -> unit = "osdl_cursor_destroy"
+    external show : context -> unit = "osdl_cursor_show"
+    external hide : context -> unit = "osdl_cursor_hide"
+    external visible : context -> bool = "osdl_cursor_visible"
+  end
 end
 
 module Touch = struct
@@ -873,6 +927,8 @@ module Event = struct
     | Display_scale_changed
     | Entered_fullscreen
     | Left_fullscreen
+    | Mouse_entered
+    | Mouse_left
 
   type display_change =
     | Connected

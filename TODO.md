@@ -9,6 +9,8 @@
       gamepads, queued audio, and timers.
 - [x] Window placement and state changes, display queries, touch input, and gamepad discovery
       and events.
+- [x] Mouse state, mouse focus events, custom and system cursors, capture, window grabs, and pointer
+      movement.
 - [x] Streaming texture uploads, render targets, and batches of rectangles.
 - [x] Scoped write access to streaming textures.
 - [x] Texture sprite batches and an OCaml Bunnymark example.

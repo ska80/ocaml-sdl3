@@ -307,6 +307,16 @@ CAMLprim value osdl_window_set_fullscreen(value window, value fullscreen) {
     return Val_unit;
 }
 
+CAMLprim value osdl_window_set_mouse_grab(value window, value enabled) {
+    osdl_check(SDL_SetWindowMouseGrab(osdl_live(window), Bool_val(enabled)),
+               "SDL_SetWindowMouseGrab");
+    return Val_unit;
+}
+
+CAMLprim value osdl_window_mouse_grab(value window) {
+    return Val_bool(SDL_GetWindowMouseGrab(osdl_live(window)));
+}
+
 OSDL_ACTION(osdl_window_show, SDL_ShowWindow)
 OSDL_ACTION(osdl_window_hide, SDL_HideWindow)
 OSDL_ACTION(osdl_window_minimize, SDL_MinimizeWindow)
@@ -1983,7 +1993,7 @@ CAMLprim value osdl_renderer_draw_geometry_byte(value* argv, int argc) {
     return osdl_renderer_draw_geometry(argv[0], argv[1], argv[2], argv[3], argv[4], argv[5]);
 }
 
-/* Keyboard and mouse. */
+/* Keyboard. */
 
 CAMLprim value osdl_scancode_escape(value unit) {
     (void)unit;
@@ -2023,10 +2033,148 @@ CAMLprim value osdl_keyboard_pressed(value context, value scancode) {
 OSDL_ACTION(osdl_keyboard_start_text_input, SDL_StartTextInput)
 OSDL_ACTION(osdl_keyboard_stop_text_input, SDL_StopTextInput)
 
+/* Mouse state and movement. Button conversions are shared with events. */
+
+static void osdl_require_mouse_context(value context) {
+    osdl_require_subsystem(context, SDL_INIT_VIDEO, "Start SDL with Video to use the mouse");
+}
+
+typedef SDL_MouseButtonFlags(SDLCALL* osdl_mouse_query)(float*, float*);
+
+static value osdl_mouse_read_state(value context, osdl_mouse_query query) {
+    CAMLparam1(context);
+    CAMLlocal3(x_value, y_value, buttons);
+
+    osdl_require_mouse_context(context);
+
+    float                x, y;
+    SDL_MouseButtonFlags mask = query(&x, &y);
+
+    /* Mouse.state and Mouse.relative_state store two coordinates, then buttons. */
+    x_value = caml_copy_double(x);
+    y_value = caml_copy_double(y);
+    buttons = caml_copy_int32((int32_t)mask);
+    CAMLreturn(caml_alloc_3(0, x_value, y_value, buttons));
+}
+
+CAMLprim value osdl_mouse_state(value context) {
+    return osdl_mouse_read_state(context, SDL_GetMouseState);
+}
+
+CAMLprim value osdl_mouse_global_state(value context) {
+    return osdl_mouse_read_state(context, SDL_GetGlobalMouseState);
+}
+
+CAMLprim value osdl_mouse_relative_state(value context) {
+    return osdl_mouse_read_state(context, SDL_GetRelativeMouseState);
+}
+
 CAMLprim value osdl_mouse_set_relative_mode(value window, value enabled) {
     osdl_check(SDL_SetWindowRelativeMouseMode(osdl_live(window), Bool_val(enabled)),
                "SDL_SetWindowRelativeMouseMode");
     return Val_unit;
+}
+
+CAMLprim value osdl_mouse_capture(value context, value enabled) {
+    osdl_require_mouse_context(context);
+
+    osdl_check(SDL_CaptureMouse(Bool_val(enabled)), "SDL_CaptureMouse");
+    return Val_unit;
+}
+
+CAMLprim value osdl_mouse_warp_in_window(value window, value x, value y) {
+    SDL_Window* w  = osdl_live(window);
+    float       px = osdl_float(Double_val(x)), py = osdl_float(Double_val(y));
+    /* Some video drivers round and cast the coordinates to int. */
+    if ((double)px < INT_MIN || (double)px > INT_MAX || (double)py < INT_MIN ||
+        (double)py > INT_MAX)
+        caml_invalid_argument("Mouse warp coordinates are outside the C int range");
+
+    SDL_WarpMouseInWindow(w, px, py);
+    return Val_unit;
+}
+
+/* Cursors are context children, independent of windows and source surfaces. */
+
+CAMLprim value osdl_cursor_create_color(value surface, value hot_x, value hot_y) {
+    CAMLparam3(surface, hot_x, hot_y);
+    CAMLlocal1(handle);
+
+    handle = osdl_new_handle(osdl_parent(surface));
+
+    SDL_Surface* s = osdl_live(surface);
+    osdl_require_mouse_context(osdl_parent(surface));
+    int x = osdl_int(hot_x), y = osdl_int(hot_y);
+    if (x < 0 || x >= s->w || y < 0 || y >= s->h)
+        caml_invalid_argument("The cursor hot spot must lie inside the surface");
+
+    SDL_Cursor* cursor = SDL_CreateColorCursor(s, x, y);
+    CAMLreturn(osdl_publish(handle, cursor, "SDL_CreateColorCursor"));
+}
+
+CAMLprim value osdl_cursor_create_system(value context, value system) {
+    CAMLparam2(context, system);
+    CAMLlocal1(handle);
+
+    /* Mouse.Cursor.system constructor order. */
+    static const SDL_SystemCursor styles[] = {
+        SDL_SYSTEM_CURSOR_DEFAULT,     SDL_SYSTEM_CURSOR_TEXT,        SDL_SYSTEM_CURSOR_WAIT,
+        SDL_SYSTEM_CURSOR_CROSSHAIR,   SDL_SYSTEM_CURSOR_PROGRESS,    SDL_SYSTEM_CURSOR_NWSE_RESIZE,
+        SDL_SYSTEM_CURSOR_NESW_RESIZE, SDL_SYSTEM_CURSOR_EW_RESIZE,   SDL_SYSTEM_CURSOR_NS_RESIZE,
+        SDL_SYSTEM_CURSOR_MOVE,        SDL_SYSTEM_CURSOR_NOT_ALLOWED, SDL_SYSTEM_CURSOR_POINTER,
+        SDL_SYSTEM_CURSOR_NW_RESIZE,   SDL_SYSTEM_CURSOR_N_RESIZE,    SDL_SYSTEM_CURSOR_NE_RESIZE,
+        SDL_SYSTEM_CURSOR_E_RESIZE,    SDL_SYSTEM_CURSOR_SE_RESIZE,   SDL_SYSTEM_CURSOR_S_RESIZE,
+        SDL_SYSTEM_CURSOR_SW_RESIZE,   SDL_SYSTEM_CURSOR_W_RESIZE,
+    };
+
+    handle = osdl_new_handle(context);
+    osdl_require_mouse_context(context);
+
+    SDL_Cursor* cursor = SDL_CreateSystemCursor(styles[Int_val(system)]);
+    CAMLreturn(osdl_publish(handle, cursor, "SDL_CreateSystemCursor"));
+}
+
+static SDL_Cursor* osdl_default_cursor(void) {
+    SDL_Cursor* cursor = SDL_GetDefaultCursor();
+    if (!cursor) osdl_raise_error("SDL_GetDefaultCursor: No default cursor is available");
+    return cursor;
+}
+
+CAMLprim value osdl_cursor_set(value handle) {
+    SDL_Cursor* cursor = osdl_live(handle);
+    /* SDL needs a default to switch back to when this cursor is destroyed. */
+    (void)osdl_default_cursor();
+
+    osdl_check(SDL_SetCursor(cursor), "SDL_SetCursor");
+    return Val_unit;
+}
+
+CAMLprim value osdl_cursor_reset(value context) {
+    osdl_require_mouse_context(context);
+
+    osdl_check(SDL_SetCursor(osdl_default_cursor()), "SDL_SetCursor");
+    return Val_unit;
+}
+
+OSDL_DESTROY(osdl_cursor_destroy, SDL_Cursor, SDL_DestroyCursor)
+
+CAMLprim value osdl_cursor_show(value context) {
+    osdl_require_mouse_context(context);
+
+    osdl_check(SDL_ShowCursor(), "SDL_ShowCursor");
+    return Val_unit;
+}
+
+CAMLprim value osdl_cursor_hide(value context) {
+    osdl_require_mouse_context(context);
+
+    osdl_check(SDL_HideCursor(), "SDL_HideCursor");
+    return Val_unit;
+}
+
+CAMLprim value osdl_cursor_visible(value context) {
+    osdl_require_mouse_context(context);
+    return Val_bool(SDL_CursorVisible());
 }
 
 /* Gamepad discovery and handles. State queries share the event tables. */

@@ -1,7 +1,7 @@
 # Displays and input
 
-The [`Sdl3` interface](../src/core/sdl3.mli) lists the display, window, touch, gamepad, and event
-functions. Read events with `Event.poll` on the main thread.
+The [`Sdl3` interface](../src/core/sdl3.mli) lists the display, window, mouse, touch, gamepad, and
+event functions. Read events with `Event.poll` on the main thread.
 
 ## Displays and windows
 
@@ -40,6 +40,52 @@ let clicked_panel renderer window ~w ~h event =
 
 The conversion does not clamp points to the viewport or clip rectangle. Test the converted point
 against the area that accepts input. Events without a matching window stay unchanged.
+
+## Read the mouse and track drags
+
+Start SDL with `[Sdl3.Video]`. Poll events before you read `Mouse.state`. It reports the last
+position in the window with mouse focus and the pressed buttons. Use `Mouse.is_pressed` to test a
+button. If you need desktop coordinates, use `Mouse.global_state`. Some drivers return the same
+result as `Mouse.state` because they cannot query the desktop.
+
+For relative movement, such as turning a camera, enable `Mouse.set_relative_mode` on the window.
+Read `Mouse.relative_state` to get the movement since the last read. If several parts of your game
+need this value, read it once and share the result.
+
+`Event.Window` reports `Mouse_entered` and `Mouse_left`. Use these events to start or stop checking
+the pointer near window edges. If you capture the mouse, test its position too. `Focus_lost` reports
+loss of keyboard focus instead.
+
+SDL tries to keep sending mouse events to the window during a drag. This is called capture. If you
+need explicit capture, call `Mouse.capture context true` while the window has focus. The pointer can
+leave the window and the event coordinates stay relative to it. Release capture with `Mouse.capture
+context false` when the drag ends or is canceled. If the window loses keyboard focus, cancel the
+drag and release capture. Some drivers do not support explicit capture.
+
+Unlike capture, `Window.set_mouse_grab window true` keeps the pointer inside the window. Use
+`Mouse.warp_in_window` to request a move within the window. Pass window coordinates, not drawing
+coordinates. The move can produce a mouse motion event.
+
+## Set the cursor
+
+Use `Mouse.Cursor.create_system` for styles such as `Crosshair` and `Pointer`. To use your own
+image, pass a surface to `Mouse.Cursor.create_color`. The hot spot is the pixel that points at the
+target. Measure it from the image's top-left corner.
+
+```ocaml
+open Sdl3
+
+let load_cursor context path ~hot_x ~hot_y =
+  let image = Surface.load_bmp context path in
+  Fun.protect
+    ~finally:(fun () -> Surface.destroy image)
+    (fun () -> Mouse.Cursor.create_color image ~hot_x ~hot_y)
+```
+
+Create each cursor once, then call `Mouse.Cursor.set` when the interaction changes. For example, use
+a crosshair while placing a building. Use `Mouse.Cursor.reset` to return to the default.
+`Mouse.Cursor.hide` and `Mouse.Cursor.show` change visibility without selecting another cursor.
+Destroy your cursors on the main thread before you quit SDL.
 
 ## File drops
 

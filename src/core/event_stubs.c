@@ -209,6 +209,12 @@ static value window_event_value(const SDL_WindowEvent* event) {
     case SDL_EVENT_WINDOW_LEAVE_FULLSCREEN:
         change = Val_int(10);
         break;
+    case SDL_EVENT_WINDOW_MOUSE_ENTER:
+        change = Val_int(11);
+        break;
+    case SDL_EVENT_WINDOW_MOUSE_LEAVE:
+        change = Val_int(12);
+        break;
     default:
         CAMLreturn(caml_alloc_1(K_OTHER, caml_copy_int32((int32_t)event->type)));
     }

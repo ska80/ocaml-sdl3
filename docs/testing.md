@@ -20,6 +20,10 @@ Run `dune runtest --force test/core` to test viewport, clip, and scale changes w
 renderer. These tests read pixels and convert points and events in a dummy window. They also check
 that each render target keeps its own settings.
 
+The core tests also cover mouse state, focus events, and cursor cleanup. They check failure paths
+for capture and system cursors on the dummy driver. Test actual capture and desktop coordinates with
+a windowing driver.
+
 ## Run the resource lifecycle tests
 
 QCheck generates sequences of operations on a context, a memory stream, and a software rendering

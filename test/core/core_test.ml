@@ -2,6 +2,7 @@ open Sdl3
 
 external push_events : int32 -> unit = "test_push_events"
 external push_device_events : int32 -> unit = "test_push_device_events"
+external cursor_is_default : unit -> bool = "test_cursor_is_default"
 external attach_gamepad : unit -> int32 = "test_attach_gamepad"
 external detach_gamepad : int32 -> unit = "test_detach_gamepad"
 
@@ -24,6 +25,22 @@ let sdl_error fn f =
 let using destroy handle f =
   Fun.protect ~finally:(fun () -> destroy handle) (fun () -> f handle)
 
+let reject_mouse_context context =
+  invalid (fun () -> Mouse.state context);
+  invalid (fun () -> Mouse.global_state context);
+  invalid (fun () -> Mouse.relative_state context);
+  invalid (fun () -> Mouse.capture context true);
+  invalid (fun () -> Mouse.Cursor.create_system context Crosshair);
+  invalid (fun () -> Mouse.Cursor.reset context);
+  invalid (fun () -> Mouse.Cursor.show context);
+  invalid (fun () -> Mouse.Cursor.hide context);
+  invalid (fun () -> Mouse.Cursor.visible context)
+
+let reject_mouse_window window =
+  invalid (fun () -> Mouse.warp_in_window window ~x:1. ~y:2.);
+  invalid (fun () -> Window.set_mouse_grab window true);
+  invalid (fun () -> Window.mouse_grab window)
+
 let main_thread context window =
   let worker () =
     check (not (is_main_thread ())) "Wrong thread identity";
@@ -32,6 +49,8 @@ let main_thread context window =
     invalid (fun () -> Display.list context);
     invalid (fun () -> Touch.devices context);
     invalid (fun () -> Gamepad.list context);
+    reject_mouse_context context;
+    reject_mouse_window window;
     invalid (fun () -> Window.destroy window);
     invalid (fun () -> init []);
     invalid (fun () -> quit context);
@@ -204,6 +223,8 @@ let device_events context window =
       Display_scale_changed;
       Entered_fullscreen;
       Left_fullscreen;
+      Mouse_entered;
+      Mouse_left;
     ];
   List.iter
     (fun change ->
@@ -1040,6 +1061,85 @@ let render context window =
               locked_texture renderer target;
               render_target renderer window_renderer target)))
 
+let mouse context window =
+  let open Mouse in
+  let x = 7.25 and y = 9.5 in
+  let rec drain () = if Event.poll context <> None then drain () in
+  drain ();
+  check (not (Window.mouse_grab window)) "Initial mouse grab";
+  Window.set_mouse_grab window true;
+  Window.set_mouse_grab window false;
+  check (not (Window.mouse_grab window)) "Released mouse grab";
+  sdl_error "SDL_CaptureMouse" (fun () -> capture context true);
+  warp_in_window window ~x ~y;
+  let snapshot = state context in
+  check (snapshot.x = x && snapshot.y = y) "Window mouse position";
+  check (not (is_pressed snapshot.buttons Left)) "Mouse button state";
+  check
+    (global_state context = snapshot)
+    "Dummy desktop query uses cached state";
+  ignore (relative_state context);
+  let rel = relative_state context in
+  check (rel.dx = 0. && rel.dy = 0.) "Consumed relative mouse movement";
+  check (rel.buttons = snapshot.buttons) "Relative mouse button state";
+  List.iter
+    (fun bad ->
+      invalid (fun () -> warp_in_window window ~x:bad ~y);
+      invalid (fun () -> warp_in_window window ~x ~y:bad))
+    [ nan; infinity; neg_infinity; Float.max_float; 1e20; -1e20 ];
+  check (state context = snapshot) "Invalid warps did not move the mouse";
+  let rec motion () =
+    match Event.poll context with
+    | Some { kind = Mouse_motion { x; y; _ }; _ } -> (x, y)
+    | Some _ -> motion ()
+    | None -> failwith "Missing mouse warp motion"
+  in
+  check (motion () = (x, y)) "Mouse warp motion coordinates";
+  drain ()
+
+let cursors context =
+  let open Mouse.Cursor in
+  sdl_error "SDL_CreateSystemCursor" (fun () -> create_system context Pointer);
+  let cursor =
+    using Surface.destroy (Surface.create context ~w:5 ~h:4) (fun image ->
+        Surface.fill image (Color.rgba 16 128 255 128);
+        List.iter
+          (fun (hot_x, hot_y) ->
+            invalid (fun () -> create_color image ~hot_x ~hot_y))
+          [ (-1, 0); (5, 0); (0, -1); (0, 4); (max_int, max_int) ];
+        Domain.join
+          (Domain.spawn (fun () ->
+               invalid (fun () -> create_color image ~hot_x:0 ~hot_y:0)));
+        create_color image ~hot_x:4 ~hot_y:3)
+  in
+  using destroy cursor (fun cursor ->
+      invalid (fun () -> quit context);
+      Domain.join
+        (Domain.spawn (fun () ->
+             invalid (fun () -> set cursor);
+             invalid (fun () -> destroy cursor)));
+      Gc.compact ();
+      check (cursor_is_default ()) "Initial default cursor";
+      hide context;
+      hide context;
+      check (not (visible context)) "Hidden cursor";
+      set cursor;
+      check (not (cursor_is_default ())) "Selected custom cursor";
+      check (not (visible context)) "Selecting a cursor preserves visibility";
+      reset context;
+      check (cursor_is_default ()) "Reset to the default cursor";
+      show context;
+      show context;
+      check (visible context) "Visible cursor";
+      set cursor;
+      destroy cursor;
+      check (cursor_is_default ())
+        "Destroying the active cursor selects the default";
+      invalid (fun () -> set cursor));
+  using Surface.destroy (Surface.create context ~w:1 ~h:1) (fun image ->
+      Surface.destroy image;
+      invalid (fun () -> create_color image ~hot_x:0 ~hot_y:0))
+
 let gpu_without_backend context =
   let driver = "not-an-sdl-gpu-driver" in
   List.iter (fun name -> check (name <> "") "GPU driver name") (Gpu.drivers ());
@@ -1105,17 +1205,25 @@ let () =
           events context window;
           device_events context window;
           renderer_views context window;
-          render context window);
+          render context window;
+          mouse context window;
+          Window.destroy window;
+          reject_mouse_window window);
       gamepads context;
       gpu_without_backend context;
-      audio context);
+      audio context;
+      cursors context);
   let context = init [] in
   invalid (fun () -> Gpu.create_device context [ Spirv ]);
   invalid (fun () -> Display.list context);
   invalid (fun () -> Touch.devices context);
   invalid (fun () -> Gamepad.list context);
+  reject_mouse_context context;
+  using Surface.destroy (Surface.create context ~w:1 ~h:1) (fun image ->
+      invalid (fun () -> Mouse.Cursor.create_color image ~hot_x:0 ~hot_y:0));
   quit context;
   quit context;
+  reject_mouse_context context;
   invalid (fun () -> Display.primary context);
   invalid (fun () -> Touch.devices context);
   invalid (fun () -> Gamepad.list context);
