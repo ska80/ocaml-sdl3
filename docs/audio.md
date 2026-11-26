@@ -11,6 +11,11 @@ Omit `~device` to let SDL use the system default. To select a device, pass its I
 `Audio.open_playback`, `Audio.open_recording`, or `Sdl3_mixer.Mixer.create_device`. The ID must
 match the stream direction. The mixer accepts only playback devices.
 
+`Event.Audio_device` reports `Added` and `Removed` for both `Playback` and `Recording`. SDL also
+sends `Added` for devices it finds at startup. When you receive a change, refresh the device lists.
+SDL can also report removal of an open connection whose ID is not in the lists. The event does not
+close a stream for you. Do not try to reopen a device from a removed ID.
+
 ## Queue or read samples
 
 Core streams start paused. Call `Audio.resume` to start playback or recording. A bigarray is a

@@ -1,11 +1,19 @@
 open Sdl3
 
+external set_data_home : string option -> bool = "test_set_data_home"
 external push_events : int32 -> unit = "test_push_events"
+external push_wait_events : int32 -> unit = "test_push_wait_events"
 external push_device_events : int32 -> unit = "test_push_device_events"
 external push_render_events : int32 -> unit = "test_push_render_events"
+
+external push_audio_events :
+  Audio.playback Audio.Device.id -> Audio.recording Audio.Device.id -> unit
+  = "test_push_audio_events"
+
 external cursor_is_default : unit -> bool = "test_cursor_is_default"
-external attach_gamepad : unit -> int32 = "test_attach_gamepad"
+external attach_gamepad : rumble:bool -> int32 = "test_attach_gamepad"
 external detach_gamepad : int32 -> unit = "test_detach_gamepad"
+external rumble_state : unit -> int * int = "test_gamepad_rumble_state"
 
 external set_gamepad_state : int32 -> axis:int -> pressed:bool -> unit
   = "test_set_gamepad_state"
@@ -25,6 +33,59 @@ let sdl_error fn f =
 
 let using destroy handle f =
   Fun.protect ~finally:(fun () -> destroy handle) (fun () -> f handle)
+
+let pref_paths () =
+  List.iter
+    (fun (org, app) -> invalid (fun () -> Path.pref ~org ~app))
+    [
+      ("Org", "");
+      ("..", "Editor");
+      ("Org", "a/b");
+      ("Org", "a\\b");
+      ("Org", "C:editor");
+      ("a\000b", "Editor");
+      ("Org", "\xff");
+    ];
+  let root = Filename.temp_file "osdl-pref-" "" in
+  let root =
+    if Filename.is_relative root then Filename.concat (Sys.getcwd ()) root
+    else root
+  in
+  Sys.remove root;
+  Sys.mkdir root 0o700;
+  let org_dir = Filename.concat root "OCaml SDL" in
+  let app_dir = Filename.concat org_dir "Éditeur" in
+  let solo_dir = Filename.concat root "Editor" in
+  let blocked = Filename.concat root "Blocked" in
+  let saved_data_home = Sys.getenv_opt "XDG_DATA_HOME" in
+  Fun.protect
+    ~finally:(fun () ->
+      ignore (set_data_home saved_data_home);
+      if Sys.file_exists blocked then Sys.remove blocked;
+      List.iter
+        (fun path -> if Sys.file_exists path then Sys.rmdir path)
+        [ app_dir; org_dir; solo_dir; root ])
+    (fun () ->
+      (* Do not create files under the user's home on other platforms. *)
+      if set_data_home (Some root) then (
+        let path = Path.pref ~org:"OCaml SDL" ~app:"Éditeur" in
+        let solo = Path.pref ~org:"" ~app:"Editor" in
+        check
+          (path = app_dir ^ "/" && Sys.is_directory path)
+          "User data directory";
+        check
+          (solo = solo_dir ^ "/" && Sys.is_directory solo)
+          "No organization directory";
+        Gc.compact ();
+        check
+          (Path.pref ~org:"OCaml SDL" ~app:"Éditeur" = path)
+          "Copied preference path";
+        close_out (open_out_bin blocked);
+        sdl_error "SDL_GetPrefPath" (fun () ->
+            Path.pref ~org:"Blocked" ~app:"Editor");
+        ignore (set_data_home (Some ""));
+        sdl_error "SDL_GetPrefPath" (fun () ->
+            Path.pref ~org:"OCaml SDL" ~app:"Editor")))
 
 let reject_clipboard context =
   invalid (fun () -> Clipboard.set_text context "no clipboard");
@@ -59,6 +120,11 @@ let main_thread context window =
     invalid (fun () -> Display.list context);
     invalid (fun () -> Touch.devices context);
     invalid (fun () -> Gamepad.list context);
+    invalid Path.base;
+    invalid (fun () -> Path.pref ~org:"OCaml SDL" ~app:"Editor");
+    invalid (fun () -> Event.wait_timeout context ~timeout_ms:0);
+    invalid (fun () -> Window.set_minimum_size window ~w:0 ~h:0);
+    invalid (fun () -> Window.set_fullscreen_mode window None);
     reject_mouse_context context;
     reject_mouse_window window;
     reject_clipboard context;
@@ -177,6 +243,58 @@ let events context window =
   check (text = "é") "UTF-8 text after more polls";
   check (path = "a b/é.wav") "UTF-8 file path after more polls"
 
+let wait_events context window =
+  let open Event in
+  let wait timeout_ms = wait_timeout context ~timeout_ms in
+  invalid (fun () -> wait (-1));
+  if Sys.int_size > 32 then invalid (fun () -> wait max_int);
+  check (wait 0 = None) "Zero timeout on an empty queue";
+  let start = Timer.ticks_ns () in
+  check (wait 15 = None) "Positive timeout on an empty queue";
+  check
+    (Int64.sub (Timer.ticks_ns ()) start >= 14_000_000L)
+    "Wait spent time idle";
+  let window = Window.id window in
+  let push () = push_wait_events (Window.id_to_int32 window) in
+  let check_event event =
+    check
+      (event
+      = Some
+          {
+            timestamp_ns = 0x1234_5678_9abc_0000L;
+            kind = Text_input { window; text = "Wait é" };
+          })
+      "Wait returned the text event";
+    check
+      (Option.map (fun event -> event.kind) (poll context) = Some Quit)
+      "Poll reads the following event";
+    check (poll context = None) "Wait consumed the text event"
+  in
+  push ();
+  check_event (wait 0);
+  if Sys.int_size > 32 then (
+    push ();
+    check_event (wait (Int32.to_int Int32.max_int)));
+  let started = Atomic.make false in
+  let worker =
+    Thread.create
+      (fun () ->
+        while not (Atomic.get started) do
+          Thread.yield ()
+        done;
+        Timer.delay_ns 20_000_000L;
+        push ())
+      ()
+  in
+  let event =
+    Fun.protect
+      ~finally:(fun () -> Thread.join worker)
+      (fun () ->
+        Atomic.set started true;
+        wait 2_000)
+  in
+  check_event event
+
 let displays context window =
   let primary = Display.primary context in
   let displays = Display.list context in
@@ -207,6 +325,44 @@ let displays context window =
   invalid (fun () -> Window.set_position window ~x:0x2fff_0000 ~y:0);
   if Sys.int_size > 32 then
     invalid (fun () -> Window.set_position window ~x:0 ~y:max_int)
+
+let window_services context window =
+  let w, h = Window.size window in
+  Window.set_minimum_size window ~w:45 ~h:34;
+  invalid (fun () -> Window.set_minimum_size window ~w:1 ~h:(-1));
+  if Sys.int_size > 32 then
+    invalid (fun () -> Window.set_minimum_size window ~w:max_int ~h:1);
+  Window.set_size window ~w:3 ~h:2;
+  check (Window.size window = (45, 34)) "Minimum size clamps both dimensions";
+  Window.set_minimum_size window ~w:0 ~h:34;
+  Window.set_size window ~w:3 ~h:2;
+  check (Window.size window = (3, 34)) "Remove the minimum width only";
+  Window.set_minimum_size window ~w:0 ~h:0;
+  Window.set_size window ~w ~h;
+  check (Window.size window = (w, h)) "Remove the minimum height";
+  let display = Window.display window in
+  let mode = Display.desktop_mode context display in
+  invalid (fun () ->
+      Window.set_fullscreen_mode window (Some { mode with w = 0 }));
+  invalid (fun () ->
+      Window.set_fullscreen_mode window (Some { mode with refresh_rate = nan }));
+  (match Display.fullscreen_modes context display with
+  | [] -> ()
+  | mode :: _ -> Window.set_fullscreen_mode window (Some mode));
+  Window.set_fullscreen_mode window None;
+  check
+    (Window.size window = (w, h))
+    "Selecting a mode does not enter fullscreen";
+  using Surface.destroy (Surface.create context ~w:16 ~h:16) (fun icon ->
+      Surface.with_lock icon (fun _ ->
+          invalid (fun () -> Window.set_icon window icon));
+      Domain.join
+        (Domain.spawn (fun () ->
+             invalid (fun () -> Window.set_icon window icon)));
+      (* The dummy driver cannot show icons. *)
+      sdl_error "SDL_SetWindowIcon" (fun () -> Window.set_icon window icon);
+      Surface.destroy icon;
+      invalid (fun () -> Window.set_icon window icon))
 
 let device_events context window =
   let window_id = Window.id window in
@@ -436,8 +592,70 @@ let render_events context window renderer =
     ];
   check (poll context = None) "No extra render events"
 
+let audio_device_events context renderer =
+  let playback = List.hd (Audio.Device.list_playback context) in
+  let recording = List.hd (Audio.Device.list_recording context) in
+  push_audio_events playback recording;
+  let open Event in
+  List.iteri
+    (fun index (device, change) ->
+      let event =
+        if index mod 2 = 0 then poll context
+        else wait_timeout context ~timeout_ms:100
+      in
+      match event with
+      | None -> failwith "Missing audio device event"
+      | Some event ->
+          let timestamp_ns =
+            Int64.add 0xfedc_ba98_7654_3210L (Int64.of_int index)
+          in
+          check
+            (event = { timestamp_ns; kind = Audio_device { device; change } })
+            "Audio device event fields";
+          check
+            (to_render_coordinates renderer event == event)
+            "Coordinate conversion leaves audio events unchanged")
+    [
+      (Playback playback, Added);
+      (Recording recording, Added);
+      (Playback playback, Removed);
+      (Recording recording, Removed);
+    ];
+  check (poll context = None) "No extra audio device events"
+
+let gamepad_rumble context pad =
+  let rumble = Gamepad.rumble pad in
+  let duration_ms =
+    if Sys.int_size > 32 then Int64.to_int 0xffff_ffffL else 60_000
+  in
+  rumble ~low:65535 ~high:32768 ~duration_ms;
+  check (rumble_state () = (65535, 32768)) "Both motor intensities reach SDL";
+  invalid (fun () -> rumble ~low:(-1) ~high:0 ~duration_ms:10);
+  invalid (fun () -> rumble ~low:0 ~high:65536 ~duration_ms:10);
+  invalid (fun () -> rumble ~low:1 ~high:0 ~duration_ms:(-1));
+  invalid (fun () -> rumble ~low:1 ~high:0 ~duration_ms:0);
+  if Sys.int_size > 32 then
+    invalid (fun () -> rumble ~low:0 ~high:1 ~duration_ms:max_int);
+  Domain.join
+    (Domain.spawn (fun () ->
+         invalid (fun () -> rumble ~low:0 ~high:0 ~duration_ms:0)));
+  check
+    (rumble_state () = (65535, 32768))
+    "Invalid requests leave rumble unchanged";
+  rumble ~low:0 ~high:19 ~duration_ms;
+  check (rumble_state () = (0, 19)) "A new effect replaces rumble";
+  rumble ~low:0 ~high:0 ~duration_ms:0;
+  check (rumble_state () = (0, 0)) "Stop both motors";
+  rumble ~low:23 ~high:0 ~duration_ms:15;
+  check (rumble_state () = (23, 0)) "Start a short effect";
+  Timer.delay_ns 25_000_000L;
+  while Option.is_some (Event.poll context) do
+    ()
+  done;
+  check (rumble_state () = (0, 0)) "Reading events ends an expired effect"
+
 let gamepads context =
-  let gamepad = attach_gamepad () in
+  let gamepad = attach_gamepad ~rumble:true in
   using detach_gamepad gamepad (fun raw_id ->
       let id =
         List.find
@@ -487,14 +705,25 @@ let gamepads context =
           (* SDL 3.2 can round the mapped center from zero to one. *)
           state true (-32768);
           state false 32767;
+          gamepad_rumble context pad;
           Gamepad.close pad;
-          invalid (fun () -> Gamepad.has_axis pad Left_x)));
+          invalid (fun () -> Gamepad.has_axis pad Left_x);
+          invalid (fun () -> Gamepad.rumble pad ~low:1 ~high:0 ~duration_ms:20)));
   check
     (not
        (List.exists
           (fun id -> Gamepad.id_to_int32 id = gamepad)
           (Gamepad.list context)))
-    "Detached gamepad not in the list"
+    "Detached gamepad not in the list";
+  using detach_gamepad (attach_gamepad ~rumble:false) (fun raw_id ->
+      let id =
+        List.find
+          (fun id -> Gamepad.id_to_int32 id = raw_id)
+          (Gamepad.list context)
+      in
+      using Gamepad.close (Gamepad.open_ context id) (fun pad ->
+          sdl_error "SDL_RumbleGamepad" (fun () ->
+              Gamepad.rumble pad ~low:1 ~high:0 ~duration_ms:20)))
 
 let frect x y w h = Frect.make ~x ~y ~w ~h
 
@@ -882,6 +1111,7 @@ let renderer_views context window =
       roundtrip ();
       converted_events context window renderer;
       render_events context window renderer;
+      audio_device_events context renderer;
 
       let v = version () in
       let old_logical = (v.major, v.minor, v.patch) < (3, 2, 6) in
@@ -1382,8 +1612,30 @@ let audio context =
       Audio.close stream;
       invalid (fun () -> Audio.queue stream buffer))
 
+let startup_audio_events context =
+  let open Event in
+  let rec collect found =
+    match poll context with
+    | Some { kind = Audio_device { device; change = Added }; _ } ->
+        collect (device :: found)
+    | Some _ -> collect found
+    | None -> found
+  in
+  let added = collect [] in
+  let playback = List.hd (Audio.Device.list_playback context) in
+  let recording = List.hd (Audio.Device.list_recording context) in
+  check (List.mem (Playback playback) added) "Playback device event at startup";
+  check
+    (List.mem (Recording recording) added)
+    "Recording device event at startup"
+
 let () =
   check (is_main_thread ()) "Main thread";
+  let base = Path.base () in
+  check
+    (String.ends_with ~suffix:Filename.dir_sep base && Sys.is_directory base)
+    "Base path before SDL init";
+  pref_paths ();
   check ((version ()).major = 3) "SDL version";
   check (List.mem "software" (Renderer.drivers ())) "Render drivers before init";
   let start = Timer.ticks_ns () in
@@ -1393,6 +1645,7 @@ let () =
   invalid (fun () -> Timer.delay_ns (-1L));
   invalid (fun () -> Color.rgba 0 256 0 0);
   with_init [ Video; Audio; Gamepad ] (fun context ->
+      startup_audio_events context;
       invalid (fun () -> init []);
       invalid (fun () -> Surface.create context ~w:0 ~h:1);
       surface_rgba context;
@@ -1415,7 +1668,9 @@ let () =
             "Keyboard state";
           main_thread context window;
           displays context window;
+          window_services context window;
           events context window;
+          wait_events context window;
           device_events context window;
           text_input_area window;
           renderer_views context window;
@@ -1423,13 +1678,20 @@ let () =
           mouse context window;
           Window.destroy window;
           reject_mouse_window window;
-          reject_text_input_area window);
+          reject_text_input_area window;
+          invalid (fun () -> Window.set_minimum_size window ~w:0 ~h:0);
+          invalid (fun () -> Window.set_fullscreen_mode window None);
+          using Surface.destroy (Surface.create context ~w:1 ~h:1) (fun icon ->
+              invalid (fun () -> Window.set_icon window icon)));
       clipboard context;
       gamepads context;
       gpu_without_backend context;
       audio context;
       cursors context);
+  Gc.compact ();
+  check (Path.base () = base) "Copied base directory after SDL quit";
   let context = init [] in
+  invalid (fun () -> Event.wait_timeout context ~timeout_ms:0);
   invalid (fun () -> Gpu.create_device context [ Spirv ]);
   invalid (fun () -> Display.list context);
   invalid (fun () -> Touch.devices context);
@@ -1447,6 +1709,8 @@ let () =
   invalid (fun () -> Gamepad.list context);
   invalid (fun () -> Surface.create context ~w:1 ~h:1);
   invalid (fun () -> Gpu.supports_shader_formats context [ Spirv ]);
-  let next = init [] in
+  let next = init [ Events ] in
+  invalid (fun () -> Event.wait_timeout context ~timeout_ms:0);
+  check (Event.wait_timeout next ~timeout_ms:0 = None) "Wait needs no window";
   quit context;
   quit next

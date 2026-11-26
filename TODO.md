@@ -44,6 +44,9 @@
 - [x] Font styles, outlines, hinting, kerning, alignment, fallback fonts, and glyph metrics.
 - [x] Text direction and script settings, UTF-8 edits, substring bounds, and hit testing.
 - [x] Native text input areas and clipboard text.
+- [x] Platform directories for assets and saves, and a timed wait for events.
+- [x] Window icons, minimum size, and fullscreen mode selection. Gamepad vibration and audio device
+      connection and disconnection events.
 - [x] [Plan for audio and event dispatch](docs/callback-dispatch.md) on the main thread.
 - [x] Stereo panning, 3D sound positions, tagged track controls, and mixer groups. Stop watches
       report playback stops on the main thread. Group creation needs SDL3_mixer 3.2.4 or later.

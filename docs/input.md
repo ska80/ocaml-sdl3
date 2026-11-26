@@ -12,6 +12,34 @@ draw interface elements. Use `Window.display_scale` for the scale of a specific 
 A request to move, minimize, maximize, or restore a window can take effect later. Read
 `Event.Window` to learn what changed.
 
+Use `Window.set_minimum_size` to keep the window's content area large enough for your controls.
+Pass sizes in window coordinates. Set either dimension to zero to remove its limit.
+
+If the windowing system supports icons, pass a surface to `Window.set_icon`. SDL copies the image.
+Destroy the source surface after the call.
+
+Borderless fullscreen uses the desktop mode. Exclusive fullscreen can change the display's
+resolution or refresh rate. To select an exclusive mode, choose one from `Display.fullscreen_modes`
+for `Window.display window`. Pass it as `Some mode` to `Window.set_fullscreen_mode`. To select
+borderless fullscreen again, pass `None`. Use `Window.set_fullscreen window true` to enter
+fullscreen. Selecting a mode alone does not enter it.
+
+## Wait when idle
+
+Use `Event.wait_timeout` in an idle menu or editor that has no frame to draw. The wait runs on the
+main thread. It lets other OCaml threads run. If it returns an event, handle that event before you
+read the queue again. The wait already removed it from the queue.
+
+```ocaml
+let idle_step context ~handle_event ~on_idle =
+  match Sdl3.Event.wait_timeout context ~timeout_ms:250 with
+  | Some event -> handle_event event
+  | None -> on_idle ()
+```
+
+Use a timeout short enough for any work the main thread must do on a schedule. If you need to keep
+rendering, use `Event.poll` instead.
+
 ## Convert input to drawing coordinates
 
 Window coordinates can differ from the coordinates you use to draw. Use
@@ -133,3 +161,8 @@ Start SDL with `[Sdl3.Gamepad]`. Use `Gamepad.list` to find connected controller
 with `Gamepad.name_for_id` before opening them. Use `Gamepad.has_axis` and `Gamepad.has_button` to
 find the controls that SDL maps. Poll for `Event.Gamepad_axis` and `Event.Gamepad_button` to read
 changes. Close each open gamepad with `Gamepad.close`.
+
+For vibration, call `Gamepad.rumble pad ~low:20_000 ~high:0 ~duration_ms:120`. The intensities
+control the low and high frequency motors. A new effect replaces the previous one. To stop both
+motors, set both intensities to zero. Keep reading SDL events so SDL can end the effect. If a
+controller does not support vibration, SDL can raise `Sdl3.Error`.

@@ -1,5 +1,7 @@
 #include "sdl3_stubs.h"
 
+#include <caml/signals.h>
+
 /* Mouse button conversions shared by event decoding and state queries. */
 
 /* Sdl3.Mouse.button constant constructor order. */
@@ -157,6 +159,7 @@ enum {
     K_DROP,
     K_OTHER,
     K_RENDER,
+    K_AUDIO_DEVICE,
 };
 
 /* Sdl3.Event.window_change counts constants and blocks separately. */
@@ -418,23 +421,51 @@ static value event_kind_value(const SDL_Event* event) {
     case SDL_EVENT_RENDER_DEVICE_LOST:
         CAMLreturn(render_event_value(&event->render, 2));
 
+    /* Sdl3.Event.audio_device and audio_change constructor order. */
+    case SDL_EVENT_AUDIO_DEVICE_ADDED:
+    case SDL_EVENT_AUDIO_DEVICE_REMOVED:
+        a = caml_copy_int32((int32_t)event->adevice.which);
+        b = caml_alloc_1(event->adevice.recording ? 1 : 0, a);
+        CAMLreturn(caml_alloc_2(K_AUDIO_DEVICE, b,
+                                Val_int(event->type == SDL_EVENT_AUDIO_DEVICE_REMOVED)));
+
     default:
         break;
     }
     CAMLreturn(caml_alloc_1(K_OTHER, caml_copy_int32((int32_t)event->type)));
 }
 
-CAMLprim value osdl_event_poll(value context) {
-    SDL_Event event;
-    osdl_live(context);
-    if (!SDL_PollEvent(&event)) return Val_none;
-
+static value event_option_value(const SDL_Event* event) {
     CAMLparam0();
     CAMLlocal2(kind, time);
 
-    kind = event_kind_value(&event);
-    time = caml_copy_int64((int64_t)event.common.timestamp);
+    kind = event_kind_value(event);
+    time = caml_copy_int64((int64_t)event->common.timestamp);
     CAMLreturn(caml_alloc_some(caml_alloc_2(0, time, kind)));
+}
+
+CAMLprim value osdl_event_poll(value context) {
+    osdl_live(context);
+
+    SDL_Event event;
+    return SDL_PollEvent(&event) ? event_option_value(&event) : Val_none;
+}
+
+CAMLprim value osdl_event_wait_timeout(value context, value timeout_ms) {
+    CAMLparam2(context, timeout_ms);
+
+    osdl_require_subsystem(context, SDL_INIT_EVENTS, "Start SDL with Events to wait for events");
+    int64_t timeout = Long_val(timeout_ms);
+    if (timeout < 0 || timeout > INT32_MAX)
+        caml_invalid_argument("Event timeout must be in [0, 2147483647] milliseconds");
+
+    SDL_Event event;
+    /* Keep the SDL call on the main thread, but let other OCaml threads run. */
+    if (timeout) caml_enter_blocking_section_no_pending();
+    bool ready = SDL_WaitEventTimeout(&event, (Sint32)timeout);
+    if (timeout) caml_leave_blocking_section();
+
+    CAMLreturn(ready ? event_option_value(&event) : Val_none);
 }
 
 CAMLprim value osdl_event_convert_coordinates(value renderer, value window, value touch, value x,

@@ -26,6 +26,13 @@ The core tests also cover mouse state, focus events, and cursor cleanup. They ch
 for capture and system cursors on the dummy driver. Test actual capture and desktop coordinates with
 a windowing driver.
 
+The core tests check base and preference paths. On Linux they create save directories in a private
+temporary directory. They check that a timed wait returns on timeout and wakes for an event from
+another OCaml thread. They also check window size limits and rumble on a virtual gamepad. They read
+startup audio device events and send removal events through the queue. These cases do not need
+physical devices. To test window icons and exclusive fullscreen on a desktop, use a windowing driver
+that supports them.
+
 Run `dune runtest --force test/surface` to test image copies, transforms, and palette swaps. The
 native and bytecode tests also check pixel row copies, lock cleanup, and upload of an atlas made
 from indexed sprites. They need no window or add-on.

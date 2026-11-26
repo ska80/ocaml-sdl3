@@ -1,5 +1,25 @@
 # Streams, images, and text
 
+## Find asset and save directories
+
+Use `Sdl3.Path.base` to find assets relative to the application, not the working directory. A macOS
+app bundle normally uses its `Resources` directory. Do not assume you can write there.
+
+Use `Sdl3.Path.pref` for saved games and user configuration. SDL creates the directory if needed.
+Keep the organization and application names stable so users can find their data after an upgrade.
+On Linux, if `XDG_DATA_HOME` is empty, unset it or set it to an absolute directory.
+
+```ocaml
+let asset_path file = Filename.concat (Sdl3.Path.base ()) file
+
+let save_path file =
+  let directory = Sdl3.Path.pref ~org:"Example Studio" ~app:"Island Builder" in
+  Filename.concat directory file
+```
+
+Call both functions on the main thread. They need no SDL context. Use OCaml's standard library to
+read and write ordinary files.
+
 ## Use file and memory streams
 
 A stream reads or writes bytes. Use `Io.seek` to change the byte position in a seekable stream.

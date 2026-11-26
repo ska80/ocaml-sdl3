@@ -98,6 +98,29 @@ module Snapshot = struct
     Fun.protect ~finally:(fun () -> release snapshot) (fun () -> f snapshot)
 end
 
+module Path = struct
+  external base : unit -> string = "osdl_base_path"
+
+  external pref_raw : org:string -> app:string -> Snapshot.t -> string
+    = "osdl_pref_path"
+
+  let valid_name name =
+    String.is_valid_utf_8 name && name <> "." && name <> ".."
+    && not
+         (String.exists
+            (function
+              | '\000' | '/' | '\\' | ':' -> true
+              | _ -> false)
+            name)
+
+  let pref ~org ~app =
+    if app = "" then invalid_arg "The application name must not be empty";
+    if not (valid_name org && valid_name app) then
+      invalid_arg
+        "Use UTF-8 names, not paths, for the organization and application";
+    Snapshot.read (pref_raw ~org ~app)
+end
+
 module Color = struct
   type t = { r : int; g : int; b : int; a : int }
 
@@ -151,48 +174,6 @@ module Display = struct
 
   let fullscreen_modes context id =
     Snapshot.read (fullscreen_modes_raw context id)
-end
-
-module Window = struct
-  type t
-  type id = int32
-
-  type flag =
-    | Fullscreen
-    | Hidden
-    | Resizable
-    | Borderless
-    | High_pixel_density
-
-  let id_to_int32 id = id
-
-  external create :
-    ?flags:flag list -> context -> title:string -> w:int -> h:int -> t
-    = "osdl_window_create"
-
-  external destroy : t -> unit = "osdl_window_destroy"
-  external id : t -> id = "osdl_window_id"
-  external title : t -> string = "osdl_window_title"
-  external size : t -> int * int = "osdl_window_size"
-  external size_in_pixels : t -> int * int = "osdl_window_size_in_pixels"
-  external position : t -> int * int = "osdl_window_position"
-  external display : t -> Display.id = "osdl_window_display"
-  external display_scale : t -> float = "osdl_window_display_scale"
-  external set_title : t -> string -> unit = "osdl_window_set_title"
-  external set_size : t -> w:int -> h:int -> unit = "osdl_window_set_size"
-
-  external set_position : t -> x:int -> y:int -> unit
-    = "osdl_window_set_position"
-
-  external set_resizable : t -> bool -> unit = "osdl_window_set_resizable"
-  external set_fullscreen : t -> bool -> unit = "osdl_window_set_fullscreen"
-  external set_mouse_grab : t -> bool -> unit = "osdl_window_set_mouse_grab"
-  external mouse_grab : t -> bool = "osdl_window_mouse_grab"
-  external show : t -> unit = "osdl_window_show"
-  external hide : t -> unit = "osdl_window_hide"
-  external minimize : t -> unit = "osdl_window_minimize"
-  external maximize : t -> unit = "osdl_window_maximize"
-  external restore : t -> unit = "osdl_window_restore"
 end
 
 module Blend_mode = struct
@@ -311,6 +292,56 @@ module Surface = struct
       (fun () ->
         lock_pixels view;
         f view)
+end
+
+module Window = struct
+  type t
+  type id = int32
+
+  type flag =
+    | Fullscreen
+    | Hidden
+    | Resizable
+    | Borderless
+    | High_pixel_density
+
+  let id_to_int32 id = id
+
+  external create :
+    ?flags:flag list -> context -> title:string -> w:int -> h:int -> t
+    = "osdl_window_create"
+
+  external destroy : t -> unit = "osdl_window_destroy"
+  external id : t -> id = "osdl_window_id"
+  external title : t -> string = "osdl_window_title"
+  external size : t -> int * int = "osdl_window_size"
+  external size_in_pixels : t -> int * int = "osdl_window_size_in_pixels"
+  external position : t -> int * int = "osdl_window_position"
+  external display : t -> Display.id = "osdl_window_display"
+  external display_scale : t -> float = "osdl_window_display_scale"
+  external set_title : t -> string -> unit = "osdl_window_set_title"
+  external set_icon : t -> Surface.t -> unit = "osdl_window_set_icon"
+  external set_size : t -> w:int -> h:int -> unit = "osdl_window_set_size"
+
+  external set_minimum_size : t -> w:int -> h:int -> unit
+    = "osdl_window_set_minimum_size"
+
+  external set_position : t -> x:int -> y:int -> unit
+    = "osdl_window_set_position"
+
+  external set_resizable : t -> bool -> unit = "osdl_window_set_resizable"
+
+  external set_fullscreen_mode : t -> Display.mode option -> unit
+    = "osdl_window_set_fullscreen_mode"
+
+  external set_fullscreen : t -> bool -> unit = "osdl_window_set_fullscreen"
+  external set_mouse_grab : t -> bool -> unit = "osdl_window_set_mouse_grab"
+  external mouse_grab : t -> bool = "osdl_window_mouse_grab"
+  external show : t -> unit = "osdl_window_show"
+  external hide : t -> unit = "osdl_window_hide"
+  external minimize : t -> unit = "osdl_window_minimize"
+  external maximize : t -> unit = "osdl_window_maximize"
+  external restore : t -> unit = "osdl_window_restore"
 end
 
 type +'access texture
@@ -1013,7 +1044,56 @@ module Gamepad = struct
   external axis : t -> axis -> int = "osdl_gamepad_axis"
   external button : t -> button -> bool = "osdl_gamepad_button"
 
+  external rumble : t -> low:int -> high:int -> duration_ms:int -> unit
+    = "osdl_gamepad_rumble"
+
   let list context = Snapshot.read (list_raw context)
+end
+
+module Audio = struct
+  type playback
+  type recording
+  type 'direction stream
+  type t = playback stream
+  type format = U8 | S16 | S32 | F32
+  type spec = { format : format; channels : int; frequency : int }
+  type buffer = byte_buffer
+
+  module Device = struct
+    type 'direction id = int32
+
+    external playback_snapshot : context -> Snapshot.t -> playback id list
+      = "osdl_audio_playback_devices"
+
+    external recording_snapshot : context -> Snapshot.t -> recording id list
+      = "osdl_audio_recording_devices"
+
+    let list_playback context = Snapshot.read (playback_snapshot context)
+    let list_recording context = Snapshot.read (recording_snapshot context)
+
+    external name : context -> 'direction id -> string
+      = "osdl_audio_device_name"
+  end
+
+  external open_playback : ?device:playback Device.id -> context -> spec -> t
+    = "osdl_audio_open_playback"
+
+  external open_recording :
+    ?device:recording Device.id -> context -> spec -> recording stream
+    = "osdl_audio_open_recording"
+
+  external close : 'direction stream -> unit = "osdl_audio_close"
+  external pause : 'direction stream -> unit = "osdl_audio_pause"
+  external resume : 'direction stream -> unit = "osdl_audio_resume"
+  external clear : 'direction stream -> unit = "osdl_audio_clear"
+  external flush : 'direction stream -> unit = "osdl_audio_flush"
+  external queue : t -> buffer -> unit = "osdl_audio_queue"
+  external queued_bytes : t -> int = "osdl_audio_queued_bytes"
+
+  external available_bytes : recording stream -> int
+    = "osdl_audio_available_bytes"
+
+  external read : recording stream -> buffer -> int = "osdl_audio_read"
 end
 
 module Event = struct
@@ -1054,6 +1134,12 @@ module Event = struct
     | Position of { x : float; y : float }
 
   type render_change = Targets_reset | Device_reset | Device_lost
+
+  type audio_device =
+    | Playback of Audio.playback Audio.Device.id
+    | Recording of Audio.recording Audio.Device.id
+
+  type audio_change = Added | Removed
 
   type kind =
     | Quit
@@ -1116,10 +1202,14 @@ module Event = struct
     | Drop of { window : Window.id option; change : drop_change }
     | Other of int32
     | Render of { window : Window.id option; change : render_change }
+    | Audio_device of { device : audio_device; change : audio_change }
 
   type t = { timestamp_ns : int64; kind : kind }
 
   external poll : context -> t option = "osdl_event_poll"
+
+  external wait_timeout : context -> timeout_ms:int -> t option
+    = "osdl_event_wait_timeout"
 
   type coordinates = { x : float; y : float; dx : float; dy : float }
 
@@ -1171,52 +1261,6 @@ module Event = struct
     | _ ->
         ignore (convert_point renderer ~window:None ~x:0. ~y:0.);
         event
-end
-
-module Audio = struct
-  type playback
-  type recording
-  type 'direction stream
-  type t = playback stream
-  type format = U8 | S16 | S32 | F32
-  type spec = { format : format; channels : int; frequency : int }
-  type buffer = byte_buffer
-
-  module Device = struct
-    type 'direction id = int32
-
-    external playback_snapshot : context -> Snapshot.t -> playback id list
-      = "osdl_audio_playback_devices"
-
-    external recording_snapshot : context -> Snapshot.t -> recording id list
-      = "osdl_audio_recording_devices"
-
-    let list_playback context = Snapshot.read (playback_snapshot context)
-    let list_recording context = Snapshot.read (recording_snapshot context)
-
-    external name : context -> 'direction id -> string
-      = "osdl_audio_device_name"
-  end
-
-  external open_playback : ?device:playback Device.id -> context -> spec -> t
-    = "osdl_audio_open_playback"
-
-  external open_recording :
-    ?device:recording Device.id -> context -> spec -> recording stream
-    = "osdl_audio_open_recording"
-
-  external close : 'direction stream -> unit = "osdl_audio_close"
-  external pause : 'direction stream -> unit = "osdl_audio_pause"
-  external resume : 'direction stream -> unit = "osdl_audio_resume"
-  external clear : 'direction stream -> unit = "osdl_audio_clear"
-  external flush : 'direction stream -> unit = "osdl_audio_flush"
-  external queue : t -> buffer -> unit = "osdl_audio_queue"
-  external queued_bytes : t -> int = "osdl_audio_queued_bytes"
-
-  external available_bytes : recording stream -> int
-    = "osdl_audio_available_bytes"
-
-  external read : recording stream -> buffer -> int = "osdl_audio_read"
 end
 
 module Timer = struct

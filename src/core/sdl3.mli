@@ -40,6 +40,24 @@ val with_init : subsystem list -> (context -> 'a) -> 'a
 (** Start SDL and call [quit] when the function exits. Close all resources
     inside the function, including when an exception occurs. *)
 
+module Path : sig
+  (** Platform directories for application assets and user data. Call on the
+      main thread. No SDL context is needed. *)
+
+  val base : unit -> string
+  (** Copy SDL's base directory for application assets. It can differ from the
+      current working directory. The UTF-8 path ends with a separator. Raise
+      [Error] if SDL cannot find a base directory. *)
+
+  val pref : org:string -> app:string -> string
+  (** Find the user directory for saves and configuration. SDL creates it if
+      needed. The UTF-8 path ends with a separator. Use stable names with
+      letters, numbers, and spaces for portability. An empty [org] omits the
+      organization directory. [app] must not be empty. Both names must be valid
+      UTF-8. Do not use NUL, slashes, backslashes, colons, or the names ["."]
+      and [".."]. Raise [Error] if SDL cannot provide the directory. *)
+end
+
 module Io : sig
   (** File and memory streams. The caller owns each stream and closes it with
       [close]. Use any live SDL context. No subsystem is needed. *)
@@ -165,61 +183,6 @@ module Display : sig
 
   val fullscreen_modes : context -> id -> mode list
   (** Copy the fullscreen modes in the order SDL reports them. *)
-end
-
-module Window : sig
-  type t
-  type id
-
-  type flag =
-    | Fullscreen
-    | Hidden
-    | Resizable
-    | Borderless
-    | High_pixel_density
-
-  val create :
-    ?flags:flag list -> context -> title:string -> w:int -> h:int -> t
-
-  val destroy : t -> unit
-  val id : t -> id
-  val id_to_int32 : id -> int32
-  val title : t -> string
-  val size : t -> int * int
-  val size_in_pixels : t -> int * int
-  val position : t -> int * int
-  val display : t -> Display.id
-
-  val display_scale : t -> float
-  (** The suggested scale for content in this window, relative to its pixel
-      size. This can differ from the display's content scale. *)
-
-  val set_title : t -> string -> unit
-  val set_size : t -> w:int -> h:int -> unit
-
-  val set_position : t -> x:int -> y:int -> unit
-  (** Request a move to the given screen coordinates. The window manager can
-      apply the move later, change the coordinates, or refuse the request. *)
-
-  val set_resizable : t -> bool -> unit
-  val set_fullscreen : t -> bool -> unit
-
-  val set_mouse_grab : t -> bool -> unit
-  (** Confine the pointer to this window while the window has input focus. Set
-      this to [false] to release the grab. Unlike [Mouse.capture], a grab keeps
-      the pointer inside the window. *)
-
-  val mouse_grab : t -> bool
-  (** Whether SDL reports an active mouse grab for this window. *)
-
-  val show : t -> unit
-  val hide : t -> unit
-  val minimize : t -> unit
-
-  val maximize : t -> unit
-  (** Request to maximize a resizable window. *)
-
-  val restore : t -> unit
 end
 
 module Blend_mode : sig
@@ -410,6 +373,82 @@ module Surface : sig
       During the callback, do not lock, destroy, or use the surface for a copy,
       save, or draw. Use [Locked] to access the pixels. You can still call
       [size] and [format]. *)
+end
+
+module Window : sig
+  type t
+  type id
+
+  type flag =
+    | Fullscreen
+    | Hidden
+    | Resizable
+    | Borderless
+    | High_pixel_density
+
+  val create :
+    ?flags:flag list -> context -> title:string -> w:int -> h:int -> t
+
+  val destroy : t -> unit
+  val id : t -> id
+  val id_to_int32 : id -> int32
+  val title : t -> string
+  val size : t -> int * int
+  val size_in_pixels : t -> int * int
+  val position : t -> int * int
+  val display : t -> Display.id
+
+  val display_scale : t -> float
+  (** The suggested scale for content in this window, relative to its pixel
+      size. This can differ from the display's content scale. *)
+
+  val set_title : t -> string -> unit
+
+  val set_icon : t -> Surface.t -> unit
+  (** Copy an unlocked surface for the window icon. You can destroy the source
+      after the call. Some windowing systems do not support icons. *)
+
+  val set_size : t -> w:int -> h:int -> unit
+
+  val set_minimum_size : t -> w:int -> h:int -> unit
+  (** Set the minimum client area size in window coordinates. Each dimension
+      must be nonnegative. Zero removes the limit for that dimension. *)
+
+  val set_position : t -> x:int -> y:int -> unit
+  (** Request a move to the given screen coordinates. The window manager can
+      apply the move later, change the coordinates, or refuse the request. *)
+
+  val set_resizable : t -> bool -> unit
+
+  val set_fullscreen_mode : t -> Display.mode option -> unit
+  (** Select a mode for exclusive fullscreen. Use a mode from
+      [Display.fullscreen_modes] on the window's current display. All four
+      fields must match. If several modes match, use the first in SDL's list.
+      Raise [Invalid_argument] if no mode matches. Use [None] for borderless
+      fullscreen at the desktop mode.
+
+      This call does not enter fullscreen. Use [set_fullscreen] to do that. If
+      the window is already fullscreen, the mode change can take effect later.
+  *)
+
+  val set_fullscreen : t -> bool -> unit
+
+  val set_mouse_grab : t -> bool -> unit
+  (** Confine the pointer to this window while the window has input focus. Set
+      this to [false] to release the grab. Unlike [Mouse.capture], a grab keeps
+      the pointer inside the window. *)
+
+  val mouse_grab : t -> bool
+  (** Whether SDL reports an active mouse grab for this window. *)
+
+  val show : t -> unit
+  val hide : t -> unit
+  val minimize : t -> unit
+
+  val maximize : t -> unit
+  (** Request to maximize a resizable window. *)
+
+  val restore : t -> unit
 end
 
 type +'access texture
@@ -1495,6 +1534,80 @@ module Gamepad : sig
   (** Read a value from [-32768] to [32767]. Triggers start at [0]. *)
 
   val button : t -> button -> bool
+
+  val rumble : t -> low:int -> high:int -> duration_ms:int -> unit
+  (** Set vibration on the low and high frequency motors. Each intensity is in
+      [0, 65535]. A new effect replaces the old one. Set both intensities to
+      zero to stop. Otherwise, use a positive duration in milliseconds. The
+      duration must fit an unsigned 32-bit integer. SDL can shorten long
+      effects. Keep reading events so SDL can update the effect. Raise [Error]
+      if SDL cannot start the effect. *)
+end
+
+module Audio : sig
+  (** Start SDL with [Audio] to list devices and open streams. *)
+
+  type playback
+  type recording
+  type 'direction stream
+  type t = playback stream
+  type format = U8 | S16 | S32 | F32
+
+  type spec = { format : format; channels : int; frequency : int }
+  (** A frame contains one sample per channel. [channels] is between 1 and 8.
+      [frequency] is the number of frames per second. Multi-byte samples use
+      native byte order. *)
+
+  type buffer = byte_buffer
+
+  module Device : sig
+    type 'direction id
+    (** A device ID can become invalid if the device disconnects. Do not save
+        IDs for later runs. *)
+
+    val list_playback : context -> playback id list
+    val list_recording : context -> recording id list
+    val name : context -> 'direction id -> string
+  end
+
+  val open_playback : ?device:playback Device.id -> context -> spec -> t
+  (** Open a paused playback stream. The device defaults to the system's
+      playback device. [spec] describes the samples that you queue. *)
+
+  val open_recording :
+    ?device:recording Device.id -> context -> spec -> recording stream
+  (** Open a paused recording stream. The device defaults to the system's
+      recording device. SDL converts the recorded samples to [spec]. *)
+
+  val close : 'direction stream -> unit
+  (** Close the stream and its device connection. *)
+
+  val pause : 'direction stream -> unit
+  val resume : 'direction stream -> unit
+
+  val clear : 'direction stream -> unit
+  (** Drop pending data. *)
+
+  val flush : 'direction stream -> unit
+  (** Tell SDL to finish converting any buffered input. Use this at the end of
+      playback, or after pausing a recording to read the remaining data. *)
+
+  val queued_bytes : t -> int
+
+  val queue : t -> buffer -> unit
+  (** Copy samples into the stream. Use [Bigarray.Array1.sub] to queue part of a
+      buffer without a slice copy. *)
+
+  val available_bytes : recording stream -> int
+  (** Number of converted bytes ready to read. SDL can add more before the next
+      call to [read]. *)
+
+  val read : recording stream -> buffer -> int
+  (** Copy available data into the buffer without waiting for more samples.
+      Return the number of bytes written in whole frames, or zero if none fit or
+      none are ready. Leave the rest of the buffer unchanged. You can pass a
+      bigarray slice. Its address must be a multiple of the sample size in
+      bytes. *)
 end
 
 module Event : sig
@@ -1542,6 +1655,12 @@ module Event : sig
     | Device_reset  (** Destroy and recreate all textures for the renderer. *)
     | Device_lost
         (** Stop drawing with this renderer. SDL cannot recover it. *)
+
+  type audio_device =
+    | Playback of Audio.playback Audio.Device.id
+    | Recording of Audio.recording Audio.Device.id
+
+  type audio_change = Added | Removed
 
   type kind =
     | Quit
@@ -1609,12 +1728,25 @@ module Event : sig
     | Render of { window : Window.id option; change : render_change }
         (** [window] is [None] when SDL reports no window ID. The binding does
             not recreate or invalidate handles when it reports this event. *)
+    | Audio_device of { device : audio_device; change : audio_change }
+        (** SDL sends [Added] for devices it finds at startup too. It can also
+            send [Removed] for an open connection, whose ID is not in the device
+            lists. Refresh the lists rather than opening a removed ID. These
+            events do not close or invalidate stream handles. *)
 
   type t = { timestamp_ns : int64; kind : kind }
 
   val poll : context -> t option
   (** Remove the next event from the queue. [None] means the queue is empty.
       Unbound event types keep their SDL type number in [Other]. *)
+
+  val wait_timeout : context -> timeout_ms:int -> t option
+  (** Wait on the main thread and remove the next event from the same queue as
+      [poll]. Return [None] if the wait ends without an event. Use [Video],
+      [Audio], or another subsystem that starts [Events], or start [Events]
+      directly. The timeout must be in [0, 2147483647] milliseconds. Zero is a
+      poll. Other OCaml threads can run during a positive wait. System
+      scheduling can make the wait longer than requested. *)
 
   val to_render_coordinates : Renderer.t -> t -> t
   (** Convert an event from the renderer's window to render units on the main
@@ -1626,72 +1758,6 @@ module Event : sig
 
       Return other events unchanged, including events with no matching window.
       Pass the original event, not the result of a previous conversion. *)
-end
-
-module Audio : sig
-  (** Start SDL with [Audio] to list devices and open streams. *)
-
-  type playback
-  type recording
-  type 'direction stream
-  type t = playback stream
-  type format = U8 | S16 | S32 | F32
-
-  type spec = { format : format; channels : int; frequency : int }
-  (** A frame contains one sample per channel. [channels] is between 1 and 8.
-      [frequency] is the number of frames per second. Multi-byte samples use
-      native byte order. *)
-
-  type buffer = byte_buffer
-
-  module Device : sig
-    type 'direction id
-    (** A device ID can become invalid if the device disconnects. Do not save
-        IDs for later runs. *)
-
-    val list_playback : context -> playback id list
-    val list_recording : context -> recording id list
-    val name : context -> 'direction id -> string
-  end
-
-  val open_playback : ?device:playback Device.id -> context -> spec -> t
-  (** Open a paused playback stream. The device defaults to the system's
-      playback device. [spec] describes the samples that you queue. *)
-
-  val open_recording :
-    ?device:recording Device.id -> context -> spec -> recording stream
-  (** Open a paused recording stream. The device defaults to the system's
-      recording device. SDL converts the recorded samples to [spec]. *)
-
-  val close : 'direction stream -> unit
-  (** Close the stream and its device connection. *)
-
-  val pause : 'direction stream -> unit
-  val resume : 'direction stream -> unit
-
-  val clear : 'direction stream -> unit
-  (** Drop pending data. *)
-
-  val flush : 'direction stream -> unit
-  (** Tell SDL to finish converting any buffered input. Use this at the end of
-      playback, or after pausing a recording to read the remaining data. *)
-
-  val queued_bytes : t -> int
-
-  val queue : t -> buffer -> unit
-  (** Copy samples into the stream. Use [Bigarray.Array1.sub] to queue part of a
-      buffer without a slice copy. *)
-
-  val available_bytes : recording stream -> int
-  (** Number of converted bytes ready to read. SDL can add more before the next
-      call to [read]. *)
-
-  val read : recording stream -> buffer -> int
-  (** Copy available data into the buffer without waiting for more samples.
-      Return the number of bytes written in whole frames, or zero if none fit or
-      none are ready. Leave the rest of the buffer unchanged. You can pass a
-      bigarray slice. Its address must be a multiple of the sample size in
-      bytes. *)
 end
 
 module Timer : sig

@@ -16,9 +16,11 @@ crossing an SDL callback.
 
 ## Events
 
-Use the existing SDL event queue. Call `Sdl3.Event.poll` on the main thread. The binding copies
-supported event data into OCaml values before it returns. Call application handlers in the order
-that SDL returns events. Do not install an event watch or add a second queue for this dispatch.
+Use the existing SDL event queue. Call `Sdl3.Event.poll` on the main thread. If you have no work
+while the queue is empty, use `Sdl3.Event.wait_timeout` on that thread. Both calls remove events
+from the same queue and copy supported data into OCaml values. Call application handlers in the
+order that SDL returns events. Do not install an event watch or add a second queue for this
+dispatch.
 
 ```ocaml
 let dispatch_events sdl ~limit handle =

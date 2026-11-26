@@ -70,8 +70,8 @@ CAMLprim value osdl_quit(value context) {
     return Val_unit;
 }
 
-/* Temporary SDL arrays. The private OCaml wrapper creates the owner before
- * calling SDL and frees the array even if copying to OCaml raises. */
+/* Temporary SDL allocations. The private OCaml wrapper creates the owner
+ * before calling SDL and frees the data even if copying to OCaml raises. */
 
 CAMLprim value osdl_snapshot_create(value unit) {
     (void)unit;
@@ -90,6 +90,37 @@ static value osdl_id_list(const Uint32* ids, int count) {
         list = caml_alloc_2(0, id, list);
     }
     CAMLreturn(list);
+}
+
+/* Application and user directories. */
+
+CAMLprim value osdl_base_path(value unit) {
+    (void)unit;
+    osdl_require_thread(main_thread);
+
+    const char* path = SDL_GetBasePath();
+    if (!path) osdl_fail("SDL_GetBasePath");
+    return caml_copy_string(path);
+}
+
+CAMLprim value osdl_pref_path(value org, value app, value snapshot) {
+    CAMLparam3(org, app, snapshot);
+
+    osdl_require_thread(main_thread);
+    const char* organization = osdl_cstring(org);
+    const char* application  = osdl_cstring(app);
+
+#ifdef SDL_PLATFORM_LINUX
+    /* SDL 3.2.0 and 3.4.16 read before an empty environment string here. */
+    const char* data_home = SDL_getenv("XDG_DATA_HOME");
+    const char* root      = data_home ? data_home : SDL_getenv("HOME");
+    if (root && !*root)
+        osdl_raise_error("SDL_GetPrefPath: Set a nonempty XDG_DATA_HOME or unset it and set HOME");
+#endif
+
+    char* path = SDL_GetPrefPath(organization, application);
+    osdl_publish(snapshot, path, "SDL_GetPrefPath");
+    CAMLreturn(caml_copy_string(path));
 }
 
 /* Displays. */
@@ -269,9 +300,25 @@ CAMLprim value osdl_window_set_title(value window, value title) {
     return Val_unit;
 }
 
+CAMLprim value osdl_window_set_icon(value window, value surface) {
+    SDL_Window*  ptr  = osdl_live(window);
+    SDL_Surface* icon = osdl_unlocked_surface(surface);
+
+    osdl_check(SDL_SetWindowIcon(ptr, icon), "SDL_SetWindowIcon");
+    return Val_unit;
+}
+
 CAMLprim value osdl_window_set_size(value window, value w, value h) {
     osdl_check(SDL_SetWindowSize(osdl_live(window), osdl_positive_int(w), osdl_positive_int(h)),
                "SDL_SetWindowSize");
+    return Val_unit;
+}
+
+CAMLprim value osdl_window_set_minimum_size(value window, value w, value h) {
+    SDL_Window* ptr   = osdl_live(window);
+    int         width = osdl_nonnegative_int(w), height = osdl_nonnegative_int(h);
+
+    osdl_check(SDL_SetWindowMinimumSize(ptr, width, height), "SDL_SetWindowMinimumSize");
     return Val_unit;
 }
 
@@ -294,6 +341,41 @@ CAMLprim value osdl_window_set_resizable(value window, value enabled) {
     osdl_check(SDL_SetWindowResizable(osdl_live(window), Bool_val(enabled)),
                "SDL_SetWindowResizable");
     return Val_unit;
+}
+
+CAMLprim value osdl_window_set_fullscreen_mode(value window, value mode) {
+    SDL_Window* ptr = osdl_live(window);
+    if (Is_none(mode)) {
+        osdl_check(SDL_SetWindowFullscreenMode(ptr, NULL), "SDL_SetWindowFullscreenMode");
+        return Val_unit;
+    }
+
+    /* Sdl3.Display.mode is a snapshot, not a native mode pointer. */
+    value  requested = Some_val(mode);
+    int    width     = osdl_positive_int(Field(requested, 0));
+    int    height    = osdl_positive_int(Field(requested, 1));
+    double density   = Double_val(Field(requested, 2));
+    double rate      = Double_val(Field(requested, 3));
+
+    SDL_DisplayID display = SDL_GetDisplayForWindow(ptr);
+    if (!display) osdl_fail("SDL_GetDisplayForWindow");
+
+    int               count;
+    SDL_DisplayMode** modes = SDL_GetFullscreenDisplayModes(display, &count);
+    if (!modes) osdl_fail("SDL_GetFullscreenDisplayModes");
+
+    for (int i = 0; i < count; ++i) {
+        const SDL_DisplayMode* candidate = modes[i];
+        if (candidate->w == width && candidate->h == height &&
+            candidate->pixel_density == density && candidate->refresh_rate == rate) {
+            bool ok = SDL_SetWindowFullscreenMode(ptr, candidate);
+            SDL_free(modes);
+            osdl_check(ok, "SDL_SetWindowFullscreenMode");
+            return Val_unit;
+        }
+    }
+    SDL_free(modes);
+    caml_invalid_argument("Choose a fullscreen mode from the window's display");
 }
 
 CAMLprim value osdl_window_set_fullscreen(value window, value fullscreen) {
@@ -2927,6 +3009,23 @@ CAMLprim value osdl_gamepad_name(value gamepad) {
     const char* name = SDL_GetGamepadName(osdl_live(gamepad));
     if (!name) osdl_fail("SDL_GetGamepadName");
     return caml_copy_string(name);
+}
+
+CAMLprim value osdl_gamepad_rumble(value gamepad, value low, value high, value duration_ms) {
+    SDL_Gamepad* pad        = osdl_live(gamepad);
+    intnat       low_force  = Long_val(low);
+    intnat       high_force = Long_val(high);
+    int64_t      duration   = Long_val(duration_ms);
+    if (low_force < 0 || low_force > UINT16_MAX || high_force < 0 || high_force > UINT16_MAX)
+        caml_invalid_argument("Rumble intensities must be in [0, 65535]");
+    if (duration < 0 || duration > UINT32_MAX)
+        caml_invalid_argument("Rumble duration must be in [0, 4294967295] milliseconds");
+    if (!duration && (low_force || high_force))
+        caml_invalid_argument("Use a positive duration to start rumble");
+
+    osdl_check(SDL_RumbleGamepad(pad, (Uint16)low_force, (Uint16)high_force, (Uint32)duration),
+               "SDL_RumbleGamepad");
+    return Val_unit;
 }
 
 /* Audio devices and queued streams. */

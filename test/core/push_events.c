@@ -8,6 +8,20 @@ static void push(SDL_Event event) {
     if (!SDL_PushEvent(&event)) caml_failwith(SDL_GetError());
 }
 
+CAMLprim value test_set_data_home(value directory) {
+#ifdef SDL_PLATFORM_LINUX
+    SDL_Environment* env  = SDL_GetEnvironment();
+    const char*      path = Is_none(directory) ? NULL : String_val(Some_val(directory));
+    bool             ok   = path ? SDL_SetEnvironmentVariable(env, "XDG_DATA_HOME", path, true)
+                                 : SDL_UnsetEnvironmentVariable(env, "XDG_DATA_HOME");
+    if (!ok) caml_failwith(SDL_GetError());
+    return Val_true;
+#else
+    (void)directory;
+    return Val_false;
+#endif
+}
+
 /* The test controls the event queue on the dummy video driver. */
 CAMLprim value test_push_events(value window) {
     SDL_WindowID id = (Uint32)Int32_val(window);
@@ -102,6 +116,35 @@ CAMLprim value test_push_events(value window) {
     push((SDL_Event){.type = SDL_EVENT_USER});
     push((SDL_Event){.type = SDL_EVENT_QUIT});
 
+    return Val_unit;
+}
+
+/* This fixture can also push from an OCaml worker thread. */
+CAMLprim value test_push_wait_events(value window) {
+    push((SDL_Event){
+        .text = {.type      = SDL_EVENT_TEXT_INPUT,
+                 .timestamp = UINT64_C(0x123456789abc0000),
+                 .windowID  = (SDL_WindowID)Int32_val(window),
+                 .text      = "Wait \xc3\xa9"}
+    });
+    push((SDL_Event){.type = SDL_EVENT_QUIT});
+    return Val_unit;
+}
+
+CAMLprim value test_push_audio_events(value playback, value recording) {
+    const SDL_AudioDeviceID devices[] = {(SDL_AudioDeviceID)Int32_val(playback),
+                                         (SDL_AudioDeviceID)Int32_val(recording)};
+    SDL_PumpEvents();
+    SDL_FlushEvents(SDL_EVENT_FIRST, SDL_EVENT_LAST);
+    for (unsigned int i = 0; i < 4; ++i) {
+        SDL_EventType type = i < 2 ? SDL_EVENT_AUDIO_DEVICE_ADDED : SDL_EVENT_AUDIO_DEVICE_REMOVED;
+        push((SDL_Event){
+            .adevice = {.type      = type,
+                        .timestamp = UINT64_C(0xfedcba9876543210) + i,
+                        .which     = devices[i % 2],
+                        .recording = i % 2 != 0}
+        });
+    }
     return Val_unit;
 }
 
@@ -212,9 +255,21 @@ CAMLprim value test_cursor_is_default(value unit) {
     return Val_bool(SDL_GetCursor() == SDL_GetDefaultCursor());
 }
 
-CAMLprim value test_attach_gamepad(value unit) {
-    (void)unit;
+static Uint16 rumble_low, rumble_high;
 
+static bool SDLCALL record_rumble(void* userdata, Uint16 low, Uint16 high) {
+    (void)userdata;
+    rumble_low  = low;
+    rumble_high = high;
+    return true;
+}
+
+CAMLprim value test_gamepad_rumble_state(value unit) {
+    (void)unit;
+    return caml_alloc_2(0, Val_int(rumble_low), Val_int(rumble_high));
+}
+
+CAMLprim value test_attach_gamepad(value rumble) {
     SDL_VirtualJoystickDesc desc;
     SDL_INIT_INTERFACE(&desc);
     desc.type        = SDL_JOYSTICK_TYPE_GAMEPAD;
@@ -223,6 +278,7 @@ CAMLprim value test_attach_gamepad(value unit) {
     desc.axis_mask   = 1u << SDL_GAMEPAD_AXIS_LEFTX;
     desc.button_mask = (1u << SDL_GAMEPAD_BUTTON_SOUTH) | (1u << SDL_GAMEPAD_BUTTON_LEFT_PADDLE2);
     desc.name        = "OCaml SDL test gamepad";
+    desc.Rumble      = Bool_val(rumble) ? record_rumble : NULL;
 
     SDL_JoystickID id = SDL_AttachVirtualJoystick(&desc);
     if (!id) caml_failwith(SDL_GetError());
