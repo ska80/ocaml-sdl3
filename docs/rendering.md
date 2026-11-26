@@ -74,5 +74,5 @@ if you only need copies of the whole texture at its original size.
 
 ## Bunnymark
 
-The [Bunnymark example](../examples/bunnymark/README.md) moves many bunnies and draws them with
-`Texture.draw_sprites`. It displays the frame rate.
+The [Bunnymark example](../examples/bunnymark/README.md) adds each bunny to one `Sprite_batch`.
+It updates their positions in place and displays the frame rate.

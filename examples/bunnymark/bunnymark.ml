@@ -11,34 +11,36 @@ let bunnies_per_frame = 100
 
 module Swarm = struct
   type t = {
-    positions : Float.Array.t;
+    batch : Sprite_batch.t;
     velocities : Float.Array.t;
-    tints : Color.t array;
+    src : Rect.t;
+    w : float;
+    h : float;
     rng : Random.State.t;
-    mutable count : int;
   }
 
-  let create () =
+  let create ~w ~h =
     {
-      positions = Float.Array.make (2 * max_bunnies) 0.;
+      batch = Sprite_batch.create ~capacity:max_bunnies;
       velocities = Float.Array.make (2 * max_bunnies) 0.;
-      tints = Array.make max_bunnies (Color.rgb 255 255 255);
+      src = Rect.make ~x:0 ~y:0 ~w:(int_of_float w) ~h:(int_of_float h);
+      w;
+      h;
       rng = Random.State.make [| 42 |];
-      count = 0;
     }
 
+  let count t = Sprite_batch.length t.batch
+
   let add t ~x ~y =
-    let i = 2 * t.count in
+    let i = 2 * count t in
     let speed () = float_of_int (Random.State.int t.rng 501 - 250) in
-    Float.Array.set t.positions i x;
-    Float.Array.set t.positions (i + 1) y;
     Float.Array.set t.velocities i (speed ());
     Float.Array.set t.velocities (i + 1) (speed ());
     let r = 50 + Random.State.int t.rng 191 in
     let g = 80 + Random.State.int t.rng 161 in
     let b = 100 + Random.State.int t.rng 141 in
-    t.tints.(t.count) <- Color.rgb r g b;
-    t.count <- t.count + 1
+    Sprite_batch.add ~tint:(Color.rgb r g b) t.batch ~src:t.src ~x ~y ~w:t.w
+      ~h:t.h
 
   let[@inline always] move_axis positions velocities i edge dt =
     let speed = Float.Array.unsafe_get velocities i in
@@ -52,16 +54,15 @@ module Swarm = struct
     else Float.Array.unsafe_set positions i next
 
   let move t ~right ~bottom ~dt =
-    let { positions; velocities; count; _ } = t in
+    let positions = Sprite_batch.positions t.batch in
+    let velocities = t.velocities in
     (* The live bunnies occupy a prefix of both arrays. *)
-    for i = 0 to count - 1 do
+    for i = 0 to count t - 1 do
       move_axis positions velocities (2 * i) right dt;
       move_axis positions velocities ((2 * i) + 1) bottom dt
     done
 
-  let draw t renderer texture =
-    Texture.draw_sprites renderer texture ~positions:t.positions ~tints:t.tints
-      ~count:t.count
+  let draw t renderer texture = Sprite_batch.draw renderer texture t.batch
 end
 
 type input = {
@@ -102,8 +103,8 @@ let controls = "Hold left mouse to add bunnies | P to pause"
 let seconds () = Int64.to_float (Timer.ticks_ns ()) *. 1e-9
 
 let play sdl window renderer texture ~initial ~frame_limit =
-  let swarm = Swarm.create () in
   let sprite_w, sprite_h = Texture.size texture in
+  let swarm = Swarm.create ~w:sprite_w ~h:sprite_h in
   let right = float_of_int width -. sprite_w in
   let bottom = float_of_int height -. sprite_h in
   for _ = 1 to initial do
@@ -122,7 +123,7 @@ let play sdl window renderer texture ~initial ~frame_limit =
       (if input.held then
          let x = max 0. (min right input.x) in
          let y = max 0. (min bottom input.y) in
-         let to_add = min bunnies_per_frame (max_bunnies - swarm.count) in
+         let to_add = min bunnies_per_frame (max_bunnies - Swarm.count swarm) in
          for _ = 1 to to_add do
            Swarm.add swarm ~x ~y
          done);
@@ -138,7 +139,7 @@ let play sdl window renderer texture ~initial ~frame_limit =
         let status = if input.paused then " (paused)" else "" in
         Window.set_title window
           (Printf.sprintf "Bunnymark%s | %d bunnies | %.0f FPS | %s" status
-             swarm.count fps controls);
+             (Swarm.count swarm) fps controls);
         loop (frame + 1) now now frame)
       else loop (frame + 1) now report_time report_frame
   in
@@ -146,7 +147,7 @@ let play sdl window renderer texture ~initial ~frame_limit =
   let elapsed = seconds () -. start in
   if frames > 0 && elapsed > 0. then
     Printf.printf "Bunnymark: %d bunnies, %d frames in %.3f s (%.1f FPS)\n%!"
-      swarm.count frames elapsed
+      (Swarm.count swarm) frames elapsed
       (float_of_int frames /. elapsed)
 
 let run ~initial ~frame_limit =

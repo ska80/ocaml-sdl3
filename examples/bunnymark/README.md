@@ -32,9 +32,9 @@ between frames.
 
 ## How it draws
 
-The [example](bunnymark.ml) reuses arrays for positions, speeds, and colors. It sends all bunnies
-in one `Texture.draw_sprites` call. The binding
-[groups the copies into batches](../../docs/rendering.md#draw-in-batches) for SDL. The example does
-not create a rectangle or color for each existing bunny on every frame.
+The [example](bunnymark.ml) creates one [`Sprite_batch`](../../docs/rendering.md#draw-from-a-texture-atlas)
+and adds each bunny once. The batch stores the image region and tint for each bunny. Each frame,
+the example updates the positions in place and draws the same batch. It stores speeds separately
+and does not create new rectangles or colors for existing bunnies.
 
 The [port](bunnymark.LICENSE) and the [bunny image](assets/LICENSE.md) keep their original licenses.
