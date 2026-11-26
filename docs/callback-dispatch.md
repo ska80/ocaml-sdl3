@@ -97,7 +97,7 @@ running. Do not assume this for other hooks without reading the SDL_mixer source
 Run `dune runtest --force test/mixer` for the stop watch tests. They use both mixing to memory and
 the dummy audio driver. They also close watches during device playback.
 
-Source references: [`SDL_events.h`](https://github.com/libsdl-org/SDL/blob/release-3.4.16/include/SDL3/SDL_events.h),
-[`SDL_audio.h`](https://github.com/libsdl-org/SDL/blob/release-3.4.16/include/SDL3/SDL_audio.h),
+Source references: [`SDL_events.h`](https://github.com/libsdl-org/SDL/blob/release-3.4.20/include/SDL3/SDL_events.h),
+[`SDL_audio.h`](https://github.com/libsdl-org/SDL/blob/release-3.4.20/include/SDL3/SDL_audio.h),
 and `TrackStopped` and `MIX_SetTrackStoppedCallback` in SDL_mixer
 [3.2.4](https://github.com/libsdl-org/SDL_mixer/blob/release-3.2.4/src/SDL_mixer.c).

@@ -56,7 +56,7 @@
 - [x] [MIT license](LICENSE) for the bindings.
 - [x] Release metadata for all four opam packages.
 
-The Linux suite passed with the libraries installed in `/usr/local`: SDL 3.4.16, SDL3_image 3.4.6,
+The Linux suite passed with the libraries installed in `/usr/local`: SDL 3.4.20, SDL3_image 3.4.8,
 SDL3_mixer 3.2.4, and SDL3_ttf 3.2.2.
 
 ## Next

@@ -14,8 +14,8 @@ let () =
       (* Keep these in sync with the minimums in the C stubs. *)
       let minimum =
         match package with
-        | "sdl3" -> "3.4.16"
-        | "sdl3-image" -> "3.4.6"
+        | "sdl3" -> "3.4.20"
+        | "sdl3-image" -> "3.4.8"
         | "sdl3-mixer" -> "3.2.4"
         | "sdl3-ttf" -> "3.2.2"
         | _ -> C.die "Unknown SDL pkg-config module: %s" package

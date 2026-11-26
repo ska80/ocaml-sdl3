@@ -2,9 +2,9 @@
 
 #include <SDL3_image/SDL_image.h>
 
-#define OSDL_MIN_IMAGE_VERSION SDL_VERSIONNUM(3, 4, 6)
+#define OSDL_MIN_IMAGE_VERSION SDL_VERSIONNUM(3, 4, 8)
 #if SDL_IMAGE_VERSION < OSDL_MIN_IMAGE_VERSION
-    #error "Use SDL_image 3.4.6 or later to build Sdl3_image"
+    #error "Use SDL_image 3.4.8 or later to build Sdl3_image"
 #endif
 
 CAMLprim value osdl_image_version_error(value unit) {

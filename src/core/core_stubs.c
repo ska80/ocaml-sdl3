@@ -116,7 +116,7 @@ CAMLprim value osdl_pref_path(value org, value app, value snapshot) {
     const char* application  = osdl_cstring(app);
 
 #ifdef SDL_PLATFORM_LINUX
-    /* SDL 3.4.16 reads before an empty environment string here. */
+    /* SDL's Unix path code reads before an empty environment string. */
     const char* data_home = SDL_getenv("XDG_DATA_HOME");
     const char* root      = data_home ? data_home : SDL_getenv("HOME");
     if (root && !*root)
@@ -1558,7 +1558,7 @@ CAMLprim value osdl_renderer_read_pixels(value rect, value renderer) {
         w = target->w;
         h = target->h;
     } else if (SDL_GetRenderWindow(r)) {
-        /* SDL's Vulkan swapchain images lack VK_IMAGE_USAGE_TRANSFER_SRC_BIT. */
+        /* SDL can try to copy pixels even if a Vulkan swapchain lacks transfer-source usage. */
         const char* name = SDL_GetRendererName(r);
         if (name && strcmp(name, "vulkan") == 0)
             osdl_raise_error("SDL_RenderReadPixels: Use a texture target with the Vulkan renderer");

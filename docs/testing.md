@@ -30,8 +30,9 @@ The core tests check base and preference paths. On Linux they create save direct
 temporary directory. They check that a timed wait returns on timeout and wakes for an event from
 another OCaml thread. They also check window size limits and rumble on a virtual gamepad. They read
 startup audio device events and send removal events through the queue. These cases do not need
-physical devices. To test window icons and exclusive fullscreen on a desktop, use a windowing driver
-that supports them.
+physical devices. The dummy driver cannot show window icons or change the user-resizable setting.
+The tests expect an error for both calls. Use a driver with desktop support to test these actions
+and exclusive fullscreen.
 
 Run `dune runtest --force test/surface` to test image copies, transforms, and palette swaps. The
 native and bytecode tests also check pixel row copies, lock cleanup, and upload of an atlas made

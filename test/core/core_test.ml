@@ -319,7 +319,9 @@ let displays context window =
   check (Window.title window = "Core test") "Initial title";
   Window.set_title window "Core test é";
   check (Window.title window = "Core test é") "Changed UTF-8 title";
-  Window.set_resizable window true;
+  (* The dummy driver cannot change the user-resizable setting. *)
+  sdl_error "SDL_SetWindowResizable" (fun () ->
+      Window.set_resizable window true);
   Window.set_position window ~x:7 ~y:9;
   check (Window.position window = (7, 9)) "Window position";
   invalid (fun () -> Window.set_position window ~x:0x2fff_0000 ~y:0);
@@ -1634,7 +1636,7 @@ let () =
     "Base path before SDL init";
   pref_paths ();
   let { major; minor; patch } = version () in
-  check ((major, minor, patch) >= (3, 4, 16)) "Minimum SDL version";
+  check ((major, minor, patch) >= (3, 4, 20)) "Minimum SDL version";
   check (List.mem "software" (Renderer.drivers ())) "Render drivers before init";
   let start = Timer.ticks_ns () in
   Timer.delay_ns 1_000_000L;

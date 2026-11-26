@@ -164,7 +164,7 @@ let animations context =
 
 let () =
   let { major; minor; patch } = Sdl3_image.version () in
-  check ((major, minor, patch) >= (3, 4, 6)) "Minimum SDL_image version";
+  check ((major, minor, patch) >= (3, 4, 8)) "Minimum SDL_image version";
   with_init [] (fun context ->
       stream_images context;
       animations context;

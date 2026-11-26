@@ -89,8 +89,8 @@ You can destroy the target and renderer before the capture. Destroy the capture 
 SDL. Use `Surface.scale` to make a thumbnail. To compare pixels in a test, use `Surface.read_rgba`
 for the same byte order across renderers.
 
-With SDL's `vulkan` renderer, read from a texture target. SDL does not create a Vulkan window buffer
-that readback can copy. A read from that buffer raises `Sdl3.Error`.
+With SDL's `vulkan` renderer, read from a texture target. Not all Vulkan window buffers support
+pixel copies. The binding raises `Sdl3.Error` if you read directly from the window on this renderer.
 
 ## Handle renderer resets
 

@@ -1,4 +1,4 @@
-(** A thin binding for SDL 3.4.16 or later. Load this module on the main thread.
+(** A thin binding for SDL 3.4.20 or later. Load this module on the main thread.
     Except where noted, call the binding on that thread, including all cleanup
     calls. *)
 
@@ -420,6 +420,8 @@ module Window : sig
       apply the move later, change the coordinates, or refuse the request. *)
 
   val set_resizable : t -> bool -> unit
+  (** Allow or prevent the user from resizing the window. Raise [Error] if the
+      video driver does not support this change. *)
 
   val set_fullscreen_mode : t -> Display.mode option -> unit
   (** Select a mode for exclusive fullscreen. Use a mode from

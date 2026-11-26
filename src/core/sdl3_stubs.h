@@ -15,9 +15,9 @@
 #include <string.h>
 
 /* Keep this in sync with the core requirement in config/discover.ml. */
-#define OSDL_MIN_SDL_VERSION SDL_VERSIONNUM(3, 4, 16)
+#define OSDL_MIN_SDL_VERSION SDL_VERSIONNUM(3, 4, 20)
 #if SDL_VERSION < OSDL_MIN_SDL_VERSION
-    #error "Use SDL 3.4.16 or later to build Sdl3"
+    #error "Use SDL 3.4.20 or later to build Sdl3"
 #endif
 
 /* SDL errors. */

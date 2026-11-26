@@ -19,8 +19,8 @@ Use these versions or later at build time and run time. Install only the add-ons
 
 | SDL library | Minimum version |
 | --- | --- |
-| SDL3 | 3.4.16 |
-| SDL3_image | 3.4.6 |
+| SDL3 | 3.4.20 |
+| SDL3_image | 3.4.8 |
 | SDL3_mixer | 3.2.4 |
 | SDL3_ttf | 3.2.2 |
 

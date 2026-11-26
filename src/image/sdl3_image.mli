@@ -1,4 +1,4 @@
-(** A binding for SDL3_image 3.4.6 or later. SDL3_image does not require
+(** A binding for SDL3_image 3.4.8 or later. SDL3_image does not require
     separate initialization. Call these functions on the main thread, except
     [version], which is safe on any thread. *)
 
