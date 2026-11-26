@@ -226,6 +226,12 @@ module Renderer = struct
   type t
   type presentation = Stretch | Letterbox | Overscan | Integer_scale
 
+  type geometry_buffer =
+    (float, Bigarray.float32_elt, Bigarray.c_layout) Bigarray.Array1.t
+
+  type geometry_indices =
+    (int32, Bigarray.int32_elt, Bigarray.c_layout) Bigarray.Array1.t
+
   external create : ?driver:string -> Window.t -> t = "osdl_renderer_create"
   external create_software : Surface.t -> t = "osdl_renderer_create_software"
   external destroy : t -> unit = "osdl_renderer_destroy"
@@ -257,6 +263,15 @@ module Renderer = struct
 
   external draw_line : t -> x1:float -> y1:float -> x2:float -> y2:float -> unit
     = "osdl_renderer_draw_line"
+
+  external draw_geometry :
+    ?texture:'access texture * geometry_buffer ->
+    ?indices:geometry_indices * int ->
+    t ->
+    positions:geometry_buffer ->
+    colors:geometry_buffer ->
+    vertex_count:int ->
+    unit = "osdl_renderer_draw_geometry_byte" "osdl_renderer_draw_geometry"
 
   external present : t -> unit = "osdl_renderer_present"
 end

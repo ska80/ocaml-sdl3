@@ -34,10 +34,10 @@ groups the copies into batches for SDL.
 
 ## Draw from a texture atlas
 
-A texture atlas is one texture that holds several images. Use `Sprite_batch` to draw regions of
-one texture at different sizes, angles, and positions. A batch draws sprites in the order you add
-them. Add background objects first and foreground objects later. The batch does not sort them.
-If you change textures, draw the current batch before you add sprites for the next texture.
+A texture atlas is one texture that holds several images. Use `Sprite_batch` to draw regions of one
+texture at different sizes, angles, and positions. A batch draws sprites in the order you add
+them. Add background objects first and foreground objects later. The batch does not sort them.  If
+you change textures, draw the current batch before you add sprites for the next texture.
 
 Create the batch once. Clear it before you add a new frame of sprites. Keep source rectangles and
 tint colors to reuse them without making a record for each sprite in each frame. The batch stores
@@ -60,22 +60,64 @@ let draw_tiles renderer atlas =
 
 The pivot is the point that the sprite turns around. Its coordinates start at the unrotated
 destination's top-left, not at the source rectangle. The default pivot is the destination's
-center. Flip mirrors the image without changing the pivot. If you only move sprites, edit the
-pairs in `Sprite_batch.positions batch` with `Float.Array.set` and draw the same batch again.
+center. Flip mirrors the image without changing the pivot. If you only move sprites, edit the pairs
+in `Sprite_batch.positions batch` with `Float.Array.set` and draw the same batch again.
 
 To recolor a sprite, call `Sprite_batch.set_tint batch ~index color`. To fade it, call
 `Sprite_batch.set_opacity batch ~index opacity` with a value from 0 to 255. Indices start at zero.
 Both functions keep the draw order and do not rebuild the batch. Do not edit a batch during a draw.
 
 Set the texture's blend mode to `Blend` for transparency. Sprite opacity multiplies the tint's
-alpha. The draw does not change the texture's modulation settings. Use `Nearest` for pixel art.
-If you use `Linear`, pad each region with copies of its edge pixels to avoid sampling a neighbor.
+alpha. The draw does not change the texture's modulation settings. Use `Nearest` for pixel art.  If
+you use `Linear`, pad each region with copies of its edge pixels to avoid sampling a neighbor.
 
 Accelerated renderers receive batches of quads, or four-corner shapes. The software renderer uses
-ordered texture copies instead to keep rotated regions oriented correctly. Use `Texture.draw_sprites`
-if you only need copies of the whole texture at its original size.
+ordered texture copies instead to keep rotated regions oriented correctly. Use
+`Texture.draw_sprites` if you only need copies of the whole texture at its original size.
+
+## Draw custom triangles
+
+Use `Renderer.draw_geometry` when a sprite or rectangle does not fit the shape. SDL draws triangles,
+not whole polygons. Split each polygon into triangles before you pass it to SDL.
+
+A vertex is one corner of a triangle. Store its position as an `x, y` pair and its color as a red,
+green, blue, alpha group. Use flat bigarrays of 32-bit floats. Each color component ranges from 0
+to 1. SDL mixes the vertex colors across each triangle to make a gradient.
+
+Without indices, each group of three vertices forms a triangle. To share vertices, pass a 32-bit
+integer bigarray and an index count. An index is a vertex number that starts at zero.  The following
+example draws two triangles that share two vertices:
+
+```ocaml
+open Sdl3
+open Bigarray
+
+let positions = Array1.of_array float32 c_layout [| 16.; 16.; 144.; 16.; 144.; 80.; 16.; 80. |]
+
+let colors =
+  Array1.of_array float32 c_layout
+    [| 1.; 0.; 0.; 1.; 0.; 1.; 0.; 1.; 0.; 0.; 1.; 1.; 1.; 1.; 0.; 1. |]
+
+let indices = Array1.of_array int32 c_layout [| 0l; 1l; 2l; 0l; 2l; 3l |]
+
+let draw_gradient renderer =
+  Renderer.draw_geometry ~indices:(indices, 6) renderer ~positions ~colors ~vertex_count:4
+```
+
+For a textured draw, add `~texture:(image, uv)`. Store one `u, v` pair per vertex in `uv`.  These
+coordinates range from 0 to 1 across the texture. The top-left is `0, 0`. The bottom-right is `1,
+1`. The vertex colors tint the texture for this draw. SDL ignores the texture's usual color and
+alpha settings. For transparency, set the texture's blend mode to `Blend`. Without a texture, set
+the renderer's draw blend mode instead. The `gpu` renderer in SDL 3.2.0 wraps samples at texture
+edges. On that version, use the center of an edge pixel to sample it.
+
+Create the buffers once and reuse them. The counts select how much of each buffer to use. You can
+change the buffers after the call returns. SDL draws in the order you supply. Accelerated renderers
+receive the buffers in one call to SDL. The software renderer draws one triangle at a time to keep
+the texture mapping and blend mode. It uses nearest filtering and can reject large positions or
+large textured triangles. If it rejects a large textured triangle, split it into smaller ones.
 
 ## Bunnymark
 
-The [Bunnymark example](../examples/bunnymark/README.md) adds each bunny to one `Sprite_batch`.
-It updates their positions in place and displays the frame rate.
+The [Bunnymark example](../examples/bunnymark/README.md) adds each bunny to one `Sprite_batch`.  It
+updates their positions in place and displays the frame rate.

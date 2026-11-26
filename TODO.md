@@ -12,8 +12,10 @@
 - [x] Streaming texture uploads, render targets, and batches of rectangles.
 - [x] Scoped write access to streaming textures.
 - [x] Texture sprite batches and an OCaml Bunnymark example.
-- [x] Ordered sprite batches with atlas regions, scaling, rotation, pivots, flips, tint, and opacity.
+- [x] Ordered sprite batches with atlas regions, scaling, rotation, pivots, flips, tint, and
+      opacity.
 - [x] In-place tint and opacity updates for sprite batches.
+- [x] 2D triangle lists with per-vertex colors, optional textures, and optional indices.
 - [x] GPU device setup, window claims, and solid-color frames.
 - [x] GPU command buffers, swapchain render passes, and fences that signal completion.
 - [x] Typed GPU shaders and pipelines for window drawing.
@@ -38,9 +40,9 @@
 
 The full suite uses SDL 3.4.16, SDL3_image 3.4.6, SDL3_mixer 3.2.4, and SDL3_ttf 3.2.2. The core
 also builds and passes its tests with SDL 3.2.0 and no add-ons. The GPU tests passed on both SDL
-versions with offscreen Vulkan. The image tests passed with SDL3_image 3.2.0 on SDL 3.2.0. The
-mixer and font tests passed with SDL3_mixer and SDL3_ttf 3.2.0 on SDL 3.4.16. Separate installation
-of each add-on also passed.
+versions with offscreen Vulkan. The image tests passed with SDL3_image 3.2.0 on SDL 3.2.0. The mixer
+and font tests passed with SDL3_mixer and SDL3_ttf 3.2.0 on SDL 3.4.16. Separate installation of
+each add-on also passed.
 
 ## Next
 

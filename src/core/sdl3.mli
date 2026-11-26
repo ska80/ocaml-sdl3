@@ -250,6 +250,14 @@ module Renderer : sig
   type t
   type presentation = Stretch | Letterbox | Overscan | Integer_scale
 
+  type geometry_buffer =
+    (float, Bigarray.float32_elt, Bigarray.c_layout) Bigarray.Array1.t
+  (** A flat buffer of 32-bit floats that you can reuse between draws. *)
+
+  type geometry_indices =
+    (int32, Bigarray.int32_elt, Bigarray.c_layout) Bigarray.Array1.t
+  (** A flat buffer of zero-based vertex indices. *)
+
   val create : ?driver:string -> Window.t -> t
   (** Create a renderer for a window with no renderer or GPU claim. *)
 
@@ -287,6 +295,44 @@ module Renderer : sig
       draws nothing. *)
 
   val draw_line : t -> x1:float -> y1:float -> x2:float -> y2:float -> unit
+
+  val draw_geometry :
+    ?texture:'access texture * geometry_buffer ->
+    ?indices:geometry_indices * int ->
+    t ->
+    positions:geometry_buffer ->
+    colors:geometry_buffer ->
+    vertex_count:int ->
+    unit
+  (** Draw a list of triangles on the main thread. For each of the first
+      [vertex_count] vertices, supply a finite [x, y] pair in [positions] and a
+      red, green, blue, alpha group in [colors]. Each color component must be
+      between 0 and 1, inclusive. Positions use the renderer's current
+      coordinate system, including logical presentation.
+
+      Without [indices], each group of three consecutive vertices forms a
+      triangle. With [indices:(buffer, count)], use the first [count] indices
+      instead. Each index must be nonnegative and less than [vertex_count]. The
+      number of vertices or indices that form triangles must be a multiple of
+      three. Counts must be nonnegative. If the triangle count is zero, check
+      the handles and buffer sizes but draw nothing.
+
+      For a textured draw, pass [texture:(image, uv)] with one [u, v] pair per
+      vertex. Both coordinates must be between 0 and 1, inclusive. The pair
+      [0, 0] is the top-left corner of the texture and [1, 1] the bottom-right.
+      The texture must belong to this renderer. It cannot be locked or be the
+      current target. The SDL 3.2.0 [gpu] renderer wraps samples at texture
+      edges.
+
+      Vertex colors replace the renderer's draw color or the texture's color and
+      alpha settings. Untextured triangles use the renderer's draw blend mode.
+      Textured triangles use the texture's blend mode. They use its scale mode
+      on accelerated renderers. The software renderer uses nearest filtering and
+      limits coordinate ranges and the size of textured triangles.
+
+      Draw in the given order. Raise [Invalid_argument] for invalid input before
+      drawing. An SDL error can occur after SDL queues some triangles. SDL does
+      not retain the buffers. Do not change them during the call. *)
 
   val present : t -> unit
   (** Present the frame. Raise [Invalid_argument] if a texture is the current

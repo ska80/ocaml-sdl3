@@ -1283,6 +1283,196 @@ CAMLprim value osdl_sprite_batch_draw(value renderer, value texture, value posit
     return Val_unit;
 }
 
+/* Triangle lists. */
+
+_Static_assert(sizeof(SDL_FColor) == 4 * sizeof(float), "SDL_FColor must use packed floats");
+_Static_assert(_Alignof(SDL_FColor) == _Alignof(float), "SDL_FColor must have float alignment");
+
+typedef struct {
+    SDL_Texture*  texture;
+    const float*  xy;
+    const float*  rgba;
+    const float*  uv;
+    const Uint32* indices;
+    int           vertices;
+    int           count;
+} osdl_geometry;
+
+static int osdl_geometry_count(value count) {
+    int n = osdl_nonnegative_int(count);
+    /* SDL uses signed byte offsets and can expand indices into vertices. */
+    if (n > INT_MAX / (int)sizeof(SDL_Vertex)) caml_invalid_argument("Geometry count is too large");
+    return n;
+}
+
+static const void* osdl_geometry_data(value buffer, int count, int components,
+                                      const char* message) {
+    if (count > Caml_ba_array_val(buffer)->dim[0] / components) caml_invalid_argument(message);
+    return Caml_ba_data_val(buffer);
+}
+
+static void osdl_geometry_check_unit(const float* data, int count, const char* message) {
+    for (int i = 0; i < count; ++i)
+        if (!(data[i] >= 0.0f && data[i] <= 1.0f)) caml_invalid_argument(message);
+}
+
+static inline int osdl_geometry_vertex(const osdl_geometry* geometry, int i) {
+    return geometry->indices ? (int)geometry->indices[i] : i;
+}
+
+static SDL_FRect osdl_geometry_software_view(SDL_Renderer* renderer) {
+    int                             w, h;
+    SDL_RendererLogicalPresentation mode;
+    osdl_check(SDL_GetRenderLogicalPresentation(renderer, &w, &h, &mode),
+               "SDL_GetRenderLogicalPresentation");
+    if (mode == SDL_LOGICAL_PRESENTATION_DISABLED || w <= 0 || h <= 0)
+        return (SDL_FRect){0, 0, 1, 1};
+
+    SDL_FRect view;
+    osdl_check(SDL_GetRenderLogicalPresentationRect(renderer, &view),
+               "SDL_GetRenderLogicalPresentationRect");
+    /* SDL 3.2.0 reports the window scale even when drawing to a texture
+     * with no logical scale. Cover both cases. */
+    view.w = SDL_max(1.0f, view.w / w);
+    view.h = SDL_max(1.0f, view.h / h);
+    return view;
+}
+
+static void osdl_geometry_software_bounds(SDL_Renderer* renderer, const osdl_geometry* geometry) {
+    SDL_FRect    view   = osdl_geometry_software_view(renderer);
+    SDL_Texture* target = SDL_GetRenderTarget(renderer);
+    int          w, h;
+    if (target) {
+        w = target->w;
+        h = target->h;
+    } else {
+        osdl_check(SDL_GetRenderOutputSize(renderer, &w, &h), "SDL_GetRenderOutputSize");
+    }
+    if ((Sint64)w * h > INT_MAX / 4)
+        caml_invalid_argument("The software geometry target is too large");
+
+    /* Leave room for SDL's fixed-point products, color interpolation, and
+     * signed byte offsets into the target, even for offscreen vertices. */
+    for (int i = 0; i < geometry->vertices; ++i) {
+        double x = fabs(geometry->xy[2 * i]) * view.w + fabs(view.x) + 1.0;
+        double y = fabs(geometry->xy[2 * i + 1]) * view.h + fabs(view.y) + 1.0;
+        if (!(x <= (1 << 24) && y <= (1 << 24) && 4.0 * (x + y * w) <= INT_MAX))
+            caml_invalid_argument("Geometry positions are outside the software renderer range");
+    }
+
+    SDL_Texture* t = geometry->texture;
+    if (!t) return;
+    if (t->w > (1 << 24) || t->h > (1 << 24) || (Sint64)t->w * t->h > INT_MAX / 4)
+        caml_invalid_argument("The software geometry texture is too large");
+
+    /* SDL's textured triangles store edge weights and a texture coordinate
+     * times the area in signed ints. Bound these before submitting any work. */
+    for (int i = 0; i < geometry->count; i += 3) {
+        int          a  = 2 * osdl_geometry_vertex(geometry, i);
+        int          b  = 2 * osdl_geometry_vertex(geometry, i + 1);
+        int          c  = 2 * osdl_geometry_vertex(geometry, i + 2);
+        const float* xy = geometry->xy;
+        double       dx =
+            (double)SDL_max(xy[a], SDL_max(xy[b], xy[c])) - SDL_min(xy[a], SDL_min(xy[b], xy[c]));
+        double dy = (double)SDL_max(xy[a + 1], SDL_max(xy[b + 1], xy[c + 1])) -
+                    SDL_min(xy[a + 1], SDL_min(xy[b + 1], xy[c + 1]));
+        double area = 4.0 * (dx * view.w + 2.0) * (dy * view.h + 2.0);
+        int    u    = (int)(geometry->uv[c] * t->w);
+        int    v    = (int)(geometry->uv[c + 1] * t->h);
+        if (2.0 * area > INT_MAX || area * SDL_max(u, v) > INT_MAX)
+            caml_invalid_argument("A textured triangle is too large for the software renderer");
+    }
+}
+
+static void osdl_geometry_draw_software(SDL_Renderer* renderer, const osdl_geometry* geometry) {
+    /* SDL can fold adjacent triangles into a rectangle. That path can ignore
+     * the blend mode or change how the texture maps to the triangles. */
+    for (int i = 0; i < geometry->count; i += 3) {
+        SDL_Vertex triangle[3];
+        for (int j = 0; j < 3; ++j) {
+            int          v        = osdl_geometry_vertex(geometry, i + j);
+            const float* xy       = geometry->xy + 2 * v;
+            const float* rgba     = geometry->rgba + 4 * v;
+            const float* uv       = geometry->uv ? geometry->uv + 2 * v : NULL;
+            SDL_FPoint   position = {xy[0], xy[1]};
+            SDL_FColor   color    = {rgba[0], rgba[1], rgba[2], rgba[3]};
+            SDL_FPoint   texcoord = {uv ? uv[0] : 0.0f, uv ? uv[1] : 0.0f};
+            triangle[j] = (SDL_Vertex){.position = position, .color = color, .tex_coord = texcoord};
+        }
+        if (geometry->texture) {
+            /* SDL 3.2.0 does not clamp the last texel when all three
+             * coordinates on one axis are one. Keep that edge in bounds. */
+            const float last = 1.0f - FLT_EPSILON / 2.0f;
+            if (triangle[0].tex_coord.x == 1 && triangle[1].tex_coord.x == 1 &&
+                triangle[2].tex_coord.x == 1)
+                for (int j = 0; j < 3; ++j)
+                    triangle[j].tex_coord.x = last;
+            if (triangle[0].tex_coord.y == 1 && triangle[1].tex_coord.y == 1 &&
+                triangle[2].tex_coord.y == 1)
+                for (int j = 0; j < 3; ++j)
+                    triangle[j].tex_coord.y = last;
+        }
+        osdl_check(SDL_RenderGeometry(renderer, geometry->texture, triangle, 3, NULL, 0),
+                   "SDL_RenderGeometry");
+    }
+}
+
+CAMLprim value osdl_renderer_draw_geometry(value texture, value indices, value renderer,
+                                           value positions, value colors, value vertex_count) {
+    SDL_Renderer* r = osdl_live(renderer);
+    osdl_geometry g = {0};
+    if (Is_block(texture))
+        g.texture = osdl_texture_source(Field(Some_val(texture), 0), renderer, r);
+
+    g.vertices = osdl_geometry_count(vertex_count);
+    g.xy   = osdl_geometry_data(positions, g.vertices, 2, "Geometry position buffer is too short");
+    g.rgba = osdl_geometry_data(colors, g.vertices, 4, "Geometry color buffer is too short");
+    if (g.texture)
+        g.uv = osdl_geometry_data(Field(Some_val(texture), 1), g.vertices, 2,
+                                  "Geometry texture coordinate buffer is too short");
+
+    g.count = g.vertices;
+    if (Is_block(indices)) {
+        value pair = Some_val(indices);
+        g.count    = osdl_geometry_count(Field(pair, 1));
+        g.indices =
+            osdl_geometry_data(Field(pair, 0), g.count, 1, "Geometry index buffer is too short");
+    }
+    if (g.count % 3 != 0)
+        caml_invalid_argument("Geometry needs three vertices or indices per triangle");
+    if (!g.count) return Val_unit;
+
+    for (int i = 0; i < 2 * g.vertices; ++i)
+        if (!isfinite(g.xy[i])) caml_invalid_argument("Geometry positions must be finite");
+    osdl_geometry_check_unit(g.rgba, 4 * g.vertices, "Geometry colors must be between 0 and 1");
+    if (g.uv)
+        osdl_geometry_check_unit(g.uv, 2 * g.vertices,
+                                 "Geometry texture coordinates must be between 0 and 1");
+    if (g.indices)
+        for (int i = 0; i < g.count; ++i)
+            if (g.indices[i] >= (Uint32)g.vertices)
+                caml_invalid_argument("Geometry index is outside the vertex range");
+
+    const char* driver = SDL_GetRendererName(r);
+    if (!driver) osdl_fail("SDL_GetRendererName");
+    if (strcmp(driver, SDL_SOFTWARE_RENDERER) == 0) {
+        osdl_geometry_software_bounds(r, &g);
+        osdl_geometry_draw_software(r, &g);
+    } else {
+        osdl_check(SDL_RenderGeometryRaw(r, g.texture, g.xy, 2 * sizeof(float),
+                                         (const SDL_FColor*)g.rgba, sizeof(SDL_FColor), g.uv,
+                                         2 * sizeof(float), g.vertices, g.indices,
+                                         g.indices ? g.count : 0, sizeof(Uint32)),
+                   "SDL_RenderGeometryRaw");
+    }
+    return Val_unit;
+}
+
+CAMLprim value osdl_renderer_draw_geometry_byte(value* argv, int argc) {
+    (void)argc;
+    return osdl_renderer_draw_geometry(argv[0], argv[1], argv[2], argv[3], argv[4], argv[5]);
+}
+
 /* Keyboard and mouse. */
 
 CAMLprim value osdl_scancode_escape(value unit) {
