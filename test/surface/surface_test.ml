@@ -147,8 +147,7 @@ let filtered_regions context =
   Surface.fill single white;
   Surface.fill target black;
   Surface.blit_scaled ~dst:(area (-9) 0 10 1) single target;
-  let first = if (version ()).minor < 4 then black else white in
-  expect_pixel target 0 0 first;
+  expect_pixel target 0 0 white;
   expect_pixel target 1 0 black
 
 let conversions context =

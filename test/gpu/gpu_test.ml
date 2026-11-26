@@ -507,8 +507,8 @@ let upload_resource_textures device commands a b index =
     List.iteri (fun i red -> Bytes.set_uint8 bytes (4 * i) red) reds;
     bytes
   in
-  using release_upload_buffer (create_upload_buffer device ~size:512)
-    (fun src ->
+  (* Four offset bytes and two eight-byte rows with no padding. *)
+  using release_upload_buffer (create_upload_buffer device ~size:20) (fun src ->
       let ended =
         with_copy_pass commands (fun pass ->
             invalid (fun () -> upload_to_texture pass ~src ~dst:a);

@@ -1,5 +1,6 @@
-(** Load fonts and render UTF-8 text. Call these functions on the main thread,
-    except [version] and [has_harfbuzz], which are safe on any thread. *)
+(** A binding for SDL3_ttf 3.2.2 or later. Load fonts and render UTF-8 text.
+    Call these functions on the main thread, except [version] and
+    [has_harfbuzz], which are safe on any thread. *)
 
 type context
 

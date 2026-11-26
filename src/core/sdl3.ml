@@ -20,12 +20,16 @@ type subsystem =
 external bind_main_thread : unit -> unit = "osdl_bind_main_thread"
 external is_main_thread : unit -> bool = "osdl_is_main_thread" [@@noalloc]
 external version : unit -> version = "osdl_version"
+external version_error : unit -> string option = "osdl_core_version_error"
 external init : subsystem list -> context = "osdl_init"
 external quit : context -> unit = "osdl_quit"
 
 let () =
   if not (Domain.is_main_domain ()) then
     invalid_arg "Load Sdl3 on the main domain";
+  (match version_error () with
+  | None -> ()
+  | Some message -> raise (Error message));
   Callback.register_exception "ocaml-sdl3.error" (Error "");
   bind_main_thread ()
 

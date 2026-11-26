@@ -72,7 +72,7 @@ CAMLprim value osdl_io_seek(value stream, value origin, value offset) {
     value         backing = osdl_attachment(stream);
 
     if (Is_block(backing)) {
-        /* Limit the offset before SDL 3.2 adds it to a memory pointer. */
+        /* Limit the byte position before SDL adds it to a memory pointer. */
         Sint64 size = Caml_ba_array_val(backing)->dim[0];
         Sint64 base = from == SDL_IO_SEEK_CUR ? io_position(io)
                     : from == SDL_IO_SEEK_END ? size

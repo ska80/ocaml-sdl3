@@ -1,8 +1,10 @@
-(** A thin SDL3 binding. Load this module on the main thread. Except where
-    noted, call the binding on that thread, including all cleanup calls. *)
+(** A thin binding for SDL 3.4.16 or later. Load this module on the main thread.
+    Except where noted, call the binding on that thread, including all cleanup
+    calls. *)
 
 exception Error of string
-(** An SDL call failed. The message includes the SDL function and its error. *)
+(** An SDL call failed or a loaded SDL library is too old. For a failed call,
+    the message names the SDL function and includes its error if available. *)
 
 type version = { major : int; minor : int; patch : int }
 
@@ -292,7 +294,6 @@ module Surface : sig
   (** Like [blit], but resize the source region to fit the destination
       rectangle. Both rectangles default to the respective whole surface. The
       source rectangle must lie inside the source. SDL clips to the destination.
-      SDL 3.2 can skip a clipped region that covers less than one source pixel.
       Empty rectangles draw nothing. The default scale mode is [Nearest].
 
       When scaling, the width and height of each rectangle must be at most
@@ -510,13 +511,12 @@ module Renderer : sig
       the window or surface again. *)
 
   val set_logical_presentation : t -> (int * int * presentation) option -> unit
-  (** Set a virtual width and height. Pass [None] to turn off logical
-      presentation. On SDL before 3.2.6, restore the default target first. *)
+  (** Set a virtual width and height for the current target. Pass [None] to turn
+      off logical presentation for that target. *)
 
   val logical_presentation_rect : t -> Frect.t
-  (** Get the presentation rectangle in output pixels. When logical presentation
-      is off, this covers the whole target. On SDL before 3.2.6, this query
-      refers to the default target even when a texture is active. *)
+  (** Get the current target's presentation rectangle in output pixels. When
+      logical presentation is off, this covers the whole target. *)
 
   val set_viewport : t -> Rect.t option -> unit
   (** Set the drawing area of the current target. Its top-left becomes the
@@ -603,8 +603,7 @@ module Renderer : sig
       vertex. Both coordinates must be between 0 and 1, inclusive. The pair
       [0, 0] is the top-left corner of the texture and [1, 1] the bottom-right.
       The texture must belong to this renderer. It cannot be locked or be the
-      current target. The SDL 3.2.0 [gpu] renderer wraps samples at texture
-      edges.
+      current target.
 
       Vertex colors replace the renderer's draw color or the texture's color and
       alpha settings. Untextured triangles use the renderer's draw blend mode.
@@ -1208,11 +1207,7 @@ module Gpu : sig
       With [cycle:true], SDL can use separate storage for the new pixels. If you
       cancel a buffer with a cycling upload, upload again before sampling.
       Without cycling, the copy updates the existing storage in GPU command
-      order.
-
-      On Direct3D 12 before SDL 3.4.2, a texture narrower than 32 pixels with at
-      least two rows needs extra capacity in [src]. Leave at least 256 bytes of
-      capacity from the start of the next-to-last row. *)
+      order. *)
 
   val end_copy_pass : copy_pass -> unit
   (** End the copy pass. Calling this again on an ended pass does nothing. *)

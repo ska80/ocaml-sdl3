@@ -56,14 +56,10 @@ Logical presentation maps a fixed drawing size to an output of a different size.
 adds bars as needed. Use `Renderer.logical_presentation_rect` to find where the picture appears in
 output pixels, before the viewport and drawing scale.
 
-The window or surface and each texture target keep their own viewport, clip, and scale. Use
-`Renderer.viewport_is_set` if you need to restore the viewport later. `Renderer.viewport` returns a
-rectangle even when you did not set one. Restore `None` if the previous viewport was automatic, so
-that it still follows changes in size or scale.
-
-SDL 3.2.0 through 3.2.4 only apply logical presentation to the default target. On those versions,
-restore that target before you set logical presentation. The presentation rectangle query also
-reports the default target on those versions.
+The window or surface and each texture target keep their own viewport, clip, scale, and logical
+presentation. Use `Renderer.viewport_is_set` if you need to restore the viewport later.
+`Renderer.viewport` returns a rectangle even when you did not set one. If the previous viewport was
+automatic, restore `None` so it still follows changes in size or scale.
 
 See [Convert input to drawing coordinates](input.md#convert-input-to-drawing-coordinates) to map
 clicks to a viewport.
@@ -265,8 +261,7 @@ For a textured draw, add `~texture:(image, uv)`. Store one `u, v` pair per verte
 coordinates range from 0 to 1 across the texture. The top-left is `0, 0`. The bottom-right is `1,
 1`. The vertex colors tint the texture for this draw. SDL ignores the texture's usual color and
 alpha settings. For transparency, set the texture's blend mode to `Blend`. Without a texture, set
-the renderer's draw blend mode instead. The `gpu` renderer in SDL 3.2.0 wraps samples at texture
-edges. On that version, use the center of an edge pixel to sample it.
+the renderer's draw blend mode instead.
 
 Create the buffers once and reuse them. The counts select how much of each buffer to use. You can
 change the buffers after the call returns. SDL draws in the order you supply. Accelerated renderers

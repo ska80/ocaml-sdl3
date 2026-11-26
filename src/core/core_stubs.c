@@ -27,6 +27,11 @@ CAMLprim value osdl_is_main_thread(value unit) {
     return Val_bool(SDL_GetCurrentThreadID() == main_thread);
 }
 
+CAMLprim value osdl_core_version_error(value unit) {
+    (void)unit;
+    return osdl_version_error("SDL", SDL_GetVersion(), OSDL_MIN_SDL_VERSION);
+}
+
 CAMLprim value osdl_version(value unit) {
     (void)unit;
     return osdl_version_value(SDL_GetVersion());
@@ -111,7 +116,7 @@ CAMLprim value osdl_pref_path(value org, value app, value snapshot) {
     const char* application  = osdl_cstring(app);
 
 #ifdef SDL_PLATFORM_LINUX
-    /* SDL 3.2.0 and 3.4.16 read before an empty environment string here. */
+    /* SDL 3.4.16 reads before an empty environment string here. */
     const char* data_home = SDL_getenv("XDG_DATA_HOME");
     const char* root      = data_home ? data_home : SDL_getenv("HOME");
     if (root && !*root)
@@ -475,7 +480,7 @@ static SDL_ScaleMode osdl_scale_mode(value mode) {
 static SDL_FlipMode osdl_flip_mode(value mode) {
     /* Surface.flip and Texture.flip. */
     static const SDL_FlipMode modes[] = {SDL_FLIP_NONE, SDL_FLIP_HORIZONTAL, SDL_FLIP_VERTICAL,
-                                         SDL_FLIP_HORIZONTAL | SDL_FLIP_VERTICAL};
+                                         SDL_FLIP_HORIZONTAL_AND_VERTICAL};
     return modes[Int_val(mode)];
 }
 
@@ -742,7 +747,6 @@ static SDL_Surface* osdl_surface_for_blit(value surface) {
     SDL_Surface* s = osdl_unlocked_surface(surface);
     osdl_check_surface_storage(s);
     osdl_check_surface_byte_pixels(s);
-    /* SDL 3.2.0 truncates blit offsets to Uint16. */
     if (s->w > SDL_MAX_UINT16 || s->h > SDL_MAX_UINT16)
         caml_invalid_argument("SDL surface is too wide or tall for a blit");
     if (SDL_ISPIXELFORMAT_INDEXED(s->format)) osdl_surface_palette(s);
@@ -784,20 +788,6 @@ static void osdl_check_surface_scale_size(int width, int height) {
         caml_invalid_argument("Scaled surface dimensions cannot exceed 32767 pixels");
 }
 
-/* SDL 3.2 expands a non-32-bit crop to the full source size before its
- * linear pass, so the result can use the wrong pixels. Convert first. */
-static SDL_Surface* osdl_surface_prepare_linear_blit(SDL_Surface* s) {
-    osdl_check_surface_dimensions(s->w, s->h, 4);
-    SDL_BlendMode blend;
-    osdl_check(SDL_GetSurfaceBlendMode(s, &blend), "SDL_GetSurfaceBlendMode");
-
-    SDL_Surface* rgba = SDL_ConvertSurface(s, SDL_PIXELFORMAT_RGBA32);
-    if (!rgba) osdl_fail("SDL_ConvertSurface");
-    if (!SDL_SetSurfaceBlendMode(rgba, blend))
-        osdl_surface_fail_and_destroy(rgba, "SDL_SetSurfaceBlendMode");
-    return rgba;
-}
-
 CAMLprim value osdl_surface_blit_scaled(value src, value dst, value scale_mode, value source,
                                         value target) {
     SDL_Surface* s = osdl_surface_for_blit(source);
@@ -811,7 +801,6 @@ CAMLprim value osdl_surface_blit_scaled(value src, value dst, value scale_mode, 
 
     SDL_ScaleMode mode =
         Is_long(scale_mode) ? SDL_SCALEMODE_NEAREST : osdl_scale_mode(Some_val(scale_mode));
-    SDL_Surface* rgba = NULL;
     if (from.w != to.w || from.h != to.h) {
         osdl_check_surface_scale_size(from.w, from.h);
         osdl_check_surface_scale_size(to.w, to.h);
@@ -828,33 +817,16 @@ CAMLprim value osdl_surface_blit_scaled(value src, value dst, value scale_mode, 
         osdl_check(SDL_GetSurfaceClipRect(d, &clip), "SDL_GetSurfaceClipRect");
         if (!SDL_GetRectIntersection(&to, &clip, &visible)) return Val_unit;
         bool clipped = visible.w != to.w || visible.h != to.h;
-        bool old     = SDL_GetVersion() < SDL_VERSIONNUM(3, 4, 0);
-        if (clipped) {
-            /* On SDL 3.4, the clipped path scales a view of the source and
-             * does not preserve the key or lock pixel storage first. */
-            if (keyed || SDL_MUSTLOCK(s))
-                caml_invalid_argument(
-                    "Scale the source separately before a clipped blit with a color key or RLE");
-            /* SDL 3.2 can round a clipped source extent down to zero and
-             * still try to read a pixel outside the source. */
-            if (old &&
-                (2 * (Sint64)visible.w * from.w <= to.w || 2 * (Sint64)visible.h * from.h <= to.h))
-                return Val_unit;
-        }
-        if (old && mode == SDL_SCALEMODE_LINEAR && (clipped || from.w != s->w || from.h != s->h) &&
-            (SDL_BYTESPERPIXEL(s->format) != 4 || s->format == SDL_PIXELFORMAT_ARGB2101010)) {
-            rgba = osdl_surface_prepare_linear_blit(s);
-            s    = rgba;
-        }
+        /* The clipped path scales a view of the source without preserving
+         * the key or locking pixel storage first. */
+        if (clipped && (keyed || SDL_MUSTLOCK(s)))
+            caml_invalid_argument(
+                "Scale the source separately before a clipped blit with a color key or RLE");
     }
 
-    bool ok =
-        SDL_BlitSurfaceScaled(s, Is_block(src) ? &from : NULL, d, Is_block(dst) ? &to : NULL, mode);
-    if (rgba) {
-        if (!ok) osdl_surface_fail_and_destroy(rgba, "SDL_BlitSurfaceScaled");
-        SDL_DestroySurface(rgba);
-    }
-    osdl_check(ok, "SDL_BlitSurfaceScaled");
+    osdl_check(
+        SDL_BlitSurfaceScaled(s, Is_block(src) ? &from : NULL, d, Is_block(dst) ? &to : NULL, mode),
+        "SDL_BlitSurfaceScaled");
     return Val_unit;
 }
 
@@ -869,45 +841,6 @@ CAMLprim value osdl_surface_convert(value surface, value format) {
 
     handle = osdl_new_handle(osdl_parent(surface));
     CAMLreturn(osdl_publish(handle, SDL_ConvertSurface(s, pixel), "SDL_ConvertSurface"));
-}
-
-/* SDL 3.2 scales indexed images by looking up colors again. Copy the exact
- * indices instead, so duplicate colors can still be changed separately. */
-static SDL_Surface* osdl_scale_index8(SDL_Surface* source, int w, int h) {
-    SDL_Surface* dest = SDL_CreateSurface(w, h, SDL_PIXELFORMAT_INDEX8);
-    if (!dest) return NULL;
-
-    SDL_Color     color;
-    SDL_BlendMode blend;
-    if (!SDL_GetSurfaceColorMod(source, &color.r, &color.g, &color.b) ||
-        !SDL_GetSurfaceAlphaMod(source, &color.a) || !SDL_GetSurfaceBlendMode(source, &blend) ||
-        !SDL_SetSurfacePalette(dest, SDL_GetSurfacePalette(source)) ||
-        !SDL_SetSurfaceColorspace(dest, SDL_GetSurfaceColorspace(source)) ||
-        !SDL_SetSurfaceColorMod(dest, color.r, color.g, color.b) ||
-        !SDL_SetSurfaceAlphaMod(dest, color.a) || !SDL_SetSurfaceBlendMode(dest, blend))
-        osdl_surface_fail_and_destroy(dest, "SDL_ScaleSurface");
-
-    bool locked = SDL_MUSTLOCK(source);
-    if (locked && !SDL_LockSurface(source)) osdl_surface_fail_and_destroy(dest, "SDL_LockSurface");
-    const Uint8* src = source->pixels;
-    if (!src) {
-        if (locked) SDL_UnlockSurface(source);
-        SDL_DestroySurface(dest);
-        osdl_raise_error("SDL_ScaleSurface: No source pixels are available");
-    }
-
-    /* Use the same center-of-pixel sampling as SDL's nearest scaler. */
-    Uint64 step_x = ((Uint64)source->w << 16) / w, step_y = ((Uint64)source->h << 16) / h;
-    Uint64 y = step_y / 2;
-    for (int row = 0; row < h; ++row, y += step_y) {
-        const Uint8* in  = src + (size_t)(y >> 16) * source->pitch;
-        Uint8*       out = (Uint8*)dest->pixels + (size_t)row * dest->pitch;
-        Uint64       x   = step_x / 2;
-        for (int col = 0; col < w; ++col, x += step_x)
-            out[col] = in[x >> 16];
-    }
-    if (locked) SDL_UnlockSurface(source);
-    return dest;
 }
 
 CAMLprim value osdl_surface_scale(value scale_mode, value surface, value w, value h) {
@@ -932,9 +865,7 @@ CAMLprim value osdl_surface_scale(value scale_mode, value surface, value w, valu
     if (keyed) osdl_check(SDL_GetSurfaceColorKey(s, &key), "SDL_GetSurfaceColorKey");
 
     handle              = osdl_new_handle(osdl_parent(surface));
-    SDL_Surface* scaled = indexed && SDL_GetVersion() < SDL_VERSIONNUM(3, 4, 0)
-                            ? osdl_scale_index8(s, width, height)
-                            : SDL_ScaleSurface(s, width, height, mode);
+    SDL_Surface* scaled = SDL_ScaleSurface(s, width, height, mode);
     /* SDL can copy the key flag but not the key value when scaling. */
     if (scaled && keyed && !SDL_SetSurfaceColorKey(scaled, true, key))
         osdl_surface_fail_and_destroy(scaled, "SDL_SetSurfaceColorKey");
@@ -951,9 +882,7 @@ CAMLprim value osdl_surface_flip(value surface, value flip) {
 
     bool locked = SDL_MUSTLOCK(s);
     if (locked) osdl_check(SDL_LockSurface(s), "SDL_LockSurface");
-    /* SDL 3.2.0 only accepts one axis at a time. */
-    bool ok = (!(axes & SDL_FLIP_HORIZONTAL) || SDL_FlipSurface(s, SDL_FLIP_HORIZONTAL)) &&
-              (!(axes & SDL_FLIP_VERTICAL) || SDL_FlipSurface(s, SDL_FLIP_VERTICAL));
+    bool ok = SDL_FlipSurface(s, axes);
     char message[1024];
     if (!ok) osdl_error_message(message, sizeof(message), "SDL_FlipSurface");
     if (locked) SDL_UnlockSurface(s);
@@ -1233,10 +1162,6 @@ static const osdl_render_view osdl_unit_view = {
     {0, 0}
 };
 
-static bool osdl_old_logical_target(SDL_Renderer* renderer) {
-    return SDL_GetRenderTarget(renderer) && SDL_GetVersion() < SDL_VERSIONNUM(3, 2, 6);
-}
-
 static SDL_FPoint osdl_render_scale(SDL_Renderer* renderer) {
     SDL_FPoint scale;
     osdl_check(SDL_GetRenderScale(renderer, &scale.x, &scale.y), "SDL_GetRenderScale");
@@ -1244,9 +1169,6 @@ static SDL_FPoint osdl_render_scale(SDL_Renderer* renderer) {
 }
 
 static osdl_render_view osdl_logical_view(SDL_Renderer* renderer) {
-    /* Before SDL 3.2.6, logical presentation only affected the default target. */
-    if (osdl_old_logical_target(renderer)) return osdl_unit_view;
-
     int                             w, h;
     SDL_RendererLogicalPresentation mode;
     osdl_check(SDL_GetRenderLogicalPresentation(renderer, &w, &h, &mode),
@@ -1391,10 +1313,7 @@ CAMLprim value osdl_renderer_set_logical_presentation(value renderer, value size
         mode    = modes[Int_val(Field(v, 2))];
     }
 
-    SDL_Renderer* r = osdl_live(renderer);
-    if (osdl_old_logical_target(r))
-        caml_invalid_argument(
-            "Restore the default target before setting logical presentation on SDL before 3.2.6");
+    SDL_Renderer*    r     = osdl_live(renderer);
     SDL_FPoint       scale = osdl_render_scale(r);
     osdl_render_view view  = osdl_check_presentation(r, w, h, mode, scale);
     osdl_check_view_state(r, osdl_scale_view(view, scale));
@@ -1412,10 +1331,7 @@ CAMLprim value osdl_renderer_logical_presentation_rect(value renderer) {
     if (mode == SDL_LOGICAL_PRESENTATION_DISABLED) {
         /* SDL can leave logical_dst_rect unset until the first update. */
         int w, h;
-        if (osdl_old_logical_target(r))
-            osdl_check(SDL_GetRenderOutputSize(r, &w, &h), "SDL_GetRenderOutputSize");
-        else
-            osdl_check(SDL_GetCurrentRenderOutputSize(r, &w, &h), "SDL_GetCurrentRenderOutputSize");
+        osdl_check(SDL_GetCurrentRenderOutputSize(r, &w, &h), "SDL_GetCurrentRenderOutputSize");
         rect = (SDL_FRect){0, 0, (float)w, (float)h};
     } else {
         osdl_check(SDL_GetRenderLogicalPresentationRect(r, &rect),
@@ -2378,9 +2294,6 @@ static void osdl_sprite_corners(osdl_sprite* sprite) {
 CAMLprim value osdl_sprite_batch_write(value storage, value index, value source, double w, double h,
                                        double px, double py, double angle, value tint,
                                        value opacity, value flip) {
-    static const Uint8 modes[] = {SDL_FLIP_NONE, SDL_FLIP_HORIZONTAL, SDL_FLIP_VERTICAL,
-                                  SDL_FLIP_HORIZONTAL | SDL_FLIP_VERTICAL};
-
     size_t i = osdl_nonnegative_int(index);
     if (i >= (size_t)Caml_ba_array_val(storage)->dim[0] / sizeof(osdl_sprite))
         caml_invalid_argument("The sprite batch is full");
@@ -2388,7 +2301,7 @@ CAMLprim value osdl_sprite_batch_write(value storage, value index, value source,
     osdl_sprite sprite = {.source = osdl_rect(source),
                           .size   = osdl_sprite_point(w, h),
                           .pivot  = osdl_sprite_point(px, py),
-                          .flip   = modes[Int_val(flip)]};
+                          .flip   = osdl_flip_mode(flip)};
     if (sprite.source.x < 0 || sprite.source.y < 0 || sprite.source.w <= 0 || sprite.source.h <= 0)
         caml_invalid_argument("Sprite source coordinates must be nonnegative and sizes positive");
     if (sprite.size.x <= 0 || sprite.size.y <= 0)
@@ -2638,19 +2551,6 @@ static void osdl_geometry_draw_software(SDL_Renderer* renderer, const osdl_geome
             SDL_FColor   color    = {rgba[0], rgba[1], rgba[2], rgba[3]};
             SDL_FPoint   texcoord = {uv ? uv[0] : 0.0f, uv ? uv[1] : 0.0f};
             triangle[j] = (SDL_Vertex){.position = position, .color = color, .tex_coord = texcoord};
-        }
-        if (geometry->texture) {
-            /* SDL 3.2.0 does not clamp the last texel when all three
-             * coordinates on one axis are one. Keep that edge in bounds. */
-            const float last = 1.0f - FLT_EPSILON / 2.0f;
-            if (triangle[0].tex_coord.x == 1 && triangle[1].tex_coord.x == 1 &&
-                triangle[2].tex_coord.x == 1)
-                for (int j = 0; j < 3; ++j)
-                    triangle[j].tex_coord.x = last;
-            if (triangle[0].tex_coord.y == 1 && triangle[1].tex_coord.y == 1 &&
-                triangle[2].tex_coord.y == 1)
-                for (int j = 0; j < 3; ++j)
-                    triangle[j].tex_coord.y = last;
         }
         osdl_check(SDL_RenderGeometry(renderer, geometry->texture, triangle, 3, NULL, 0),
                    "SDL_RenderGeometry");

@@ -2,9 +2,19 @@
 
 #include <SDL3_ttf/SDL_ttf.h>
 
+#define OSDL_MIN_TTF_VERSION SDL_VERSIONNUM(3, 2, 2)
+#if SDL_TTF_VERSION < OSDL_MIN_TTF_VERSION
+    #error "Use SDL_ttf 3.2.2 or later to build Sdl3_ttf"
+#endif
+
 /* SDL_ttf context. */
 
 static char ttf_initialized;
+
+CAMLprim value osdl_ttf_version_error(value unit) {
+    (void)unit;
+    return osdl_version_error("SDL_ttf", TTF_Version(), OSDL_MIN_TTF_VERSION);
+}
 
 CAMLprim value osdl_ttf_version(value unit) {
     (void)unit;
@@ -107,8 +117,8 @@ static void ttf_unlink_fallback(value link) {
     --osdl_cell_val(fallback)->children;
 }
 
-/* SDL_ttf 3.2.0 and 3.2.2 mark texts dirty on fallback or kerning changes but
- * keep cached positions and glyphs. Toggle hinting to clear the positions and
+/* SDL_ttf 3.2.2 marks texts dirty on fallback or kerning changes but keeps
+ * cached positions and glyphs. Toggle hinting to clear the positions and
  * bump the font generation so the engines rebuild glyphs on the next update. */
 static void ttf_invalidate_font(TTF_Font* font) {
     TTF_HintingFlags hinting = TTF_GetFontHinting(font);
@@ -564,7 +574,7 @@ CAMLprim value osdl_ttf_text_delete(value text, value offset, value length) {
     if (tail <= count) {
         osdl_check(TTF_DeleteTextString(ptr, start, count), "TTF_DeleteTextString");
     } else {
-        /* SDL_ttf 3.2.0 and 3.2.2 use memcpy for the shift. Copy the retained
+        /* SDL_ttf 3.2.2 uses memcpy for the shift. Copy the retained
          * bytes separately when the source and destination would overlap. */
         char* kept = SDL_malloc((size_t)(bytes - count) + 1);
         if (!kept) osdl_fail("SDL_malloc");

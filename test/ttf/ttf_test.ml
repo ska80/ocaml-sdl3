@@ -505,7 +505,8 @@ let fallback_fonts context =
                   invalid (fun () -> Font.wrap_alignment other)))))
 
 let () =
-  check ((version ()).major = 3) "SDL_ttf version";
+  let Sdl3.{ major; minor; patch } = Sdl3_ttf.version () in
+  check ((major, minor, patch) >= (3, 2, 2)) "Minimum SDL_ttf version";
   let shaping_available = has_harfbuzz () in
   check
     (Domain.join (Domain.spawn has_harfbuzz) = shaping_available)

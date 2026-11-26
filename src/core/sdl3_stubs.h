@@ -14,6 +14,12 @@
 #include <limits.h>
 #include <string.h>
 
+/* Keep this in sync with the core requirement in config/discover.ml. */
+#define OSDL_MIN_SDL_VERSION SDL_VERSIONNUM(3, 4, 16)
+#if SDL_VERSION < OSDL_MIN_SDL_VERSION
+    #error "Use SDL 3.4.16 or later to build Sdl3"
+#endif
+
 /* SDL errors. */
 
 static inline void osdl_error_message(char* message, size_t size, const char* fn) {
@@ -268,6 +274,22 @@ static inline value osdl_version_value(int version) {
     return caml_alloc_3(0, Val_int(SDL_VERSIONNUM_MAJOR(version)),
                         Val_int(SDL_VERSIONNUM_MINOR(version)),
                         Val_int(SDL_VERSIONNUM_MICRO(version)));
+}
+
+/* The OCaml module raises Sdl3.Error if the loaded library is too old. */
+static inline value osdl_version_error(const char* library, int loaded, int minimum) {
+    if (loaded >= minimum) return Val_none;
+
+    CAMLparam0();
+    CAMLlocal1(message);
+
+    char text[128];
+    SDL_snprintf(text, sizeof(text), "Loaded %s %d.%d.%d. Use %s %d.%d.%d or later", library,
+                 SDL_VERSIONNUM_MAJOR(loaded), SDL_VERSIONNUM_MINOR(loaded),
+                 SDL_VERSIONNUM_MICRO(loaded), library, SDL_VERSIONNUM_MAJOR(minimum),
+                 SDL_VERSIONNUM_MINOR(minimum), SDL_VERSIONNUM_MICRO(minimum));
+    message = caml_copy_string(text);
+    CAMLreturn(caml_alloc_some(message));
 }
 
 /* Audio data shared by SDL and SDL_mixer. */

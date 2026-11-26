@@ -13,8 +13,16 @@ games and multimedia. See [TODO.md](TODO.md) for the remaining work.
 ## Install from source
 
 Use OCaml 5.4 or later and Dune 3.25 or later. Install a C compiler and `pkg-config`, which finds
-the SDL headers and libraries. Install SDL3 3.2.0 or later and version 3.2.0 or later of each add-on
-you need. Some add-ons require a newer version of SDL3.
+the SDL headers and libraries.
+
+Use these versions or later at build time and run time. Install only the add-ons you need.
+
+| SDL library | Minimum version |
+| --- | --- |
+| SDL3 | 3.4.16 |
+| SDL3_image | 3.4.6 |
+| SDL3_mixer | 3.2.4 |
+| SDL3_ttf | 3.2.2 |
 
 If you use `opam`, install the build tools in the active switch, which is your selected OCaml
 installation:
@@ -24,7 +32,7 @@ opam install 'dune>=3.25' dune-configurator conf-pkg-config
 ```
 
 If `pkg-config` cannot find SDL under `/usr/local`, add that search path. Before a full build, make
-sure that `pkg-config` prints the versions of all four libraries.
+sure that `pkg-config` reports supported versions of all four libraries.
 
 ```sh
 export PKG_CONFIG_PATH="/usr/local/lib/pkgconfig${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}"

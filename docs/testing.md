@@ -1,7 +1,7 @@
 # Run the tests
 
-The tests passed on Linux with OCaml 5.5.2 and Dune 3.25.0. See [TODO.md](../TODO.md#done) for the
-SDL versions.
+Use the library versions listed under [Install from source](../README.md#install-from-source) or
+later. The tests passed on Linux with OCaml 5.5.2 and Dune 3.25.0.
 
 ## Run the main suite
 
@@ -45,8 +45,8 @@ text input area changes and clipboard text on the dummy driver, not a system inp
 
 Run `dune runtest --force test/mixer` to test stereo panning and distance with known WAV samples.
 The tests also cover tag gain, pause and resume, fades at two input rates, and group assignment.
-They read stop notices from memory mixes and from SDL's dummy audio thread. Group tests require
-SDL_mixer 3.2.4. With earlier releases, the tests make sure that group creation returns an error.
+They move a middle track out of a group and destroy its neighbor. They also read stop notices from
+memory mixes and from SDL's dummy audio thread.
 
 ## Run the resource lifecycle tests
 

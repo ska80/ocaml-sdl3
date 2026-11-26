@@ -101,8 +101,7 @@ let draw_with_view renderer texture =
   clear renderer;
   Renderer.set_scale renderer ~x:2. ~y:0.5;
   Renderer.set_viewport renderer (Some (rect 3 10 20 20));
-  (* Clip at texel edges. SDL 3.2.0 can round the source when a scaled
-     software copy is clipped within a texel. *)
+  (* Clip at texel edges so the pixel checks do not depend on rounding. *)
   Renderer.set_clip_rect renderer (Some (rect 4 4 10 20));
   let batch = Sprite_batch.create ~capacity:1 in
   Sprite_batch.add batch ~src:solid ~x:1. ~y:0. ~w:6. ~h:8.;
@@ -269,7 +268,6 @@ let color_updates renderer texture =
   pixel renderer 7 3 black
 
 let logical_coordinates context =
-  (* SDL 3.2.0 applies logical presentation only to the default target. *)
   using Surface.destroy (Surface.create context ~w:80 ~h:64) (fun surface ->
       using Renderer.destroy (Renderer.create_software surface) (fun renderer ->
           using Texture.destroy (atlas context renderer) (fun texture ->

@@ -90,16 +90,14 @@ On `Track.Stop_watch.close`, the binding removes the callback before it frees th
 continues. If removal fails, the watch stays open and the binding raises `Sdl3.Error`. On success,
 it discards any unread notice and releases the child handle. Repeated close calls do nothing.
 
-SDL_mixer 3.2.0 and 3.2.4 hold the same track lock to run and replace the callback. This lock
-belongs to the track's output stream, not the mixer. Successful removal waits for a callback that is
-already running. Do not assume this for other hooks without reading the SDL_mixer source.
+SDL_mixer 3.2.4 holds the same track lock to run and replace the callback. This lock belongs to the
+track's output stream, not the mixer. Successful removal waits for a callback that is already
+running. Do not assume this for other hooks without reading the SDL_mixer source.
 
 Run `dune runtest --force test/mixer` for the stop watch tests. They use both mixing to memory and
-the dummy audio driver. A Linux C test also checked that removal waits for a running callback on
-both SDL_mixer releases.
+the dummy audio driver. They also close watches during device playback.
 
-Source references: [`SDL_events.h`](https://github.com/libsdl-org/SDL/blob/release-3.2.0/include/SDL3/SDL_events.h),
-[`SDL_audio.h`](https://github.com/libsdl-org/SDL/blob/release-3.2.0/include/SDL3/SDL_audio.h),
+Source references: [`SDL_events.h`](https://github.com/libsdl-org/SDL/blob/release-3.4.16/include/SDL3/SDL_events.h),
+[`SDL_audio.h`](https://github.com/libsdl-org/SDL/blob/release-3.4.16/include/SDL3/SDL_audio.h),
 and `TrackStopped` and `MIX_SetTrackStoppedCallback` in SDL_mixer
-[3.2.0](https://github.com/libsdl-org/SDL_mixer/blob/release-3.2.0/src/SDL_mixer.c) and
 [3.2.4](https://github.com/libsdl-org/SDL_mixer/blob/release-3.2.4/src/SDL_mixer.c).

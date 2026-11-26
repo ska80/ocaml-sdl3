@@ -89,9 +89,7 @@ milliseconds so that tracks with different sample rates fade for the same time.
 
 ## Assign a mixing group
 
-A mixing group combines its tracks before SDL adds their sound to the final output. For group
-assignment, use SDL_mixer 3.2.4 or later. Earlier versions can corrupt the list of tracks when a
-track moves between groups.
+A mixing group combines its tracks before SDL adds their sound to the final output.
 
 Create a group with `Group.create mixer`. Assign a track from the same mixer with `Track.set_group
 track (Some group)`. A track belongs to one group at a time. Pass `None` to return it to the default

@@ -723,16 +723,6 @@ CAMLprim value osdl_gpu_upload_to_texture(value src_offset, value cycle, value p
         caml_invalid_argument(
             "The texture copy must fit in the written bytes of the upload buffer");
 
-    /* Before SDL 3.4.2, D3D12's fallback copies 256 bytes from each narrow row
-     * except the last. Make sure the penultimate row has that much storage. */
-    if (row_bytes < 128 && h > 1 &&
-        !osdl_gpu_range_fits(start, row_bytes * (h - 2) + 256, osdl_gpu_capacity(src)) &&
-        SDL_GetVersion() < SDL_VERSIONNUM(3, 4, 2)) {
-        const char* driver = SDL_GetGPUDeviceDriver(osdl_cell_val(device)->ptr);
-        if (driver && strcmp(driver, "direct3d12") == 0)
-            caml_invalid_argument("Leave 256 bytes in the upload buffer from the next-to-last row");
-    }
-
     SDL_GPUTextureTransferInfo from = {.transfer_buffer = source, .offset = start};
     SDL_GPUTextureRegion       to   = {.texture = destination, .w = w, .h = h, .d = 1};
     SDL_UploadToGPUTexture(p, &from, &to, rotate);

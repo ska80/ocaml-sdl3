@@ -1,5 +1,6 @@
-(** SDL3_image does not require separate initialization. Call these functions on
-    the main thread, except [version], which is safe on any thread. *)
+(** A binding for SDL3_image 3.4.6 or later. SDL3_image does not require
+    separate initialization. Call these functions on the main thread, except
+    [version], which is safe on any thread. *)
 
 val version : unit -> Sdl3.version
 val load : Sdl3.context -> string -> Sdl3.Surface.t

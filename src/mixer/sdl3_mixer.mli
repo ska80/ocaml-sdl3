@@ -1,5 +1,6 @@
-(** SDL3_mixer uses tracks, not SDL2_mixer channels. Call these functions on the
-    main thread, except [version], which is safe on any thread. *)
+(** A binding for SDL3_mixer 3.2.4 or later. SDL3_mixer uses tracks, not
+    SDL2_mixer channels. Call these functions on the main thread, except
+    [version], which is safe on any thread. *)
 
 type context
 
@@ -87,8 +88,7 @@ module Group : sig
   type t
 
   val create : 'output Mixer.t -> t
-  (** Create a group owned by this mixer. Requires SDL_mixer 3.2.4 or later.
-      Earlier versions raise {!Sdl3.Error}. *)
+  (** Create a group owned by this mixer. *)
 
   val destroy : t -> unit
   (** Return any assigned tracks to the mixer's default group. Does not stop

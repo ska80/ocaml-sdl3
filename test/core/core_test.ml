@@ -702,7 +702,7 @@ let gamepads context =
               (Gamepad.button pad Left_paddle2 = pressed)
               "Gamepad button value"
           in
-          (* SDL 3.2 can round the mapped center from zero to one. *)
+          (* Use the axis endpoints to avoid rounding during mapping. *)
           state true (-32768);
           state false 32767;
           gamepad_rumble context pad;
@@ -1113,8 +1113,7 @@ let renderer_views context window =
       render_events context window renderer;
       audio_device_events context renderer;
 
-      let v = version () in
-      let old_logical = (v.major, v.minor, v.patch) < (3, 2, 6) in
+      let texture_logical = frect 5. 0. 10. 10. in
       using Texture.destroy (Texture.create_target renderer ~w:20 ~h:10)
         (fun target ->
           Renderer.set_target renderer (Some target);
@@ -1126,21 +1125,13 @@ let renderer_views context window =
             && Renderer.clip_rect renderer = None)
             "Texture has its own scale and clip";
           roundtrip ();
-          if old_logical then (
-            check
-              (Renderer.logical_presentation_rect renderer = logical)
-              "Old SDL reports window presentation";
-            invalid (fun () ->
-                Renderer.set_logical_presentation renderer
-                  (Some (10, 5, Stretch))))
-          else (
-            check
-              (Renderer.logical_presentation_rect renderer = frect 0. 0. 20. 10.)
-              "Texture presentation size";
-            Renderer.set_logical_presentation renderer (Some (5, 5, Letterbox));
-            check
-              (Renderer.logical_presentation_rect renderer = frect 5. 0. 10. 10.)
-              "Texture letterbox rectangle");
+          check
+            (Renderer.logical_presentation_rect renderer = frect 0. 0. 20. 10.)
+            "Texture presentation size";
+          Renderer.set_logical_presentation renderer (Some (5, 5, Letterbox));
+          check
+            (Renderer.logical_presentation_rect renderer = texture_logical)
+            "Texture letterbox rectangle";
           Renderer.set_scale renderer ~x:0.5 ~y:2.;
           let texture_view = rect 1 2 6 10 and texture_clip = rect 0 2 5 3 in
           Renderer.set_viewport renderer (Some texture_view);
@@ -1154,12 +1145,18 @@ let renderer_views context window =
           check
             (Renderer.scale renderer = (2., 0.5))
             "Window scale survives switching targets";
+          check
+            (Renderer.logical_presentation_rect renderer = logical)
+            "Window presentation survives switching targets";
           Renderer.set_target renderer (Some target);
           check
             (Renderer.viewport renderer = texture_view
             && Renderer.clip_rect renderer = Some texture_clip
             && Renderer.scale renderer = (0.5, 2.))
             "Texture view survives switching targets";
+          check
+            (Renderer.logical_presentation_rect renderer = texture_logical)
+            "Texture presentation survives switching targets";
           Renderer.set_target renderer None);
       roundtrip ();
 
@@ -1636,7 +1633,8 @@ let () =
     (String.ends_with ~suffix:Filename.dir_sep base && Sys.is_directory base)
     "Base path before SDL init";
   pref_paths ();
-  check ((version ()).major = 3) "SDL version";
+  let { major; minor; patch } = version () in
+  check ((major, minor, patch) >= (3, 4, 16)) "Minimum SDL version";
   check (List.mem "software" (Renderer.drivers ())) "Render drivers before init";
   let start = Timer.ticks_ns () in
   Timer.delay_ns 1_000_000L;

@@ -2,9 +2,19 @@
 
 #include <SDL3_mixer/SDL_mixer.h>
 
+#define OSDL_MIN_MIXER_VERSION SDL_VERSIONNUM(3, 2, 4)
+#if SDL_MIXER_VERSION < OSDL_MIN_MIXER_VERSION
+    #error "Use SDL_mixer 3.2.4 or later to build Sdl3_mixer"
+#endif
+
 /* SDL_mixer context. */
 
 static char mixer_initialized;
+
+CAMLprim value osdl_mixer_version_error(value unit) {
+    (void)unit;
+    return osdl_version_error("SDL_mixer", MIX_Version(), OSDL_MIN_MIXER_VERSION);
+}
 
 CAMLprim value osdl_mixer_version(value unit) {
     (void)unit;
@@ -215,13 +225,8 @@ CAMLprim value osdl_mixer_group_create(value mixer) {
     CAMLparam1(mixer);
     CAMLlocal1(handle);
 
-    handle       = osdl_new_handle(mixer);
-    MIX_Mixer* m = osdl_live(mixer);
-    /* Earlier releases can corrupt a group's list when moving a middle track. */
-    if (MIX_Version() < SDL_VERSIONNUM(3, 2, 4))
-        osdl_raise_error("MIX_CreateGroup: Use SDL_mixer 3.2.4 or later for mixing groups");
-
-    CAMLreturn(osdl_publish(handle, MIX_CreateGroup(m), "MIX_CreateGroup"));
+    handle = osdl_new_handle(mixer);
+    CAMLreturn(osdl_publish(handle, MIX_CreateGroup(osdl_live(mixer)), "MIX_CreateGroup"));
 }
 
 OSDL_DESTROY(osdl_mixer_group_destroy, MIX_Group, MIX_DestroyGroup)
@@ -418,8 +423,8 @@ static const char* mixer_set_position(MIX_Track* track, const MIX_Point3D* posit
         MIX_Point3D actual;
         if (!MIX_GetTrack3DPosition(track, &actual)) return "MIX_GetTrack3DPosition";
         if (actual.y != position->y) {
-            /* SDL_mixer 3.2.0 through 3.2.4 can skip a Y-only change when the
-             * new Y equals Z. Change X briefly without mixing at that point. */
+            /* SDL_mixer 3.2.4 can skip a Y-only change when the new Y equals Z.
+             * Change X briefly without mixing at that point. */
             MIX_Point3D step = *position;
             step.x           = step.x == 0 ? 1.0f : 0.0f;
             if (!MIX_SetTrack3DPosition(track, &step) || !MIX_SetTrack3DPosition(track, position))

@@ -339,40 +339,34 @@ let tag_fades context audio =
 
 let groups context audio =
   let@ mixer = using Mixer.destroy (Mixer.create context spec) in
-  let Sdl3.{ major; minor; patch } = version () in
-  if (major, minor, patch) < (3, 2, 4) then (
-    sdl_error "MIX_CreateGroup" (fun () -> Group.create mixer |> Group.destroy);
-    let@ track = with_track mixer audio in
-    Track.set_group track None)
-  else
-    let@ group = using Group.destroy (Group.create mixer) in
-    invalid (fun () -> Mixer.destroy mixer);
-    let@ other = using Mixer.destroy (Mixer.create context spec) in
-    let@ foreign = using Group.destroy (Group.create other) in
-    let@ a = with_track mixer audio in
-    let@ b = with_track mixer audio in
-    let@ c = with_track mixer audio in
-    invalid (fun () -> Track.set_group a (Some foreign));
-    Domain.join
-      (Domain.spawn (fun () ->
-           invalid (fun () -> Group.create mixer |> Group.destroy);
-           invalid (fun () -> Group.destroy group);
-           invalid (fun () -> Track.set_group a (Some group))));
-    List.iter
-      (fun track ->
-        Track.set_group track (Some group);
-        Track.play track)
-      [ a; b; c ];
-    let mix = expect_mix mixer (pcm 8) in
-    mix [ 12288 ] "Mix all tracks in a group";
-    Track.set_group b None;
-    Track.destroy a;
-    invalid (fun () -> Track.set_group a None);
-    mix [ 8192 ] "Move a track from the middle and destroy its neighbor";
-    Group.destroy group;
-    Group.destroy group;
-    invalid (fun () -> Track.set_group c (Some group));
-    mix [ 8192 ] "Destroy a group without interrupting its remaining track"
+  let@ group = using Group.destroy (Group.create mixer) in
+  invalid (fun () -> Mixer.destroy mixer);
+  let@ other = using Mixer.destroy (Mixer.create context spec) in
+  let@ foreign = using Group.destroy (Group.create other) in
+  let@ a = with_track mixer audio in
+  let@ b = with_track mixer audio in
+  let@ c = with_track mixer audio in
+  invalid (fun () -> Track.set_group a (Some foreign));
+  Domain.join
+    (Domain.spawn (fun () ->
+         invalid (fun () -> Group.create mixer |> Group.destroy);
+         invalid (fun () -> Group.destroy group);
+         invalid (fun () -> Track.set_group a (Some group))));
+  List.iter
+    (fun track ->
+      Track.set_group track (Some group);
+      Track.play track)
+    [ a; b; c ];
+  let mix = expect_mix mixer (pcm 8) in
+  mix [ 12288 ] "Mix all tracks in a group";
+  Track.set_group b None;
+  Track.destroy a;
+  invalid (fun () -> Track.set_group a None);
+  mix [ 8192 ] "Move a track from the middle and destroy its neighbor";
+  Group.destroy group;
+  Group.destroy group;
+  invalid (fun () -> Track.set_group c (Some group));
+  mix [ 8192 ] "Destroy a group without interrupting its remaining track"
 
 module Stop_watch = Track.Stop_watch
 
@@ -473,7 +467,8 @@ let routing_and_notices context path =
   device_watches context audio
 
 let () =
-  check ((version ()).major = 3) "SDL_mixer version";
+  let Sdl3.{ major; minor; patch } = Sdl3_mixer.version () in
+  check ((major, minor, patch) >= (3, 2, 4)) "Minimum SDL_mixer version";
   selected_device ();
   Sdl3.with_init [] (fun sdl ->
       with_init sdl (fun context ->

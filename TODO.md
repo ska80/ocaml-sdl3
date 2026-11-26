@@ -3,7 +3,8 @@
 ## Done
 
 - [x] Separate Dune packages for `sdl3`, `sdl3-image`, `sdl3-mixer`, and `sdl3-ttf`.
-- [x] SDL discovery through `pkg-config` and checks for minimum library versions.
+- [x] SDL discovery through `pkg-config`.
+- [x] Minimum versions for SDL and its add-ons, checked at build time and run time.
 - [x] Abstract handles, explicit cleanup, main thread guards, and shared error reporting.
 - [x] Core windows, 2D rendering, textures from surfaces, BMP files, keyboard and mouse input,
       gamepads, queued audio, and timers.
@@ -49,18 +50,14 @@
       connection and disconnection events.
 - [x] [Plan for audio and event dispatch](docs/callback-dispatch.md) on the main thread.
 - [x] Stereo panning, 3D sound positions, tagged track controls, and mixer groups. Stop watches
-      report playback stops on the main thread. Group creation needs SDL3_mixer 3.2.4 or later.
+      report playback stops on the main thread.
 - [x] Native and bytecode tests on Linux with OCaml 5.4.1 and 5.5.2 (Dune 3.25.0).
-- [x] Runtime tests on Linux with the oldest supported add-on releases.
 - [x] QCheck tests for core resource lifetimes and an optional ASan and UBSan test build on Linux.
 - [x] [MIT license](LICENSE) for the bindings.
 - [x] Release metadata for all four opam packages.
 
-The full suite uses SDL 3.4.16, SDL3_image 3.4.6, SDL3_mixer 3.2.4, and SDL3_ttf 3.2.2. The core
-also builds and passes its tests with SDL 3.2.0 and no add-ons. The GPU tests passed on both SDL
-versions with offscreen Vulkan. The image tests passed with SDL3_image 3.2.0 on SDL 3.2.0. The mixer
-and font tests passed with SDL3_mixer and SDL3_ttf 3.2.0 on SDL 3.4.16. Separate installation of
-each add-on also passed.
+The Linux suite passed with the libraries installed in `/usr/local`: SDL 3.4.16, SDL3_image 3.4.6,
+SDL3_mixer 3.2.4, and SDL3_ttf 3.2.2.
 
 ## Next
 
@@ -68,8 +65,8 @@ each add-on also passed.
 
 ## Mixer compatibility follow-ups
 
-The checks below are in [`src/mixer/mixer_stubs.c`](src/mixer/mixer_stubs.c). Keep each check for
-SDL_mixer versions that still need it. The package minimum is 3.2.0.
+Keep the workarounds in [`src/mixer/mixer_stubs.c`](src/mixer/mixer_stubs.c) for supported versions
+that need them.
 
 - [ ] Recheck forced stereo when SDL_mixer releases a fix. In
       [3.2.4](https://github.com/libsdl-org/SDL_mixer/blob/release-3.2.4/src/SDL_mixer.c#L506-L525),
@@ -79,24 +76,22 @@ SDL_mixer versions that still need it. The package minimum is 3.2.0.
       requires a memory mixer with at least two channels.  When a fix ships, limit this check to
       affected versions. Test mixing to a mono memory buffer. Before allowing device mixers, test a
       switch to mono during playback.
-- [ ] Remove the `Group.create` version check when the minimum reaches SDL_mixer 3.2.4.
-      `MIX_SetTrackGroup` in [3.2.0](https://github.com/libsdl-org/SDL_mixer/blob/release-3.2.0/src/SDL_mixer.c#L2974-L2984)
-      and [3.2.2](https://github.com/libsdl-org/SDL_mixer/blob/release-3.2.2/src/SDL_mixer.c#L3001-L3010)
-      can break the track list when a track moves from the middle of a group.
+- [x] Remove the version check from `Group.create`. SDL_mixer
       [3.2.4](https://github.com/libsdl-org/SDL_mixer/blob/release-3.2.4/src/SDL_mixer.c#L3013-L3023)
-      fixes the link. Keep the test that moves a middle track and destroys its neighbor.
+      fixes the track list when a track moves from the middle of a group.
+      Keep the test that moves a middle track and destroys its neighbor.
 
 ## SDL_ttf compatibility follow-ups
 
-Keep the workarounds in [`src/ttf/ttf_stubs.c`](src/ttf/ttf_stubs.c) for versions that need them.
-The package minimum is 3.2.0.
+Keep the workarounds in [`src/ttf/ttf_stubs.c`](src/ttf/ttf_stubs.c) for supported versions that
+need them.
 
-- [ ] Recheck cache clearing after fallback and kerning changes. SDL_ttf 3.2.0 and 3.2.2 keep
-      cached glyph positions after these changes. The binding resets the caches through hinting
+- [ ] Recheck cache clearing after fallback and kerning changes. SDL_ttf 3.2.2 keeps cached glyph
+      positions after these changes. The binding resets the caches through hinting
       without changing the hinting setting. Before removing this workaround, test changes with
       live text and close a removed fallback before drawing again.
 - [ ] Recheck overlapping deletes. `TTF_DeleteTextString` uses `SDL_memcpy` to shift the tail
-      in 3.2.0 and 3.2.2. The binding copies through a temporary string if the ranges overlap.
+      in SDL_ttf 3.2.2. The binding copies through a temporary string if the ranges overlap.
       Keep the middle-delete test and run it with an instrumented SDL_ttf before removing the copy.
 - [ ] Recheck subpixel hinting before exposing it. `TTF_SetFontHinting` does not store the subpixel
-      flag in 3.2.0 or 3.2.2. The binding exposes the four working hinting modes.
+      flag in SDL_ttf 3.2.2. The binding exposes the four working hinting modes.

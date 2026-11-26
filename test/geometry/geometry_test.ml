@@ -92,7 +92,7 @@ let make_texture context renderer =
       Surface.fill ~rect:(rect 8 8 8 8) surface (Color.rgb 255 255 0);
       Texture.of_surface renderer surface)
 
-let textured driver renderer texture =
+let textured renderer texture =
   clear renderer 0 0 0;
   Texture.set_scale_mode texture Nearest;
   Texture.set_blend_mode texture Blend;
@@ -113,13 +113,11 @@ let textured driver renderer texture =
   pixel renderer 17 16 (0, 255, 0);
   pixel renderer 6 17 (255, 255, 0);
   pixel ~tolerance:1 renderer 33 4 (0, 128, 0);
-  (* Sample the last texel. Test the exact edge on software. SDL 3.2.0's
-     GPU renderer wraps at the edge, so sample the center on that path. *)
+  (* Sample the last texel at the exact texture edge. *)
   clear renderer 0 0 255;
   Texture.set_blend_mode texture Add;
-  let edge = if driver = "gpu" then 15.5 /. 16. else 1. in
   draw
-    ~texture:(texture, floats [| edge; edge; edge; edge; edge; edge |])
+    ~texture:(texture, floats [| 1.; 1.; 1.; 1.; 1.; 1. |])
     renderer
     ~positions:(floats [| -4.; 2.; 14.; 2.; -4.; 18. |])
     ~colors:(rgba 3 0.5 1. 1. 0.5) ~vertex_count:3;
@@ -268,7 +266,7 @@ let () =
                         (fun () ->
                           gradient renderer;
                           draw_with_view renderer;
-                          textured driver renderer texture;
+                          textured renderer texture;
                           ordered renderer;
                           bad_buffers renderer texture;
                           bad_handles context renderer target texture))))))

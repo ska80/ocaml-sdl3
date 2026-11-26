@@ -2,6 +2,16 @@
 
 #include <SDL3_image/SDL_image.h>
 
+#define OSDL_MIN_IMAGE_VERSION SDL_VERSIONNUM(3, 4, 6)
+#if SDL_IMAGE_VERSION < OSDL_MIN_IMAGE_VERSION
+    #error "Use SDL_image 3.4.6 or later to build Sdl3_image"
+#endif
+
+CAMLprim value osdl_image_version_error(value unit) {
+    (void)unit;
+    return osdl_version_error("SDL_image", IMG_Version(), OSDL_MIN_IMAGE_VERSION);
+}
+
 CAMLprim value osdl_image_version(value unit) {
     (void)unit;
     return osdl_version_value(IMG_Version());
@@ -80,8 +90,7 @@ CAMLprim value osdl_image_save_jpg(value quality, value surface, value path) {
     return Val_unit;
 }
 
-/* Some versions of the PNG and JPEG encoders ignore short writes. Keep the
- * first write error, even if the encoder reports success. */
+/* Keep the first write error, even if the encoder reports success. */
 typedef struct {
     SDL_IOStream* dst;
     const char*   function;

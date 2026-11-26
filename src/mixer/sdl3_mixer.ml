@@ -3,6 +3,12 @@ type context
 external version : unit -> Sdl3.version = "osdl_mixer_version"
 external init : Sdl3.context -> context = "osdl_mixer_init"
 external quit : context -> unit = "osdl_mixer_quit"
+external version_error : unit -> string option = "osdl_mixer_version_error"
+
+let () =
+  match version_error () with
+  | None -> ()
+  | Some message -> raise (Sdl3.Error message)
 
 let with_init sdl f =
   let context = init sdl in

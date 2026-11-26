@@ -4,6 +4,12 @@ external version : unit -> Sdl3.version = "osdl_ttf_version"
 external has_harfbuzz : unit -> bool = "osdl_ttf_has_harfbuzz"
 external init : Sdl3.context -> context = "osdl_ttf_init"
 external quit : context -> unit = "osdl_ttf_quit"
+external version_error : unit -> string option = "osdl_ttf_version_error"
+
+let () =
+  match version_error () with
+  | None -> ()
+  | Some message -> raise (Sdl3.Error message)
 
 let with_init sdl f =
   let context = init sdl in

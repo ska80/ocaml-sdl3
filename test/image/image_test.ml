@@ -163,7 +163,8 @@ let animations context =
       A.load context "sdl3-test-missing-animation.gif" |> A.destroy)
 
 let () =
-  check ((Sdl3_image.version ()).major = 3) "SDL_image version";
+  let { major; minor; patch } = Sdl3_image.version () in
+  check ((major, minor, patch) >= (3, 4, 6)) "Minimum SDL_image version";
   with_init [] (fun context ->
       stream_images context;
       animations context;
