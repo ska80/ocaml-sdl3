@@ -16,6 +16,8 @@
       opacity.
 - [x] In-place tint and opacity updates for sprite batches.
 - [x] 2D triangle lists with per-vertex colors, optional textures, and optional indices.
+- [x] Viewports, clip rectangles, drawing scales, and conversion of window points and events to
+      drawing coordinates.
 - [x] GPU device setup, window claims, and solid-color frames.
 - [x] GPU command buffers, swapchain render passes, and fences that signal completion.
 - [x] Typed GPU shaders and pipelines for window drawing.

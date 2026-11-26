@@ -412,3 +412,64 @@ CAMLprim value osdl_event_poll(value context) {
     time = caml_copy_int64((int64_t)event.common.timestamp);
     CAMLreturn(caml_alloc_some(caml_alloc_2(0, time, kind)));
 }
+
+CAMLprim value osdl_event_convert_coordinates(value renderer, value window, value touch, value x,
+                                              value y, value dx, value dy) {
+    SDL_Renderer* r = osdl_live(renderer);
+    if (Is_long(window)) return Val_none;
+    SDL_Window*  owned = SDL_GetRenderWindow(r);
+    SDL_WindowID id    = (SDL_WindowID)Int32_val(Some_val(window));
+    if (!owned || !id || SDL_GetWindowID(owned) != id) return Val_none;
+
+    /* Only SDL's coordinate fields go into this temporary event. Keep the
+     * original event, including its IDs and other data, in OCaml. */
+    SDL_FPoint position = {osdl_float(Double_val(x)), osdl_float(Double_val(y))};
+    SDL_FPoint movement = {osdl_float(Double_val(dx)), osdl_float(Double_val(dy))};
+    SDL_Event  event    = {0};
+    bool       finger   = Bool_val(touch);
+    if (finger) {
+        event.tfinger = (SDL_TouchFingerEvent){.type     = SDL_EVENT_FINGER_MOTION,
+                                               .windowID = id,
+                                               .x        = position.x,
+                                               .y        = position.y,
+                                               .dx       = movement.x,
+                                               .dy       = movement.y};
+    } else {
+        event.motion = (SDL_MouseMotionEvent){.type     = SDL_EVENT_MOUSE_MOTION,
+                                              .windowID = id,
+                                              .x        = position.x,
+                                              .y        = position.y,
+                                              .xrel     = movement.x,
+                                              .yrel     = movement.y};
+    }
+
+    osdl_check(SDL_ConvertEventToRenderCoordinates(r, &event),
+               "SDL_ConvertEventToRenderCoordinates");
+    if (finger) {
+        position = (SDL_FPoint){event.tfinger.x, event.tfinger.y};
+        movement = (SDL_FPoint){event.tfinger.dx, event.tfinger.dy};
+    } else {
+        position = (SDL_FPoint){event.motion.x, event.motion.y};
+        movement = (SDL_FPoint){event.motion.xrel, event.motion.yrel};
+    }
+    if (!osdl_fits_float(position.x) || !osdl_fits_float(position.y) ||
+        !osdl_fits_float(movement.x) || !osdl_fits_float(movement.y))
+        caml_invalid_argument("The converted coordinates must be finite C floats");
+
+    CAMLparam0();
+    CAMLlocal1(result);
+
+    /* Sdl3.Event.coordinates contains four floats in this order. */
+    result = caml_alloc_small(4 * Double_wosize, Double_array_tag);
+    Store_double_flat_field(result, 0, position.x);
+    Store_double_flat_field(result, 1, position.y);
+    Store_double_flat_field(result, 2, movement.x);
+    Store_double_flat_field(result, 3, movement.y);
+    CAMLreturn(caml_alloc_some(result));
+}
+
+CAMLprim value osdl_event_convert_coordinates_byte(value* argv, int argc) {
+    (void)argc;
+    return osdl_event_convert_coordinates(argv[0], argv[1], argv[2], argv[3], argv[4], argv[5],
+                                          argv[6]);
+}

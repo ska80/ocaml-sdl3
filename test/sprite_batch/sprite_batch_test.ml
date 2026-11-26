@@ -96,6 +96,25 @@ let transforms renderer texture =
       (18, 4, black);
     ]
 
+let draw_with_view renderer texture =
+  clear renderer;
+  Renderer.set_scale renderer ~x:2. ~y:0.5;
+  Renderer.set_viewport renderer (Some (rect 3 10 20 20));
+  (* Clip at texel edges. SDL 3.2.0 can round the source when a scaled
+     software copy is clipped within a texel. *)
+  Renderer.set_clip_rect renderer (Some (rect 4 4 10 20));
+  let batch = Sprite_batch.create ~capacity:1 in
+  Sprite_batch.add batch ~src:solid ~x:1. ~y:0. ~w:6. ~h:8.;
+  Sprite_batch.draw renderer texture batch;
+  Renderer.set_clip_rect renderer None;
+  Renderer.set_viewport renderer None;
+  Renderer.set_scale renderer ~x:1. ~y:1.;
+  pixel renderer 14 7 white;
+  pixel renderer 19 8 white;
+  pixel renderer 13 7 black;
+  pixel renderer 14 6 black;
+  pixel renderer 20 8 black
+
 let ordered renderer texture =
   clear renderer;
   let batch = Sprite_batch.create ~capacity:1027 in
@@ -304,6 +323,10 @@ let misuse driver context renderer target texture =
     Sprite_batch.clear batch;
     Sprite_batch.add batch ~src:solid ~x:1e10 ~y:0. ~w:4. ~h:4.;
     invalid (fun () -> Sprite_batch.draw renderer texture batch);
+    Renderer.set_scale renderer ~x:8. ~y:1.;
+    Float.Array.set (Sprite_batch.positions batch) 0 1e8;
+    invalid (fun () -> Sprite_batch.draw renderer texture batch);
+    Renderer.set_scale renderer ~x:1. ~y:1.;
     Sprite_batch.clear batch);
   Sprite_batch.add batch ~src:(rect 0 0 1 1) ~x:0. ~y:0. ~w:1. ~h:1.;
   invalid (fun () -> Sprite_batch.draw renderer target batch);
@@ -341,6 +364,7 @@ let () =
                         ~finally:(fun () -> Renderer.set_target renderer None)
                         (fun () ->
                           transforms renderer texture;
+                          draw_with_view renderer texture;
                           ordered renderer texture;
                           reuse renderer texture;
                           color_updates renderer texture;

@@ -278,11 +278,61 @@ module Renderer : sig
       the window or surface again. *)
 
   val set_logical_presentation : t -> (int * int * presentation) option -> unit
-  (** Set a virtual width and height. Pass [None] to draw in output pixels. *)
+  (** Set a virtual width and height. Pass [None] to turn off logical
+      presentation. On SDL before 3.2.6, restore the default target first. *)
+
+  val logical_presentation_rect : t -> Frect.t
+  (** Get the presentation rectangle in output pixels. When logical presentation
+      is off, this covers the whole target. On SDL before 3.2.6, this query
+      refers to the default target even when a texture is active. *)
+
+  val set_viewport : t -> Rect.t option -> unit
+  (** Set the drawing area of the current target. Its top-left becomes the
+      drawing origin. Its dimensions must be nonnegative. Pass [None] to use the
+      entire target again. *)
+
+  val viewport : t -> Rect.t
+  (** Get the current target's drawing area in render units. This also returns
+      the effective area when no explicit rectangle is set. *)
+
+  val viewport_is_set : t -> bool
+  (** Return true if the current target has an explicit viewport. Use this to
+      distinguish a saved rectangle from the automatic viewport. *)
+
+  val set_clip_rect : t -> Rect.t option -> unit
+  (** Limit drawing on the current target, without moving its origin. The
+      rectangle is relative to the viewport. Its dimensions must be nonnegative.
+      Pass [None] to disable this extra clip. *)
+
+  val clip_rect : t -> Rect.t option
+  (** Get the current target's clip rectangle, or [None] when it is disabled. An
+      enabled empty rectangle is [Some rect], not [None]. *)
+
+  val set_scale : t -> x:float -> y:float -> unit
+  (** Set the horizontal and vertical drawing scales on the current target. The
+      factors must be finite and positive and keep the view in SDL's coordinate
+      range. Pass [1.] on both axes to reset the scale. *)
+
+  val scale : t -> float * float
+  (** Get the current target's drawing scale, without logical presentation. *)
+
+  val coordinates_from_window : t -> x:float -> y:float -> float * float
+  (** Convert a point from window units to render units for the default target.
+      SDL uses pixel density, logical presentation, drawing scale, and viewport.
+      The result can lie outside the drawing area. On a software surface
+      renderer, use surface pixels instead of window units. *)
+
+  val coordinates_to_window : t -> x:float -> y:float -> float * float
+  (** Convert a point from the default target's render units to window units.
+      Like [coordinates_from_window], this uses the default target's view even
+      when a texture is active. *)
 
   val set_draw_color : t -> Color.t -> unit
   val set_draw_blend_mode : t -> Blend_mode.t -> unit
+
   val clear : t -> unit
+  (** Clear the entire current target, even if a viewport or clip is set. *)
+
   val fill_rect : t -> Frect.t -> unit
   val draw_rect : t -> Frect.t -> unit
 
@@ -1164,6 +1214,17 @@ module Event : sig
   val poll : context -> t option
   (** Remove the next event from the queue. [None] means the queue is empty.
       Unbound event types keep their SDL type number in [Other]. *)
+
+  val to_render_coordinates : Renderer.t -> t -> t
+  (** Convert an event from the renderer's window to render units on the main
+      thread. Use the default target's view and leave the original event
+      unchanged. Convert positions in mouse motion, mouse buttons, touch, and
+      drop position events. Scale mouse and touch movement without moving the
+      origin of the movement. Convert normalized touch positions and movement to
+      render units. Wheel scroll amounts do not change.
+
+      Return other events unchanged, including events with no matching window.
+      Pass the original event, not the result of a previous conversion. *)
 end
 
 module Audio : sig

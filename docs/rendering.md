@@ -25,6 +25,36 @@ draw to. Select it with `Renderer.set_target renderer (Some target)`. Clear it b
 it. Before you draw the texture to the window or present the frame, restore the default render
 target with `Renderer.set_target renderer None`.
 
+## Draw in part of a target
+
+A viewport is the rectangle where SDL draws. Use `Renderer.set_viewport` to draw a panel, a minimap,
+or one side of a split screen. Draw at `(0, 0)` to start at the viewport's top-left corner.  Pass
+`None` to restore the automatic viewport, which covers the whole drawing area.
+
+A clip rectangle limits drawing without moving the origin. Pass it to `Renderer.set_clip_rect` in
+coordinates relative to the viewport. Pass `None` to remove the extra clip. To clear only a panel,
+fill a rectangle. `Renderer.clear` clears the whole target, even with a viewport and clip.
+
+Use `Renderer.set_scale renderer ~x:2. ~y:2.` to draw twice as large on both axes. The scale also
+affects the viewport and clip rectangles. Pass `1.` for both axes to reset the scale.
+
+Logical presentation maps a fixed drawing size to an output of a different size. For example,
+`Renderer.set_logical_presentation renderer (Some (640, 360, Letterbox))` keeps the aspect ratio and
+adds bars as needed. Use `Renderer.logical_presentation_rect` to find where the picture appears in
+output pixels, before the viewport and drawing scale.
+
+The window or surface and each texture target keep their own viewport, clip, and scale. Use
+`Renderer.viewport_is_set` if you need to restore the viewport later. `Renderer.viewport` returns a
+rectangle even when you did not set one. Restore `None` if the previous viewport was automatic, so
+that it still follows changes in size or scale.
+
+SDL 3.2.0 through 3.2.4 only apply logical presentation to the default target. On those versions,
+restore that target before you set logical presentation. The presentation rectangle query also
+reports the default target on those versions.
+
+See [Convert input to drawing coordinates](input.md#convert-input-to-drawing-coordinates) to map
+clicks to a viewport.
+
 ## Draw in batches
 
 A batch draws several items in one call. Use `Renderer.fill_rects` or `Renderer.draw_rects` to

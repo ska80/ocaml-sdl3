@@ -249,6 +249,31 @@ module Renderer = struct
     t -> (int * int * presentation) option -> unit
     = "osdl_renderer_set_logical_presentation"
 
+  external logical_presentation_rect : t -> Frect.t
+    = "osdl_renderer_logical_presentation_rect"
+
+  external set_viewport : t -> Rect.t option -> unit
+    = "osdl_renderer_set_viewport"
+
+  external viewport : t -> Rect.t = "osdl_renderer_viewport"
+  external viewport_is_set : t -> bool = "osdl_renderer_viewport_is_set"
+
+  external set_clip_rect : t -> Rect.t option -> unit
+    = "osdl_renderer_set_clip_rect"
+
+  external clip_rect : t -> Rect.t option = "osdl_renderer_clip_rect"
+
+  external set_scale : t -> x:float -> y:float -> unit
+    = "osdl_renderer_set_scale"
+
+  external scale : t -> float * float = "osdl_renderer_scale"
+
+  external coordinates_from_window : t -> x:float -> y:float -> float * float
+    = "osdl_renderer_coordinates_from_window"
+
+  external coordinates_to_window : t -> x:float -> y:float -> float * float
+    = "osdl_renderer_coordinates_to_window"
+
   external set_draw_color : t -> Color.t -> unit
     = "osdl_renderer_set_draw_color"
 
@@ -881,6 +906,57 @@ module Event = struct
   type t = { timestamp_ns : int64; kind : kind }
 
   external poll : context -> t option = "osdl_event_poll"
+
+  type coordinates = { x : float; y : float; dx : float; dy : float }
+
+  external convert_coordinates :
+    Renderer.t ->
+    window:Window.id option ->
+    touch:bool ->
+    x:float ->
+    y:float ->
+    dx:float ->
+    dy:float ->
+    coordinates option
+    = "osdl_event_convert_coordinates_byte" "osdl_event_convert_coordinates"
+
+  let convert_point renderer ~window ~x ~y =
+    convert_coordinates renderer ~window ~touch:false ~x ~y ~dx:0. ~dy:0.
+
+  let to_render_coordinates renderer event =
+    match event.kind with
+    | Mouse_motion ({ window; x; y; dx; dy; _ } as motion) -> (
+        match
+          convert_coordinates renderer ~window:(Some window) ~touch:false ~x ~y
+            ~dx ~dy
+        with
+        | None -> event
+        | Some { x; y; dx; dy } ->
+            { event with kind = Mouse_motion { motion with x; y; dx; dy } })
+    | Mouse_button ({ window; x; y; _ } as button) -> (
+        match convert_point renderer ~window:(Some window) ~x ~y with
+        | None -> event
+        | Some { x; y; _ } ->
+            { event with kind = Mouse_button { button with x; y } })
+    | Touch ({ window; finger; dx; dy; _ } as touch) -> (
+        match
+          convert_coordinates renderer ~window ~touch:true ~x:finger.x
+            ~y:finger.y ~dx ~dy
+        with
+        | None -> event
+        | Some { x; y; dx; dy } ->
+            {
+              event with
+              kind = Touch { touch with finger = { finger with x; y }; dx; dy };
+            })
+    | Drop { window; change = Position { x; y } } -> (
+        match convert_point renderer ~window ~x ~y with
+        | None -> event
+        | Some { x; y; _ } ->
+            { event with kind = Drop { window; change = Position { x; y } } })
+    | _ ->
+        ignore (convert_point renderer ~window:None ~x:0. ~y:0.);
+        event
 end
 
 module Audio = struct

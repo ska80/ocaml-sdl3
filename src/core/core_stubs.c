@@ -125,6 +125,11 @@ CAMLprim value osdl_display_name(value context, value id) {
     return caml_copy_string(name);
 }
 
+static value osdl_rect_value(SDL_Rect rect) {
+    return caml_alloc_4(0, osdl_val_int(rect.x), osdl_val_int(rect.y), osdl_val_int(rect.w),
+                        osdl_val_int(rect.h));
+}
+
 static value osdl_display_rect(value context, value id, bool usable) {
     osdl_require_display_context(context);
 
@@ -134,8 +139,7 @@ static value osdl_display_rect(value context, value id, bool usable) {
         osdl_check(SDL_GetDisplayUsableBounds(display, &rect), "SDL_GetDisplayUsableBounds");
     else
         osdl_check(SDL_GetDisplayBounds(display, &rect), "SDL_GetDisplayBounds");
-    return caml_alloc_4(0, osdl_val_int(rect.x), osdl_val_int(rect.y), osdl_val_int(rect.w),
-                        osdl_val_int(rect.h));
+    return osdl_rect_value(rect);
 }
 
 CAMLprim value osdl_display_bounds(value context, value id) {
@@ -524,6 +528,140 @@ CAMLprim value osdl_renderer_set_target(value renderer, value target) {
     return Val_unit;
 }
 
+typedef struct {
+    SDL_FPoint scale;
+    SDL_FPoint offset;
+} osdl_render_view;
+
+static const osdl_render_view osdl_unit_view = {
+    {1, 1},
+    {0, 0}
+};
+
+static bool osdl_old_logical_target(SDL_Renderer* renderer) {
+    return SDL_GetRenderTarget(renderer) && SDL_GetVersion() < SDL_VERSIONNUM(3, 2, 6);
+}
+
+static SDL_FPoint osdl_render_scale(SDL_Renderer* renderer) {
+    SDL_FPoint scale;
+    osdl_check(SDL_GetRenderScale(renderer, &scale.x, &scale.y), "SDL_GetRenderScale");
+    return scale;
+}
+
+static osdl_render_view osdl_logical_view(SDL_Renderer* renderer) {
+    /* Before SDL 3.2.6, logical presentation only affected the default target. */
+    if (osdl_old_logical_target(renderer)) return osdl_unit_view;
+
+    int                             w, h;
+    SDL_RendererLogicalPresentation mode;
+    osdl_check(SDL_GetRenderLogicalPresentation(renderer, &w, &h, &mode),
+               "SDL_GetRenderLogicalPresentation");
+    if (mode == SDL_LOGICAL_PRESENTATION_DISABLED || w <= 0 || h <= 0) return osdl_unit_view;
+
+    SDL_FRect rect;
+    osdl_check(SDL_GetRenderLogicalPresentationRect(renderer, &rect),
+               "SDL_GetRenderLogicalPresentationRect");
+    return (osdl_render_view){
+        {rect.w / w, rect.h / h},
+        {rect.x,     rect.y    }
+    };
+}
+
+static osdl_render_view osdl_scale_view(osdl_render_view view, SDL_FPoint scale) {
+    view.scale.x *= scale.x;
+    view.scale.y *= scale.y;
+    return view;
+}
+
+static osdl_render_view osdl_current_view(SDL_Renderer* renderer) {
+    return osdl_scale_view(osdl_logical_view(renderer), osdl_render_scale(renderer));
+}
+
+static SDL_Rect osdl_explicit_viewport(SDL_Renderer* renderer) {
+    SDL_Rect rect = {0};
+    if (SDL_RenderViewportSet(renderer))
+        osdl_check(SDL_GetRenderViewport(renderer, &rect), "SDL_GetRenderViewport");
+    return rect;
+}
+
+/* SDL stores pixel rectangles in signed ints and adds the clip origin to the
+ * viewport origin. Leave room for these sums and SDL's rounded endpoints. */
+static const double osdl_view_limit = INT_MAX / 4.0;
+
+static void osdl_check_view_rect(SDL_Rect rect, osdl_render_view view) {
+    double x = fabs((double)rect.x * view.scale.x) + fabs(view.offset.x);
+    double y = fabs((double)rect.y * view.scale.y) + fabs(view.offset.y);
+    double w = (double)rect.w * view.scale.x;
+    double h = (double)rect.h * view.scale.y;
+    if (!(x <= osdl_view_limit && y <= osdl_view_limit && w <= osdl_view_limit &&
+          h <= osdl_view_limit))
+        caml_invalid_argument("The scaled viewport or clip rectangle is outside the SDL range");
+}
+
+static void osdl_check_view_state(SDL_Renderer* renderer, osdl_render_view view) {
+    osdl_check_view_rect(osdl_explicit_viewport(renderer), view);
+    if (SDL_RenderClipEnabled(renderer)) {
+        SDL_Rect rect;
+        osdl_check(SDL_GetRenderClipRect(renderer, &rect), "SDL_GetRenderClipRect");
+        view.offset = (SDL_FPoint){0, 0};
+        osdl_check_view_rect(rect, view);
+    }
+}
+
+static void osdl_check_viewport_size(int w, int h, SDL_FPoint scale) {
+    /* SDL_GetRenderViewport divides by the effective scale before casting. */
+    if (!(scale.x > 0 && scale.y > 0 && (double)SDL_ceilf((float)w / scale.x) <= INT_MAX &&
+          (double)SDL_ceilf((float)h / scale.y) <= INT_MAX))
+        caml_invalid_argument("The automatic viewport is outside the SDL range");
+}
+
+static void osdl_check_automatic_viewport(SDL_Renderer* renderer, SDL_FPoint scale) {
+    int w, h;
+    osdl_check(SDL_GetCurrentRenderOutputSize(renderer, &w, &h), "SDL_GetCurrentRenderOutputSize");
+    osdl_check_viewport_size(w, h, scale);
+}
+
+static osdl_render_view osdl_check_presentation(SDL_Renderer* renderer, int w, int h,
+                                                SDL_RendererLogicalPresentation mode,
+                                                SDL_FPoint                      scale) {
+    SDL_Texture* target = SDL_GetRenderTarget(renderer);
+    int          output_w, output_h;
+    if (target) {
+        output_w = target->w;
+        output_h = target->h;
+    } else {
+        osdl_check(SDL_GetRenderOutputSize(renderer, &output_w, &output_h),
+                   "SDL_GetRenderOutputSize");
+    }
+    if (mode == SDL_LOGICAL_PRESENTATION_DISABLED) {
+        osdl_check_viewport_size(output_w, output_h, scale);
+        return osdl_unit_view;
+    }
+    if (w > osdl_view_limit || h > osdl_view_limit)
+        caml_invalid_argument("The logical presentation size is outside the SDL range");
+    /* SDL uses the presentation rectangle as the pixel size. Dividing it
+     * by the logical scale gives the requested logical size again. */
+    osdl_check_viewport_size(w, h, scale);
+
+    /* Bound the new scale and offset before SDL updates the existing
+     * viewport and clip rectangle. Allow for rounding the output to pixels. */
+    float sx = (float)output_w / w, sy = (float)output_h / h;
+    if (mode == SDL_LOGICAL_PRESENTATION_INTEGER_SCALE) {
+        sx = sy = SDL_max(1.0f, SDL_floorf(SDL_min(sx, sy)));
+    } else if (mode != SDL_LOGICAL_PRESENTATION_STRETCH &&
+               (output_h <= 0 || SDL_fabsf((float)w / h - (float)output_w / output_h) >= 0.0001f)) {
+        sx = sy = mode == SDL_LOGICAL_PRESENTATION_LETTERBOX ? SDL_min(sx, sy) : SDL_max(sx, sy);
+    }
+    double width = (double)w * sx, height = (double)h * sy;
+    if (!(width <= osdl_view_limit && height <= osdl_view_limit))
+        caml_invalid_argument("The logical presentation rectangle is outside the SDL range");
+
+    return (osdl_render_view){
+        {sx,                                 sy                                 },
+        {0.5 * fabs(output_w - width) + 1.0, 0.5 * fabs(output_h - height) + 1.0}
+    };
+}
+
 CAMLprim value osdl_renderer_set_logical_presentation(value renderer, value size) {
     static const SDL_RendererLogicalPresentation modes[] = {
         SDL_LOGICAL_PRESENTATION_STRETCH,
@@ -541,9 +679,139 @@ CAMLprim value osdl_renderer_set_logical_presentation(value renderer, value size
         mode    = modes[Int_val(Field(v, 2))];
     }
 
-    osdl_check(SDL_SetRenderLogicalPresentation(osdl_live(renderer), w, h, mode),
-               "SDL_SetRenderLogicalPresentation");
+    SDL_Renderer* r = osdl_live(renderer);
+    if (osdl_old_logical_target(r))
+        caml_invalid_argument(
+            "Restore the default target before setting logical presentation on SDL before 3.2.6");
+    SDL_FPoint       scale = osdl_render_scale(r);
+    osdl_render_view view  = osdl_check_presentation(r, w, h, mode, scale);
+    osdl_check_view_state(r, osdl_scale_view(view, scale));
+
+    osdl_check(SDL_SetRenderLogicalPresentation(r, w, h, mode), "SDL_SetRenderLogicalPresentation");
     return Val_unit;
+}
+
+CAMLprim value osdl_renderer_logical_presentation_rect(value renderer) {
+    SDL_Renderer*                   r = osdl_live(renderer);
+    SDL_RendererLogicalPresentation mode;
+    SDL_FRect                       rect;
+    osdl_check(SDL_GetRenderLogicalPresentation(r, NULL, NULL, &mode),
+               "SDL_GetRenderLogicalPresentation");
+    if (mode == SDL_LOGICAL_PRESENTATION_DISABLED) {
+        /* SDL can leave logical_dst_rect unset until the first update. */
+        int w, h;
+        if (osdl_old_logical_target(r))
+            osdl_check(SDL_GetRenderOutputSize(r, &w, &h), "SDL_GetRenderOutputSize");
+        else
+            osdl_check(SDL_GetCurrentRenderOutputSize(r, &w, &h), "SDL_GetCurrentRenderOutputSize");
+        rect = (SDL_FRect){0, 0, (float)w, (float)h};
+    } else {
+        osdl_check(SDL_GetRenderLogicalPresentationRect(r, &rect),
+                   "SDL_GetRenderLogicalPresentationRect");
+    }
+
+    /* Sdl3.Frect.t contains four floats in this order. */
+    value result = caml_alloc_small(4 * Double_wosize, Double_array_tag);
+    Store_double_flat_field(result, 0, rect.x);
+    Store_double_flat_field(result, 1, rect.y);
+    Store_double_flat_field(result, 2, rect.w);
+    Store_double_flat_field(result, 3, rect.h);
+    return result;
+}
+
+static const SDL_Rect* osdl_view_rect_option(value rect, SDL_Rect* storage) {
+    if (Is_long(rect)) return NULL;
+    *storage = osdl_rect(Some_val(rect));
+    if (storage->w < 0 || storage->h < 0)
+        caml_invalid_argument("A viewport or clip rectangle cannot have a negative size");
+    return storage;
+}
+
+CAMLprim value osdl_renderer_set_viewport(value renderer, value rect) {
+    SDL_Renderer*   r = osdl_live(renderer);
+    SDL_Rect        storage;
+    const SDL_Rect* area = osdl_view_rect_option(rect, &storage);
+    if (area) osdl_check_view_rect(*area, osdl_current_view(r));
+
+    osdl_check(SDL_SetRenderViewport(r, area), "SDL_SetRenderViewport");
+    return Val_unit;
+}
+
+CAMLprim value osdl_renderer_viewport(value renderer) {
+    SDL_Renderer* r = osdl_live(renderer);
+    if (!SDL_RenderViewportSet(r)) osdl_check_automatic_viewport(r, osdl_current_view(r).scale);
+
+    SDL_Rect rect;
+    osdl_check(SDL_GetRenderViewport(r, &rect), "SDL_GetRenderViewport");
+    return osdl_rect_value(rect);
+}
+
+CAMLprim value osdl_renderer_viewport_is_set(value renderer) {
+    return Val_bool(SDL_RenderViewportSet(osdl_live(renderer)));
+}
+
+CAMLprim value osdl_renderer_set_clip_rect(value renderer, value rect) {
+    SDL_Renderer*   r = osdl_live(renderer);
+    SDL_Rect        storage;
+    const SDL_Rect* area = osdl_view_rect_option(rect, &storage);
+    if (area) {
+        osdl_render_view view = osdl_current_view(r);
+        view.offset           = (SDL_FPoint){0, 0};
+        osdl_check_view_rect(*area, view);
+    }
+
+    osdl_check(SDL_SetRenderClipRect(r, area), "SDL_SetRenderClipRect");
+    return Val_unit;
+}
+
+CAMLprim value osdl_renderer_clip_rect(value renderer) {
+    SDL_Renderer* r = osdl_live(renderer);
+    if (!SDL_RenderClipEnabled(r)) return Val_none;
+
+    SDL_Rect rect;
+    osdl_check(SDL_GetRenderClipRect(r, &rect), "SDL_GetRenderClipRect");
+    return caml_alloc_some(osdl_rect_value(rect));
+}
+
+CAMLprim value osdl_renderer_set_scale(value renderer, value x, value y) {
+    SDL_Renderer* r     = osdl_live(renderer);
+    SDL_FPoint    scale = {osdl_float(Double_val(x)), osdl_float(Double_val(y))};
+    if (!(scale.x > 0 && scale.y > 0 && scale.x <= osdl_view_limit && scale.y <= osdl_view_limit))
+        caml_invalid_argument("Render scales must be positive and within the SDL range");
+    osdl_render_view view = osdl_scale_view(osdl_logical_view(r), scale);
+    osdl_check_view_state(r, view);
+    osdl_check_automatic_viewport(r, view.scale);
+
+    osdl_check(SDL_SetRenderScale(r, scale.x, scale.y), "SDL_SetRenderScale");
+    return Val_unit;
+}
+
+CAMLprim value osdl_renderer_scale(value renderer) {
+    SDL_FPoint scale = osdl_render_scale(osdl_live(renderer));
+    return osdl_float_pair(scale.x, scale.y);
+}
+
+static value osdl_renderer_coordinates(value renderer, value x, value y, bool from_window) {
+    SDL_Renderer* r  = osdl_live(renderer);
+    float         cx = osdl_float(Double_val(x)), cy = osdl_float(Double_val(y));
+
+    if (from_window)
+        osdl_check(SDL_RenderCoordinatesFromWindow(r, cx, cy, &cx, &cy),
+                   "SDL_RenderCoordinatesFromWindow");
+    else
+        osdl_check(SDL_RenderCoordinatesToWindow(r, cx, cy, &cx, &cy),
+                   "SDL_RenderCoordinatesToWindow");
+    if (!osdl_fits_float(cx) || !osdl_fits_float(cy))
+        caml_invalid_argument("The converted coordinates must be finite C floats");
+    return osdl_float_pair(cx, cy);
+}
+
+CAMLprim value osdl_renderer_coordinates_from_window(value renderer, value x, value y) {
+    return osdl_renderer_coordinates(renderer, x, y, true);
+}
+
+CAMLprim value osdl_renderer_coordinates_to_window(value renderer, value x, value y) {
+    return osdl_renderer_coordinates(renderer, x, y, false);
 }
 
 CAMLprim value osdl_renderer_set_draw_color(value renderer, value color) {
@@ -1115,27 +1383,22 @@ CAMLprim value osdl_sprite_batch_set_opacity(value storage, value index, value o
     return Val_unit;
 }
 
-/* Include logical presentation in the software renderer's coordinate limits.
- * The binding does not set a separate render scale. */
-static double osdl_sprite_software_scale(SDL_Renderer* r) {
-    int                             w, h;
-    SDL_RendererLogicalPresentation mode;
-    osdl_check(SDL_GetRenderLogicalPresentation(r, &w, &h, &mode),
-               "SDL_GetRenderLogicalPresentation");
-    if (mode == SDL_LOGICAL_PRESENTATION_DISABLED || w <= 0 || h <= 0) return 1.0;
-
-    SDL_FRect rect;
-    osdl_check(SDL_GetRenderLogicalPresentationRect(r, &rect),
-               "SDL_GetRenderLogicalPresentationRect");
-    return SDL_max(1.0, SDL_max((double)rect.w / w, (double)rect.h / h));
+/* Include the viewport origin and both scales in software drawing limits. */
+static osdl_render_view osdl_software_view(SDL_Renderer* renderer) {
+    osdl_render_view view     = osdl_current_view(renderer);
+    SDL_Rect         viewport = osdl_explicit_viewport(renderer);
+    view.offset.x             = SDL_floorf(viewport.x * view.scale.x + view.offset.x);
+    view.offset.y             = SDL_floorf(viewport.y * view.scale.y + view.offset.y);
+    return view;
 }
 
 static void osdl_sprite_software_bounds(const osdl_sprite* sprite, double x, double y,
-                                        double scale) {
+                                        osdl_render_view view) {
     double width = sprite->size.x, height = sprite->size.y;
-    double reach = width + height;
+    double reach          = width + height;
+    bool   rotate_or_flip = sprite->angle != 0.0 || sprite->flip != SDL_FLIP_NONE;
     /* The rotation path uses signed byte offsets into its scaled surface. */
-    if ((sprite->angle != 0.0 || sprite->flip != SDL_FLIP_NONE) && 4.0 * width * height > INT_MAX)
+    if (rotate_or_flip && 4.0 * width * height > INT_MAX)
         caml_invalid_argument("The software sprite is too large to rotate or flip");
     if (sprite->angle != 0.0) {
         double px = fabs(sprite->pivot.x), py = fabs(sprite->pivot.y);
@@ -1145,8 +1408,16 @@ static void osdl_sprite_software_bounds(const osdl_sprite* sprite, double x, dou
             caml_invalid_argument("Sprite size or pivot is outside the software rotation range");
         reach += 2.0 * (px + py);
     }
-    /* SDL converts to ints and adds viewport offsets and rectangle extents. */
-    if ((SDL_max(fabs(x), fabs(y)) + reach) * scale > INT_MAX / 4.0)
+    double ox = fabs(view.offset.x), oy = fabs(view.offset.y);
+    if (rotate_or_flip && view.scale.x > 0 && view.scale.y > 0) {
+        /* The rotation path adds an offset before its final scale. SDL
+         * versions differ in whether they divide the offset by that scale. */
+        ox = SDL_max(ox, ox / view.scale.x);
+        oy = SDL_max(oy, oy / view.scale.y);
+    }
+    double px = (fabs(x) + reach + ox) * SDL_max(1.0, view.scale.x);
+    double py = (fabs(y) + reach + oy) * SDL_max(1.0, view.scale.y);
+    if (!(px <= osdl_view_limit && py <= osdl_view_limit))
         caml_invalid_argument("Sprite coordinates are outside the software renderer range");
 }
 
@@ -1257,7 +1528,7 @@ CAMLprim value osdl_sprite_batch_draw(value renderer, value texture, value posit
     const osdl_sprite* sprites  = Caml_ba_data_val(storage);
     const char*        driver   = SDL_GetRendererName(r);
     bool               software = driver && strcmp(driver, SDL_SOFTWARE_RENDERER) == 0;
-    double             scale    = software ? osdl_sprite_software_scale(r) : 1.0;
+    osdl_render_view   view     = software ? osdl_software_view(r) : osdl_unit_view;
 
     /* Validate the whole batch before any draw. The caller can edit the
      * positions or reuse the batch with a texture of a different size. */
@@ -1273,7 +1544,7 @@ CAMLprim value osdl_sprite_batch_draw(value renderer, value texture, value posit
             if (!osdl_fits_float(x + s->corners[j].x) || !osdl_fits_float(y + s->corners[j].y))
                 caml_invalid_argument("Transformed sprite corners must be finite C floats");
         }
-        if (software) osdl_sprite_software_bounds(s, x, y, scale);
+        if (software) osdl_sprite_software_bounds(s, x, y, view);
     }
 
     if (software)
@@ -1320,28 +1591,10 @@ static inline int osdl_geometry_vertex(const osdl_geometry* geometry, int i) {
     return geometry->indices ? (int)geometry->indices[i] : i;
 }
 
-static SDL_FRect osdl_geometry_software_view(SDL_Renderer* renderer) {
-    int                             w, h;
-    SDL_RendererLogicalPresentation mode;
-    osdl_check(SDL_GetRenderLogicalPresentation(renderer, &w, &h, &mode),
-               "SDL_GetRenderLogicalPresentation");
-    if (mode == SDL_LOGICAL_PRESENTATION_DISABLED || w <= 0 || h <= 0)
-        return (SDL_FRect){0, 0, 1, 1};
-
-    SDL_FRect view;
-    osdl_check(SDL_GetRenderLogicalPresentationRect(renderer, &view),
-               "SDL_GetRenderLogicalPresentationRect");
-    /* SDL 3.2.0 reports the window scale even when drawing to a texture
-     * with no logical scale. Cover both cases. */
-    view.w = SDL_max(1.0f, view.w / w);
-    view.h = SDL_max(1.0f, view.h / h);
-    return view;
-}
-
 static void osdl_geometry_software_bounds(SDL_Renderer* renderer, const osdl_geometry* geometry) {
-    SDL_FRect    view   = osdl_geometry_software_view(renderer);
-    SDL_Texture* target = SDL_GetRenderTarget(renderer);
-    int          w, h;
+    osdl_render_view view   = osdl_software_view(renderer);
+    SDL_Texture*     target = SDL_GetRenderTarget(renderer);
+    int              w, h;
     if (target) {
         w = target->w;
         h = target->h;
@@ -1354,8 +1607,8 @@ static void osdl_geometry_software_bounds(SDL_Renderer* renderer, const osdl_geo
     /* Leave room for SDL's fixed-point products, color interpolation, and
      * signed byte offsets into the target, even for offscreen vertices. */
     for (int i = 0; i < geometry->vertices; ++i) {
-        double x = fabs(geometry->xy[2 * i]) * view.w + fabs(view.x) + 1.0;
-        double y = fabs(geometry->xy[2 * i + 1]) * view.h + fabs(view.y) + 1.0;
+        double x = fabs(geometry->xy[2 * i]) * view.scale.x + fabs(view.offset.x) + 1.0;
+        double y = fabs(geometry->xy[2 * i + 1]) * view.scale.y + fabs(view.offset.y) + 1.0;
         if (!(x <= (1 << 24) && y <= (1 << 24) && 4.0 * (x + y * w) <= INT_MAX))
             caml_invalid_argument("Geometry positions are outside the software renderer range");
     }
@@ -1376,7 +1629,7 @@ static void osdl_geometry_software_bounds(SDL_Renderer* renderer, const osdl_geo
             (double)SDL_max(xy[a], SDL_max(xy[b], xy[c])) - SDL_min(xy[a], SDL_min(xy[b], xy[c]));
         double dy = (double)SDL_max(xy[a + 1], SDL_max(xy[b + 1], xy[c + 1])) -
                     SDL_min(xy[a + 1], SDL_min(xy[b + 1], xy[c + 1]));
-        double area = 4.0 * (dx * view.w + 2.0) * (dy * view.h + 2.0);
+        double area = 4.0 * (dx * view.scale.x + 2.0) * (dy * view.scale.y + 2.0);
         int    u    = (int)(geometry->uv[c] * t->w);
         int    v    = (int)(geometry->uv[c + 1] * t->h);
         if (2.0 * area > INT_MAX || area * SDL_max(u, v) > INT_MAX)

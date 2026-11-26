@@ -66,6 +66,23 @@ let gradient renderer =
   pixel renderer 32 6 (0, 255, 0);
   pixel renderer 20 20 (0, 0, 0)
 
+let draw_with_view renderer =
+  clear renderer 0 0 0;
+  Renderer.set_draw_blend_mode renderer None;
+  Renderer.set_scale renderer ~x:2. ~y:0.5;
+  Renderer.set_viewport renderer (Some (rect 6 8 20 40));
+  Renderer.set_clip_rect renderer (Some (rect 4 4 5 8));
+  draw renderer
+    ~positions:(floats [| 0.; 0.; 16.; 0.; 0.; 28. |])
+    ~colors:(rgba 3 1. 0. 0. 1.) ~vertex_count:3;
+  Renderer.set_clip_rect renderer None;
+  Renderer.set_viewport renderer None;
+  Renderer.set_scale renderer ~x:1. ~y:1.;
+  pixel renderer 21 7 (255, 0, 0);
+  List.iter
+    (fun (x, y) -> pixel renderer x y (0, 0, 0))
+    [ (19, 7); (30, 7); (22, 5); (22, 10) ]
+
 let make_texture context renderer =
   using Surface.destroy (Surface.create context ~w:16 ~h:16) (fun surface ->
       Surface.fill surface (Color.rgb 255 0 0);
@@ -211,6 +228,10 @@ let software_bounds context =
           positions.{5} <- 1e10;
           invalid "software position range" call;
           Renderer.set_logical_presentation renderer None;
+          Renderer.set_scale renderer ~x:1. ~y:8.;
+          positions.{5} <- 1e8;
+          invalid "scaled software position range" call;
+          Renderer.set_scale renderer ~x:1. ~y:1.;
           clear renderer 0 0 0;
           using Texture.destroy (make_texture context renderer) (fun texture ->
               let positions =
@@ -245,6 +266,7 @@ let () =
                         ~finally:(fun () -> Renderer.set_target renderer None)
                         (fun () ->
                           gradient renderer;
+                          draw_with_view renderer;
                           textured driver renderer texture;
                           ordered renderer;
                           bad_buffers renderer texture;

@@ -256,6 +256,123 @@ let device_events context window =
   check (next () = Other 0x650l) "Unknown gamepad axis event";
   check (next () = Other 0x651l) "Unknown gamepad button event"
 
+let converted_events context window renderer =
+  let window_id = Window.id window in
+  let rec take predicate =
+    match Event.poll context with
+    | Some event when predicate event.kind -> event
+    | Some _ -> take predicate
+    | None -> failwith "Missing event to convert"
+  in
+  let open Event in
+  let convert event =
+    let rendered = to_render_coordinates renderer event in
+    check
+      (rendered.timestamp_ns = event.timestamp_ns)
+      "Converted event timestamp";
+    rendered.kind
+  in
+  push_events (Window.id_to_int32 window_id);
+  let event =
+    take (function
+      | Mouse_motion _ -> true
+      | _ -> false)
+  in
+  (match event.kind with
+  | Mouse_motion motion ->
+      check
+        (convert event
+        = Mouse_motion
+            { motion with x = -3.375; y = 1.5; dx = -0.375; dy = 0.5 })
+        "Mouse position and movement in render units";
+      check (motion.x = 2.5 && motion.dx = -1.5) "Original mouse event";
+      Renderer.set_viewport renderer (Some (Rect.make ~x:1 ~y:2 ~w:4 ~h:14));
+      check
+        (convert event
+        = Mouse_motion
+            { motion with x = -1.375; y = 1.5; dx = -0.375; dy = 0.5 })
+        "Convert the same event for another viewport";
+      Renderer.set_viewport renderer (Some (Rect.make ~x:3 ~y:2 ~w:4 ~h:14));
+      invalid (fun () ->
+          convert { event with kind = Mouse_motion { motion with x = nan } });
+      using Window.destroy
+        (Window.create context ~title:"Other window" ~w:8 ~h:8) (fun other ->
+          let event =
+            {
+              event with
+              kind = Mouse_motion { motion with window = Window.id other };
+            }
+          in
+          check
+            (to_render_coordinates renderer event == event)
+            "Event from another window")
+  | _ -> assert false);
+  let event =
+    take (function
+      | Mouse_button _ -> true
+      | _ -> false)
+  in
+  (match event.kind with
+  | Mouse_button button ->
+      check
+        (convert event = Mouse_button { button with x = -3.6875; y = 0.75 })
+        "Converted button position"
+  | _ -> assert false);
+  let wheel =
+    take (function
+      | Mouse_wheel _ -> true
+      | _ -> false)
+  in
+  check
+    (to_render_coordinates renderer wheel == wheel)
+    "Unchanged wheel scroll amounts";
+  let drop =
+    take (function
+      | Drop { change = Position _; _ } -> true
+      | _ -> false)
+  in
+  check
+    (convert drop
+    = Drop
+        { window = Some window_id; change = Position { x = -1.875; y = 10.25 } }
+    )
+    "Drop position in render units";
+  let file =
+    take (function
+      | Drop { change = File _; _ } -> true
+      | _ -> false)
+  in
+  check (to_render_coordinates renderer file == file) "Unchanged file drop";
+  let go_quit = take (( = ) Quit) in
+  check
+    (to_render_coordinates renderer go_quit == go_quit)
+    "Unchanged quit event";
+  check (poll context = None) "Event conversion does not enqueue events";
+  push_device_events (Window.id_to_int32 window_id);
+  let touch =
+    take (function
+      | Touch { change = Motion; _ } -> true
+      | _ -> false)
+  in
+  (match touch.kind with
+  | Touch info ->
+      let finger = { info.finger with x = -2.; y = 16. } in
+      check
+        (convert touch = Touch { info with finger; dx = -1.; dy = 12. })
+        "Normalized touch becomes render position and movement"
+  | _ -> assert false);
+  let canceled =
+    take (function
+      | Touch { change = Canceled; _ } -> true
+      | _ -> false)
+  in
+  check
+    (to_render_coordinates renderer canceled == canceled)
+    "Touch without a window";
+  while Option.is_some (poll context) do
+    ()
+  done
+
 let gamepads context =
   let gamepad = attach_gamepad () in
   using detach_gamepad gamepad (fun raw_id ->
@@ -651,6 +768,212 @@ let surface_rgba context =
   test Bgra32 13;
   test Rgb24 255
 
+let renderer_views context window =
+  let rect x y w h = Rect.make ~x ~y ~w ~h in
+  let frect x y w h = Frect.make ~x ~y ~w ~h in
+  using Renderer.destroy (Renderer.create ~driver:"software" window)
+    (fun renderer ->
+      check (Renderer.viewport renderer = rect 0 0 32 24) "Default viewport";
+      check (not (Renderer.viewport_is_set renderer)) "Automatic viewport";
+      check (Renderer.clip_rect renderer = None) "No clip by default";
+      check (Renderer.scale renderer = (1., 1.)) "Default scale";
+      check
+        (Renderer.logical_presentation_rect renderer = frect 0. 0. 32. 24.)
+        "Presentation rectangle without logical sizing";
+      let empty = rect (-1) 1 0 5 in
+      Renderer.set_viewport renderer (Some empty);
+      check
+        (Renderer.viewport_is_set renderer && Renderer.viewport renderer = empty)
+        "Explicit empty viewport";
+      Renderer.set_viewport renderer None;
+      Renderer.set_clip_rect renderer (Some empty);
+      check (Renderer.clip_rect renderer = Some empty) "Explicit empty clip";
+      Renderer.set_clip_rect renderer None;
+      check (Renderer.clip_rect renderer = None) "Disabled clip";
+
+      let logical = frect 4. 0. 24. 24. in
+      Renderer.set_logical_presentation renderer (Some (12, 12, Letterbox));
+      check
+        (Renderer.logical_presentation_rect renderer = logical)
+        "Letterbox rectangle";
+      Renderer.set_scale renderer ~x:2. ~y:0.5;
+      check
+        (Renderer.scale renderer = (2., 0.5))
+        "Scale without the logical multiplier";
+      check
+        (Renderer.viewport renderer = rect 0 0 6 24)
+        "Automatic viewport in render units";
+      let viewport = rect 3 2 4 14 and clip = rect (-1) 2 4 6 in
+      Renderer.set_viewport renderer (Some viewport);
+      Renderer.set_clip_rect renderer (Some clip);
+      let roundtrip () =
+        let x, y = Renderer.coordinates_from_window renderer ~x:21.5 ~y:14.5 in
+        check ((x, y) = (1.375, 12.5)) "Point in render units";
+        check
+          (Renderer.coordinates_to_window renderer ~x ~y = (21.5, 14.5))
+          "Render to window round trip";
+        check
+          (Renderer.coordinates_from_window renderer ~x:0. ~y:0. = (-4., -2.))
+          "Coordinates outside the viewport are not clamped"
+      in
+      roundtrip ();
+      converted_events context window renderer;
+
+      let v = version () in
+      let old_logical = (v.major, v.minor, v.patch) < (3, 2, 6) in
+      using Texture.destroy (Texture.create_target renderer ~w:20 ~h:10)
+        (fun target ->
+          Renderer.set_target renderer (Some target);
+          check
+            (Renderer.viewport renderer = rect 0 0 20 10)
+            "Texture viewport starts automatic";
+          check
+            (Renderer.scale renderer = (1., 1.)
+            && Renderer.clip_rect renderer = None)
+            "Texture has its own scale and clip";
+          roundtrip ();
+          if old_logical then (
+            check
+              (Renderer.logical_presentation_rect renderer = logical)
+              "Old SDL reports window presentation";
+            invalid (fun () ->
+                Renderer.set_logical_presentation renderer
+                  (Some (10, 5, Stretch))))
+          else (
+            check
+              (Renderer.logical_presentation_rect renderer = frect 0. 0. 20. 10.)
+              "Texture presentation size";
+            Renderer.set_logical_presentation renderer (Some (5, 5, Letterbox));
+            check
+              (Renderer.logical_presentation_rect renderer = frect 5. 0. 10. 10.)
+              "Texture letterbox rectangle");
+          Renderer.set_scale renderer ~x:0.5 ~y:2.;
+          let texture_view = rect 1 2 6 10 and texture_clip = rect 0 2 5 3 in
+          Renderer.set_viewport renderer (Some texture_view);
+          Renderer.set_clip_rect renderer (Some texture_clip);
+          roundtrip ();
+          Renderer.set_target renderer None;
+          check
+            (Renderer.viewport renderer = viewport
+            && Renderer.clip_rect renderer = Some clip)
+            "Window viewport and clip survive switching targets";
+          check
+            (Renderer.scale renderer = (2., 0.5))
+            "Window scale survives switching targets";
+          Renderer.set_target renderer (Some target);
+          check
+            (Renderer.viewport renderer = texture_view
+            && Renderer.clip_rect renderer = Some texture_clip
+            && Renderer.scale renderer = (0.5, 2.))
+            "Texture view survives switching targets";
+          Renderer.set_target renderer None);
+      roundtrip ();
+
+      List.iter
+        (fun rect ->
+          invalid (fun () -> Renderer.set_viewport renderer (Some rect));
+          invalid (fun () -> Renderer.set_clip_rect renderer (Some rect)))
+        [ rect 0 0 (-1) 5; rect 0 0 5 (-1); rect 1_000_000_000 0 5 5 ];
+      List.iter
+        (fun x -> invalid (fun () -> Renderer.set_scale renderer ~x ~y:1.))
+        [ nan; infinity; -1.; 0.; 1e-50; 1e-20; 1e10 ];
+      invalid (fun () ->
+          Renderer.coordinates_to_window renderer ~x:infinity ~y:0.);
+      invalid (fun () -> Renderer.coordinates_from_window renderer ~x:0. ~y:nan);
+      invalid (fun () -> Renderer.coordinates_to_window renderer ~x:3e38 ~y:0.);
+      check
+        (Renderer.viewport renderer = viewport
+        && Renderer.clip_rect renderer = Some clip)
+        "Rejected settings leave the view unchanged";
+      roundtrip ();
+
+      Renderer.set_logical_presentation renderer None;
+      Renderer.set_scale renderer ~x:1. ~y:1.;
+      let large = rect 200_000_000 0 4 4 in
+      Renderer.set_viewport renderer (Some large);
+      invalid (fun () -> Renderer.set_scale renderer ~x:4. ~y:1.);
+      invalid (fun () ->
+          Renderer.set_logical_presentation renderer (Some (2, 2, Stretch)));
+      check
+        (Renderer.viewport renderer = large
+        && Renderer.scale renderer = (1., 1.))
+        "Scale checks include the existing viewport";
+      Renderer.set_viewport renderer None;
+      Renderer.set_clip_rect renderer (Some large);
+      invalid (fun () -> Renderer.set_scale renderer ~x:4. ~y:1.);
+      check
+        (Renderer.clip_rect renderer = Some large)
+        "Scale checks include the existing clip";
+      Renderer.set_clip_rect renderer None;
+      Renderer.set_scale renderer ~x:0.0001 ~y:1.;
+      invalid (fun () ->
+          Renderer.set_logical_presentation renderer
+            (Some (1_000_000, 24, Stretch)));
+      Renderer.set_scale renderer ~x:1. ~y:1.;
+
+      Renderer.set_logical_presentation renderer (Some (12, 12, Letterbox));
+      Window.set_size window ~w:40 ~h:24;
+      check
+        (Renderer.logical_presentation_rect renderer = frect 8. 0. 24. 24.)
+        "Presentation follows the resized window";
+      check
+        (Renderer.coordinates_from_window renderer ~x:8. ~y:0. = (0., 0.))
+        "Point conversion follows the resized window";
+      Window.set_size window ~w:32 ~h:24;
+
+      let quit_event : Event.t = { timestamp_ns = 0L; kind = Quit } in
+      let use_renderer () =
+        List.iter invalid
+          [
+            (fun () -> Renderer.set_viewport renderer None);
+            (fun () -> ignore (Renderer.viewport renderer));
+            (fun () -> ignore (Renderer.viewport_is_set renderer));
+            (fun () -> Renderer.set_clip_rect renderer None);
+            (fun () -> ignore (Renderer.clip_rect renderer));
+            (fun () -> Renderer.set_scale renderer ~x:1. ~y:1.);
+            (fun () -> ignore (Renderer.scale renderer));
+            (fun () -> ignore (Renderer.logical_presentation_rect renderer));
+            (fun () ->
+              ignore (Renderer.coordinates_from_window renderer ~x:1. ~y:2.));
+            (fun () ->
+              ignore (Renderer.coordinates_to_window renderer ~x:1. ~y:2.));
+            (fun () -> ignore (Event.to_render_coordinates renderer quit_event));
+          ]
+      in
+      Domain.join (Domain.spawn use_renderer);
+      Renderer.destroy renderer;
+      use_renderer ())
+
+let render_view renderer surface =
+  let rect x y w h = Rect.make ~x ~y ~w ~h in
+  let frect x y w h = Frect.make ~x ~y ~w ~h in
+  let black = Color.rgb 0 0 0 and red = Color.rgb 255 0 0 in
+  let blue = Color.rgb 0 0 255 in
+  let at x y = Surface.read_pixel surface ~x ~y in
+  Renderer.set_logical_presentation renderer (Some (8, 8, Stretch));
+  Renderer.set_viewport renderer (Some (rect 1 1 4 4));
+  Renderer.set_clip_rect renderer (Some (rect 1 1 4 1));
+  Renderer.set_scale renderer ~x:1.5 ~y:1.;
+  Renderer.set_draw_color renderer black;
+  Renderer.clear renderer;
+  Renderer.set_draw_color renderer red;
+  Renderer.fill_rect renderer (frect (-2.) (-2.) 10. 10.);
+  Renderer.present renderer;
+  check (at 6 4 = red && at 14 5 = red) "Scaled clip inside the viewport";
+  check (at 5 4 = black && at 6 3 = black && at 6 6 = black) "Clip edges";
+  check (at 15 4 = black) "Clip does not extend the viewport";
+  check
+    (Renderer.coordinates_from_window renderer ~x:6. ~y:4. = (1., 1.))
+    "Convert a surface pixel in the active viewport";
+  Renderer.set_draw_color renderer blue;
+  Renderer.clear renderer;
+  Renderer.present renderer;
+  check (at 0 0 = blue && at 15 15 = blue) "Clear covers the whole target";
+  Renderer.set_clip_rect renderer None;
+  Renderer.set_viewport renderer None;
+  Renderer.set_scale renderer ~x:1. ~y:1.;
+  Renderer.set_logical_presentation renderer None
+
 let render context window =
   sdl_error "SDL_CreateRenderer" (fun () ->
       Renderer.create ~driver:"missing-renderer" window);
@@ -665,6 +988,7 @@ let render context window =
           using Renderer.destroy (Renderer.create_software target)
             (fun renderer ->
               invalid (fun () -> Surface.destroy target);
+              render_view renderer target;
               let black = Color.rgb 0 0 0 and red = Color.rgb 255 0 0 in
               let blue = Color.rgb 0 0 255 in
               Renderer.set_logical_presentation renderer
@@ -780,6 +1104,7 @@ let () =
           displays context window;
           events context window;
           device_events context window;
+          renderer_views context window;
           render context window);
       gamepads context;
       gpu_without_backend context;

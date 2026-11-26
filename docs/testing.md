@@ -16,6 +16,10 @@ The tests use SDL's dummy video and audio drivers. They need no display, speaker
 The core tests need SDL's virtual joystick support, not a physical gamepad. The image tests need
 GIF, PNG, and JPEG support in SDL3_image. The mixer tests need WAV support in SDL3_mixer.
 
+Run `dune runtest --force test/core` to test viewport, clip, and scale changes with the software
+renderer. These tests read pixels and convert points and events in a dummy window. They also check
+that each render target keeps its own settings.
+
 ## Run the resource lifecycle tests
 
 QCheck generates sequences of operations on a context, a memory stream, and a software rendering

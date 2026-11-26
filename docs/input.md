@@ -12,6 +12,35 @@ draw interface elements. Use `Window.display_scale` for the scale of a specific 
 A request to move, minimize, maximize, or restore a window can take effect later. Read
 `Event.Window` to learn what changed.
 
+## Convert input to drawing coordinates
+
+Window coordinates can differ from the coordinates you use to draw. Use
+`Renderer.coordinates_from_window` to map a point into drawing coordinates. Use
+`Renderer.coordinates_to_window` for the reverse direction. SDL uses pixel density, logical
+presentation, drawing scale, and the [viewport](rendering.md#draw-in-part-of-a-target).
+
+If you poll a mouse, touch, or drop position event, pass it to `Event.to_render_coordinates` to
+convert it. Mouse movement also changes units. Touch positions and movement start as fractions of
+the window size and become drawing units. Scroll amounts stay unchanged.
+
+Conversion uses the window's view even when a texture target is active. To test a click in a panel,
+set the viewport for that panel on the default target before you convert the event. For split-screen
+input, start from the same original event for each viewport.
+
+```ocaml
+open Sdl3
+
+let clicked_panel renderer window ~w ~h event =
+  let window_id = Window.id window in
+  match (Event.to_render_coordinates renderer event).kind with
+  | Mouse_button { window; down = true; x; y; _ } when window = window_id ->
+      x >= 0. && y >= 0. && x < w && y < h
+  | _ -> false
+```
+
+The conversion does not clamp points to the viewport or clip rectangle. Test the converted point
+against the area that accepts input. Events without a matching window stay unchanged.
+
 ## File drops
 
 Poll for `Event.Drop` to read drag and drop events. Collect `File` paths in order between `Begin`
