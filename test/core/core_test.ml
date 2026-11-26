@@ -26,6 +26,15 @@ let sdl_error fn f =
 let using destroy handle f =
   Fun.protect ~finally:(fun () -> destroy handle) (fun () -> f handle)
 
+let reject_clipboard context =
+  invalid (fun () -> Clipboard.set_text context "no clipboard");
+  invalid (fun () -> Clipboard.get_text context);
+  invalid (fun () -> Clipboard.has_text context)
+
+let reject_text_input_area window =
+  invalid (fun () -> Keyboard.set_text_input_area window None);
+  invalid (fun () -> Keyboard.text_input_area window)
+
 let reject_mouse_context context =
   invalid (fun () -> Mouse.state context);
   invalid (fun () -> Mouse.global_state context);
@@ -52,6 +61,8 @@ let main_thread context window =
     invalid (fun () -> Gamepad.list context);
     reject_mouse_context context;
     reject_mouse_window window;
+    reject_clipboard context;
+    reject_text_input_area window;
     invalid (fun () -> Window.destroy window);
     invalid (fun () -> init []);
     invalid (fun () -> quit context);
@@ -1284,6 +1295,61 @@ let cursors context =
       Surface.destroy image;
       invalid (fun () -> create_color image ~hot_x:0 ~hot_y:0))
 
+let text_input_area window =
+  let zero = Rect.make ~x:0 ~y:0 ~w:0 ~h:0 in
+  check (Keyboard.text_input_area window = (zero, 0)) "No text input area";
+  let area = Rect.make ~x:5 ~y:7 ~w:17 ~h:9 in
+  Keyboard.set_text_input_area ~cursor:5 window (Some area);
+  Keyboard.start_text_input window;
+  Fun.protect
+    ~finally:(fun () -> Keyboard.stop_text_input window)
+    (fun () ->
+      check
+        (Keyboard.text_input_area window = (area, 5))
+        "Text input area and cursor offset";
+      invalid (fun () ->
+          Keyboard.set_text_input_area window
+            (Some (Rect.make ~x:5 ~y:7 ~w:(-1) ~h:9)));
+      if Sys.int_size > 32 then (
+        let near_limit = Int64.to_int 0x7fff_fffdL in
+        invalid (fun () ->
+            Keyboard.set_text_input_area ~cursor:4 window
+              (Some (Rect.make ~x:near_limit ~y:7 ~w:1 ~h:9)));
+        invalid (fun () ->
+            Keyboard.set_text_input_area window
+              (Some (Rect.make ~x:5 ~y:near_limit ~w:17 ~h:9))));
+      check
+        (Keyboard.text_input_area window = (area, 5))
+        "Invalid input area leaves SDL state unchanged";
+      let caret = Rect.make ~x:10 ~y:9 ~w:0 ~h:6 in
+      Keyboard.set_text_input_area window (Some caret);
+      check
+        (Keyboard.text_input_area window = (caret, 0))
+        "A narrow input area and the default cursor";
+      Keyboard.set_text_input_area ~cursor:12 window None;
+      check
+        (Keyboard.text_input_area window = (zero, 0))
+        "Clearing the text input area resets the cursor")
+
+let clipboard context =
+  Clipboard.set_text context "";
+  check (not (Clipboard.has_text context)) "No clipboard text";
+  check (Clipboard.get_text context = "") "Empty clipboard read";
+  let text = "Épisode\nمرحبا 🙂" in
+  Clipboard.set_text context text;
+  check (Clipboard.has_text context) "Clipboard has text";
+  invalid (fun () -> Clipboard.set_text context "abc\000def");
+  invalid (fun () -> Clipboard.set_text context "\xc3");
+  let saved = Clipboard.get_text context in
+  check (saved = text) "Clipboard round trip after rejected writes";
+  Clipboard.set_text context "new content";
+  check (Clipboard.get_text context = "new content") "Replace clipboard text";
+  Clipboard.set_text context "";
+  Gc.compact ();
+  check (saved = text) "Clipboard reads keep an independent copy";
+  check (not (Clipboard.has_text context)) "Clear clipboard text";
+  check (Clipboard.get_text context = "") "Read the cleared clipboard"
+
 let gpu_without_backend context =
   let driver = "not-an-sdl-gpu-driver" in
   List.iter (fun name -> check (name <> "") "GPU driver name") (Gpu.drivers ());
@@ -1351,11 +1417,14 @@ let () =
           displays context window;
           events context window;
           device_events context window;
+          text_input_area window;
           renderer_views context window;
           render context window;
           mouse context window;
           Window.destroy window;
-          reject_mouse_window window);
+          reject_mouse_window window;
+          reject_text_input_area window);
+      clipboard context;
       gamepads context;
       gpu_without_backend context;
       audio context;
@@ -1366,11 +1435,13 @@ let () =
   invalid (fun () -> Touch.devices context);
   invalid (fun () -> Gamepad.list context);
   reject_mouse_context context;
+  reject_clipboard context;
   using Surface.destroy (Surface.create context ~w:1 ~h:1) (fun image ->
       invalid (fun () -> Mouse.Cursor.create_color image ~hot_x:0 ~hot_y:0));
   quit context;
   quit context;
   reject_mouse_context context;
+  reject_clipboard context;
   invalid (fun () -> Display.primary context);
   invalid (fun () -> Touch.devices context);
   invalid (fun () -> Gamepad.list context);

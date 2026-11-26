@@ -843,6 +843,31 @@ module Keyboard = struct
     = "osdl_keyboard_start_text_input"
 
   external stop_text_input : Window.t -> unit = "osdl_keyboard_stop_text_input"
+
+  external set_text_input_area_raw : Window.t -> Rect.t option -> int -> unit
+    = "osdl_keyboard_set_text_input_area"
+
+  external text_input_area : Window.t -> Rect.t * int
+    = "osdl_keyboard_text_input_area"
+
+  let set_text_input_area ?(cursor = 0) window area =
+    set_text_input_area_raw window area cursor
+end
+
+module Clipboard = struct
+  external set_text_raw : context -> string -> unit = "osdl_clipboard_set_text"
+
+  external get_text_raw : context -> Snapshot.t -> string
+    = "osdl_clipboard_get_text"
+
+  external has_text : context -> bool = "osdl_clipboard_has_text"
+
+  let set_text context text =
+    if not (String.is_valid_utf_8 text) then
+      invalid_arg "Clipboard text must be valid UTF-8";
+    set_text_raw context text
+
+  let get_text context = Snapshot.read (get_text_raw context)
 end
 
 module Mouse = struct

@@ -250,6 +250,11 @@ static inline value osdl_int_pair(int x, int y) {
     return caml_alloc_2(0, osdl_val_int(x), osdl_val_int(y));
 }
 
+static inline value osdl_rect_value(SDL_Rect rect) {
+    return caml_alloc_4(0, osdl_val_int(rect.x), osdl_val_int(rect.y), osdl_val_int(rect.w),
+                        osdl_val_int(rect.h));
+}
+
 static inline value osdl_float_pair(float x, float y) {
     CAMLparam0();
     CAMLlocal2(vx, vy);

@@ -41,6 +41,9 @@
 - [x] Audio device discovery and selection, queued recording, and mixer track seeking, fades, loop
       control, and playback speed.
 - [x] SDL3_image animation loading and SDL3_ttf text engines for surfaces and renderers.
+- [x] Font styles, outlines, hinting, kerning, alignment, fallback fonts, and glyph metrics.
+- [x] Text direction and script settings, UTF-8 edits, substring bounds, and hit testing.
+- [x] Native text input areas and clipboard text.
 - [x] [Plan for audio and event dispatch](docs/callback-dispatch.md) on the main thread.
 - [x] Stereo panning, 3D sound positions, tagged track controls, and mixer groups. Stop watches
       report playback stops on the main thread. Group creation needs SDL3_mixer 3.2.4 or later.
@@ -79,3 +82,18 @@ SDL_mixer versions that still need it. The package minimum is 3.2.0.
       can break the track list when a track moves from the middle of a group.
       [3.2.4](https://github.com/libsdl-org/SDL_mixer/blob/release-3.2.4/src/SDL_mixer.c#L3013-L3023)
       fixes the link. Keep the test that moves a middle track and destroys its neighbor.
+
+## SDL_ttf compatibility follow-ups
+
+Keep the workarounds in [`src/ttf/ttf_stubs.c`](src/ttf/ttf_stubs.c) for versions that need them.
+The package minimum is 3.2.0.
+
+- [ ] Recheck cache clearing after fallback and kerning changes. SDL_ttf 3.2.0 and 3.2.2 keep
+      cached glyph positions after these changes. The binding resets the caches through hinting
+      without changing the hinting setting. Before removing this workaround, test changes with
+      live text and close a removed fallback before drawing again.
+- [ ] Recheck overlapping deletes. `TTF_DeleteTextString` uses `SDL_memcpy` to shift the tail
+      in 3.2.0 and 3.2.2. The binding copies through a temporary string if the ranges overlap.
+      Keep the middle-delete test and run it with an instrumented SDL_ttf before removing the copy.
+- [ ] Recheck subpixel hinting before exposing it. `TTF_SetFontHinting` does not store the subpixel
+      flag in 3.2.0 or 3.2.2. The binding exposes the four working hinting modes.

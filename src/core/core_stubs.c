@@ -125,11 +125,6 @@ CAMLprim value osdl_display_name(value context, value id) {
     return caml_copy_string(name);
 }
 
-static value osdl_rect_value(SDL_Rect rect) {
-    return caml_alloc_4(0, osdl_val_int(rect.x), osdl_val_int(rect.y), osdl_val_int(rect.w),
-                        osdl_val_int(rect.h));
-}
-
 static value osdl_display_rect(value context, value id, bool usable) {
     osdl_require_display_context(context);
 
@@ -2675,6 +2670,67 @@ CAMLprim value osdl_keyboard_pressed(value context, value scancode) {
 
 OSDL_ACTION(osdl_keyboard_start_text_input, SDL_StartTextInput)
 OSDL_ACTION(osdl_keyboard_stop_text_input, SDL_StopTextInput)
+
+CAMLprim value osdl_keyboard_set_text_input_area(value window, value rect, value cursor) {
+    SDL_Window*     w = osdl_live(window);
+    SDL_Rect        storage;
+    const SDL_Rect* area   = NULL;
+    int             offset = 0;
+    if (Is_block(rect)) {
+        storage = osdl_rect(Some_val(rect));
+        area    = &storage;
+        offset  = osdl_int(cursor);
+        if (area->w < 0 || area->h < 0)
+            caml_invalid_argument("The text input area cannot have a negative size");
+        Sint64 caret = (Sint64)area->x + offset;
+        if (caret < INT_MIN || caret > INT_MAX || (Sint64)area->x + area->w > INT_MAX ||
+            (Sint64)area->y + area->h > INT_MAX)
+            caml_invalid_argument("The text input area is outside the C int range");
+    }
+
+    osdl_check(SDL_SetTextInputArea(w, area, offset), "SDL_SetTextInputArea");
+    return Val_unit;
+}
+
+CAMLprim value osdl_keyboard_text_input_area(value window) {
+    CAMLparam1(window);
+    CAMLlocal1(rect);
+
+    SDL_Rect area;
+    int      cursor;
+    osdl_check(SDL_GetTextInputArea(osdl_live(window), &area, &cursor), "SDL_GetTextInputArea");
+    rect = osdl_rect_value(area);
+    CAMLreturn(caml_alloc_2(0, rect, osdl_val_int(cursor)));
+}
+
+/* Clipboard text. */
+
+static void osdl_require_clipboard_context(value context) {
+    osdl_require_subsystem(context, SDL_INIT_VIDEO, "Start SDL with Video to use the clipboard");
+}
+
+CAMLprim value osdl_clipboard_set_text(value context, value text) {
+    osdl_require_clipboard_context(context);
+
+    osdl_check(SDL_SetClipboardText(osdl_cstring(text)), "SDL_SetClipboardText");
+    return Val_unit;
+}
+
+CAMLprim value osdl_clipboard_get_text(value context, value snapshot) {
+    CAMLparam2(context, snapshot);
+
+    osdl_require_clipboard_context(context);
+
+    char* text = SDL_GetClipboardText();
+    osdl_publish(snapshot, text, "SDL_GetClipboardText");
+    CAMLreturn(caml_copy_string(text));
+}
+
+CAMLprim value osdl_clipboard_has_text(value context) {
+    osdl_require_clipboard_context(context);
+
+    return Val_bool(SDL_HasClipboardText());
+}
 
 /* Mouse state and movement. Button conversions are shared with events. */
 

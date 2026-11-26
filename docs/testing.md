@@ -30,6 +30,12 @@ Run `dune runtest --force test/surface` to test image copies, transforms, and pa
 native and bytecode tests also check pixel row copies, lock cleanup, and upload of an atlas made
 from indexed sprites. They need no window or add-on.
 
+Run `dune runtest --force test/ttf` to test reusable text in native and bytecode. The tests check
+style changes in drawn pixels, kerning, fallback font lifetimes, edits, and bounds across wrapped
+lines. If SDL_ttf uses HarfBuzz, they also check a ligature and right-to-left layout. Without
+HarfBuzz, they check that unsupported directions and scripts return errors. The core tests cover
+text input area changes and clipboard text on the dummy driver, not a system input method.
+
 Run `dune runtest --force test/mixer` to test stereo panning and distance with known WAV samples.
 The tests also cover tag gain, pause and resume, fades at two input rates, and group assignment.
 They read stop notices from memory mixes and from SDL's dummy audio thread. Group tests require

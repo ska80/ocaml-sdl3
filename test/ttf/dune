@@ -5,4 +5,5 @@
  (modes exe byte)
  (deps
   tiny.bdf
+  ../../examples/music_player/assets/DejaVuSans.ttf
   (package sdl3-ttf)))

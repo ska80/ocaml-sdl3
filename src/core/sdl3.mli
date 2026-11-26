@@ -1278,6 +1278,33 @@ module Keyboard : sig
 
   val start_text_input : Window.t -> unit
   val stop_text_input : Window.t -> unit
+
+  val set_text_input_area : ?cursor:int -> Window.t -> Rect.t option -> unit
+  (** Tell the system where text input occurs. Use window coordinates, not
+      renderer coordinates. [cursor] is a horizontal offset from the area's [x],
+      not a text index. It defaults to zero. Pass [None] to clear the area and
+      reset the offset. The system can use this area to place suggestions. *)
+
+  val text_input_area : Window.t -> Rect.t * int
+  (** Return the rectangle and cursor offset stored by SDL. Both are zero before
+      you set an area and after you clear it. *)
+end
+
+module Clipboard : sig
+  (** Copy and paste plain text. Start SDL with [Video] and call these functions
+      on the main thread. *)
+
+  val set_text : context -> string -> unit
+  (** Copy valid UTF-8 without NUL bytes to the clipboard. Pass an empty string
+      to clear the clipboard. *)
+
+  val get_text : context -> string
+  (** Copy clipboard text into an OCaml string. SDL returns an empty string if
+      there is no text or if the system returns no data. *)
+
+  val has_text : context -> bool
+  (** Ask whether the clipboard contains nonempty text. The contents can change
+      before the next read. *)
 end
 
 module Mouse : sig

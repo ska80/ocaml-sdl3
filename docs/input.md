@@ -41,6 +41,34 @@ let clicked_panel renderer window ~w ~h event =
 The conversion does not clamp points to the viewport or clip rectangle. Test the converted point
 against the area that accepts input. Events without a matching window stay unchanged.
 
+## Text input and the clipboard
+
+An input method lets a user compose text before it enters a field. Call `Keyboard.start_text_input`
+when your field gains focus. Use `Event.Text_editing` for the preview. Insert text into the field
+when you receive `Event.Text_input`. Call `Keyboard.stop_text_input` when the field loses focus.
+
+Use `Keyboard.set_text_input_area` so that the system can place suggestions near the field. Pass a
+rectangle in window coordinates. Pass `~cursor` as the horizontal distance from its left edge to the
+caret, which marks where new text goes. This is not a byte offset. If you draw with a scaled
+renderer, use `Renderer.coordinates_to_window` before setting the area. Update it as the caret or
+the field moves. Pass `None` to clear the area.
+
+Start SDL with `[Sdl3.Video]` to use `Clipboard`. Use `Clipboard.set_text` to copy UTF-8 text and
+`Clipboard.get_text` to paste. Reading returns an independent string. If the system returns no text,
+the string is empty. Use `Clipboard.set_text context ""` to clear it. Keep polling events so SDL can
+serve clipboard requests from other programs.
+
+If you use SDL_ttf, pass the current byte offset to this function. It inserts the clipboard text and
+returns the new offset. See [Edit text and find its bounds](assets.md#edit-text-and-find-its-bounds)
+for byte offsets and pointer positions.
+
+```ocaml
+let paste_at context text ~offset =
+  let contents = Sdl3.Clipboard.get_text context in
+  Sdl3_ttf.Text.insert text ~offset contents;
+  offset + String.length contents
+```
+
 ## Read the mouse and track drags
 
 Start SDL with `[Sdl3.Video]`. Poll events before you read `Mouse.state`. It reports the last

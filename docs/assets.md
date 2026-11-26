@@ -120,3 +120,55 @@ destroy the engine first. Close all fonts and engines before quitting SDL_ttf.
 
 For GPU drawing, use `Font.render` to draw text to a surface. Use `Surface.read_rgba` to copy the
 surface into a buffer for upload. Each pixel has four bytes: red, green, blue, and alpha.
+
+## Style and lay out text
+
+A glyph is a shape that a font draws. Use `Font.set_style` to add bold, italic, underline, or
+strikethrough. Pass `[]` to keep only the styles built into the font. Use `Font.set_outline` to set
+the outline thickness in pixels. Zero removes the outline.
+
+Hinting adjusts glyph shapes to fit the pixel grid. Use `Font.set_hinting` to choose the amount of
+adjustment. Kerning adjusts the space between a pair of glyphs. Use `Font.set_kerning` to turn this
+adjustment on or off. `Font.glyph_metrics` reads the bounds and advance for one code point.  The
+advance is the distance to the next glyph before kerning.
+
+Use `Font.set_wrap_alignment` to align lines to the left, center, or right. A font setting affects
+all text objects that use the font. Use separate font handles if two labels need different settings.
+
+```ocaml
+open Sdl3_ttf
+
+let style_title font text =
+  Font.set_style font [ Bold; Underline ];
+  Font.set_wrap_alignment font Center;
+  Text.set_wrap_width text 320
+```
+
+If a glyph is missing, SDL_ttf tries the fonts added with `Font.add_fallback` in order. Match the
+primary font's size, style, and outline. A fallback cannot have its own fallback list. Remove a font
+from all fallback lists before you close it. Closing a primary font releases its links but leaves
+the fallbacks open.
+
+Shaping chooses and places glyphs for a string. Use `Font.set_direction` and `Font.set_script` to
+set defaults. For one text object, use `Text.set_direction` and `Text.set_script` to override those
+defaults. Pass a four-letter script code such as `"Arab"`. Pass `None` on a text object to restore
+the font setting. Use `has_harfbuzz ()` to find out if the SDL_ttf build supports script selection
+and directions other than left to right. These settings apply to the whole text object. SDL_ttf does
+not use them to split a paragraph into sections with different directions.
+
+## Edit text and find its bounds
+
+Use `Text.insert` and `Text.delete` to edit a text object without replacing it. Offsets and lengths
+count UTF-8 bytes, not characters or glyphs. Each edit must start and end at the edge of a Unicode
+code point. For example, `"Aé"` has byte boundaries at 0, 1, and 3. Use `Text.string` to copy the
+current contents.
+
+Use `Text.substring_at` to find the layout group for a byte offset. A group can hold several code
+points that share one glyph. Use `Text.substring_bounds` to highlight a selection. It returns one
+rectangle per covered line and includes whole groups. Use `Text.hit_test` to find the group closest
+to a point. Its result includes a byte offset and a rectangle.
+
+These rectangles and query points use the text's top-left corner as the origin. To test a click on
+renderer text, [convert the click to drawing coordinates](input.md#convert-input-to-drawing-coordinates)
+first. Then subtract the position where you drew the text. See [Text input and the clipboard](input.md#text-input-and-the-clipboard)
+for native input and pasting.
