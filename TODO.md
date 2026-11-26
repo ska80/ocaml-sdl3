@@ -42,6 +42,8 @@
       control, and playback speed.
 - [x] SDL3_image animation loading and SDL3_ttf text engines for surfaces and renderers.
 - [x] [Plan for audio and event dispatch](docs/callback-dispatch.md) on the main thread.
+- [x] Stereo panning, 3D sound positions, tagged track controls, and mixer groups. Stop watches
+      report playback stops on the main thread. Group creation needs SDL3_mixer 3.2.4 or later.
 - [x] Native and bytecode tests on Linux with OCaml 5.4.1 and 5.5.2 (Dune 3.25.0).
 - [x] Runtime tests on Linux with the oldest supported add-on releases.
 - [x] QCheck tests for core resource lifetimes and an optional ASan and UBSan test build on Linux.
@@ -57,3 +59,23 @@ each add-on also passed.
 ## Next
 
 - [ ] Add macOS and Windows builds.
+
+## Mixer compatibility follow-ups
+
+The checks below are in [`src/mixer/mixer_stubs.c`](src/mixer/mixer_stubs.c). Keep each check for
+SDL_mixer versions that still need it. The package minimum is 3.2.0.
+
+- [ ] Recheck forced stereo when SDL_mixer releases a fix. In
+      [3.2.4](https://github.com/libsdl-org/SDL_mixer/blob/release-3.2.4/src/SDL_mixer.c#L506-L525),
+      `MixForcedStereoFloat32Audio` writes two channels into a mono output buffer.
+      [`MixerCallback`](https://github.com/libsdl-org/SDL_mixer/blob/release-3.2.4/src/SDL_mixer.c#L551-L608)
+      also gives the temporary input buffer room for only one channel.  `Track.set_stereo` therefore
+      requires a memory mixer with at least two channels.  When a fix ships, limit this check to
+      affected versions. Test mixing to a mono memory buffer. Before allowing device mixers, test a
+      switch to mono during playback.
+- [ ] Remove the `Group.create` version check when the minimum reaches SDL_mixer 3.2.4.
+      `MIX_SetTrackGroup` in [3.2.0](https://github.com/libsdl-org/SDL_mixer/blob/release-3.2.0/src/SDL_mixer.c#L2974-L2984)
+      and [3.2.2](https://github.com/libsdl-org/SDL_mixer/blob/release-3.2.2/src/SDL_mixer.c#L3001-L3010)
+      can break the track list when a track moves from the middle of a group.
+      [3.2.4](https://github.com/libsdl-org/SDL_mixer/blob/release-3.2.4/src/SDL_mixer.c#L3013-L3023)
+      fixes the link. Keep the test that moves a middle track and destroys its neighbor.

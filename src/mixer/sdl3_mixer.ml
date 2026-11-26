@@ -25,6 +25,15 @@ module Mixer = struct
   external destroy : 'output t -> unit = "osdl_mixer_destroy"
   external set_gain : 'output t -> float -> unit = "osdl_mixer_set_gain"
 
+  external set_tag_gain : 'output t -> string -> float -> unit
+    = "osdl_mixer_set_tag_gain"
+
+  external stop_tag : ?fade_ms:int64 -> 'output t -> string -> unit
+    = "osdl_mixer_stop_tag"
+
+  external pause_tag : 'output t -> string -> unit = "osdl_mixer_pause_tag"
+  external resume_tag : 'output t -> string -> unit = "osdl_mixer_resume_tag"
+
   external generate : offline t -> Sdl3.byte_buffer -> int
     = "osdl_mixer_generate"
 end
@@ -44,8 +53,17 @@ module Audio = struct
   external title : t -> string option = "osdl_mixer_audio_title"
 end
 
+module Group = struct
+  type t
+
+  external create : 'output Mixer.t -> t = "osdl_mixer_group_create"
+  external destroy : t -> unit = "osdl_mixer_group_destroy"
+end
+
 module Track = struct
   type t
+  type stereo_gains = { left : float; right : float }
+  type position_3d = { x : float; y : float; z : float }
 
   external create : 'output Mixer.t -> t = "osdl_mixer_track_create"
   external destroy : t -> unit = "osdl_mixer_track_destroy"
@@ -72,4 +90,25 @@ module Track = struct
 
   external set_frequency_ratio : t -> float -> unit
     = "osdl_mixer_track_set_frequency_ratio"
+
+  external set_stereo : t -> stereo_gains option -> unit
+    = "osdl_mixer_track_set_stereo"
+
+  external set_3d_position : t -> position_3d option -> unit
+    = "osdl_mixer_track_set_3d_position"
+
+  external tag : t -> string -> unit = "osdl_mixer_track_tag"
+  external untag : t -> string -> unit = "osdl_mixer_track_untag"
+
+  external set_group : t -> Group.t option -> unit
+    = "osdl_mixer_track_set_group"
+
+  module Stop_watch = struct
+    type t
+
+    external take : t -> bool = "osdl_mixer_stop_watch_take"
+    external close : t -> unit = "osdl_mixer_stop_watch_close"
+  end
+
+  external watch_stops : t -> Stop_watch.t = "osdl_mixer_track_watch_stops"
 end

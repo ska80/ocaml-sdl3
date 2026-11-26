@@ -30,6 +30,11 @@ Run `dune runtest --force test/surface` to test image copies, transforms, and pa
 native and bytecode tests also check pixel row copies, lock cleanup, and upload of an atlas made
 from indexed sprites. They need no window or add-on.
 
+Run `dune runtest --force test/mixer` to test stereo panning and distance with known WAV samples.
+The tests also cover tag gain, pause and resume, fades at two input rates, and group assignment.
+They read stop notices from memory mixes and from SDL's dummy audio thread. Group tests require
+SDL_mixer 3.2.4. With earlier releases, the tests make sure that group creation returns an error.
+
 ## Run the resource lifecycle tests
 
 QCheck generates sequences of operations on a context, a memory stream, and a software rendering

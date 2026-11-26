@@ -9,4 +9,7 @@
   (setenv
    SDL_AUDIO_DRIVER
    dummy
-   (run %{test}))))
+   (setenv
+    SDL_AUDIO_DEVICE_SAMPLE_FRAMES
+    256
+    (run %{test})))))

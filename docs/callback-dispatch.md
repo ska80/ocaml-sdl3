@@ -1,8 +1,7 @@
-# Callback dispatch plan
+# Callback dispatch
 
-Keep application code on the main thread. Read events and audio through the existing APIs. If an
-application needs a mixer stop notice, pass one flag from C to OCaml. This plan does not add new
-bindings.
+Keep application code on the main thread. Poll events and use audio queues. If an application needs
+a mixer stop notice, read it from a stop watch.
 
 A callback is a function that SDL calls when something happens. SDL can run a callback on its own
 thread or during an SDL call from OCaml. To run OCaml from an SDL thread, the binding must register
@@ -63,65 +62,39 @@ processing at device time, design a separate C path with its own timing and buff
 ## Mixer stop notices
 
 Use `Track.is_playing` and `Track.is_paused` if the application only needs the current state. If it
-needs to remember a stop across a restart, add an optional stop watch. The notice does not say why
-the track stopped or when the last sample reaches the speaker. Use the mixer loop controls for
-repeats that must not wait for the main thread.
+needs to remember a stop across a restart, open a watch with `Sdl3_mixer.Track.watch_stops`. See the
+[audio guide](audio.md#read-stop-notices-on-the-main-thread) for an example. The notice does not say
+why the track stopped or when the last sample reaches the speaker. Use mixer loops for repeats that
+must not wait for the main thread.
 
-The proposed API inside `Sdl3_mixer.Track` is:
+Each track can have one watch. `Track.Stop_watch.take` returns `true` if SDL_mixer reported a stop
+since registration or the last read. It clears the notice. Pausing does not report a stop. Several
+stops before one read give one notice. The watch does not report order across tracks or wake an SDL
+event wait. Read it during the application update.
 
-```ocaml
-module Stop_watch : sig
-  type t
+### How the watch works
 
-  val take : t -> bool
-  val close : t -> unit
-end
+The binding allocates a C flag before it registers `MIX_SetTrackStoppedCallback`. The callback sets
+the flag to one with `SDL_SetAtomicInt`. It does not allocate memory, take an application lock, or
+push an SDL event. An atomic exchange sets a flag and returns its old value in one operation. The
+read uses the same function to set zero. A stop that happens at the same time is either included in
+this read or stays pending.
 
-val watch_stops : t -> Stop_watch.t
-```
+The watch is a child of the track. The binding rejects a second watch and rejects track destruction
+while the watch is open. It allocates the OCaml handle before it allocates the C flag. If
+registration fails, it frees the flag and raises `Sdl3.Error`.
 
-Each track can have one watch. `take` returns `true` if SDL_mixer reported a stop since registration
-or the last `take`. It clears the notice. Pausing does not report a stop. Several stops before one
-`take` give one notice.
+On `Track.Stop_watch.close`, the binding removes the callback before it frees the C flag. Playback
+continues. If removal fails, the watch stays open and the binding raises `Sdl3.Error`. On success,
+it discards any unread notice and releases the child handle. Repeated close calls do nothing.
 
-The watch does not report the order of stops across tracks or wake an SDL event wait. Read it during
-the application update.
+SDL_mixer 3.2.0 and 3.2.4 hold the same track lock to run and replace the callback. This lock
+belongs to the track's output stream, not the mixer. Successful removal waits for a callback that is
+already running. Do not assume this for other hooks without reading the SDL_mixer source.
 
-Allocate a separate C flag before registering `MIX_SetTrackStoppedCallback`. The callback sets the
-flag to one with `SDL_SetAtomicInt`. It does not allocate memory, take an application lock, or push
-an SDL event. An atomic exchange sets a flag and returns its old value in one operation.  Use the
-same function to exchange zero in `take`. A concurrent stop is either included in this read or stays
-pending. Separate read and clear calls can lose a stop.
-
-Make the watch a child handle of the track. Reject a second watch and reject track destruction while
-the watch is open. Allocate the OCaml handle before you allocate the C flag. Publish the handle only
-after registration succeeds. If registration fails, free the C flag and raise `Sdl3.Error`.
-
-On `close`, remove the callback with `MIX_SetTrackStoppedCallback(track, NULL, NULL)` before freeing
-the flag. Do not stop playback. If removal fails, keep the watch and flag alive and raise
-`Sdl3.Error`. On success, discard any unread notice and release the child handle. Repeated close
-calls on the main thread do nothing.
-
-SDL_mixer 3.2.0 and 3.2.4 hold the same track lock when they run the stop callback and when they
-replace it. This is the track's output stream lock, not the mixer lock. Successful removal on these
-versions waits for the old callback to finish. Consult the source before relying on removal for a
-new hook. A Linux probe used `MIX_StopTrack`, offline mixing, and the dummy audio driver with both
-mixer versions. It saw calls on the main thread and on the audio thread. Removal waited for a stop
-callback that was already running.
-
-## Tests for a stop watch
-
-Extend the native and bytecode mixer tests when adding the watch:
-
-1. Use offline mixing to test the end of playback, manual stop, fade-out, and pause. Test two stops
-   before one read and a stop followed by a restart.
-2. Use the dummy audio driver to test a stop from SDL's audio thread. Use a deadline instead of a
-   fixed sleep to wait for the notice. Repeat removal while the mixer is active.
-3. Test duplicate watches, independent tracks, use from the wrong thread, and use after close.
-   Make sure that closing the watch lets the track close. Open a new watch with no pending notice.
-
-Run `dune build @install` and `dune runtest`. Repeat the mixer tests on SDL_mixer 3.2.0. Keep the
-core package free of any dependency on SDL_mixer.
+Run `dune runtest --force test/mixer` for the stop watch tests. They use both mixing to memory and
+the dummy audio driver. A Linux C test also checked that removal waits for a running callback on
+both SDL_mixer releases.
 
 Source references: [`SDL_events.h`](https://github.com/libsdl-org/SDL/blob/release-3.2.0/include/SDL3/SDL_events.h),
 [`SDL_audio.h`](https://github.com/libsdl-org/SDL/blob/release-3.2.0/include/SDL3/SDL_audio.h),
