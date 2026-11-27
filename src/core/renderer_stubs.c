@@ -184,7 +184,9 @@ CAMLprim value osdl_renderer_create_gpu_render_state(value samplers, value rende
     for (mlsize_t i = 0; i < count; ++i) {
         value           pair    = Field(Some_val(samplers), i);
         value           texture = Field(pair, 0), sampler = Field(pair, 1);
-        SDL_GPUTexture* t = osdl_live(texture);
+        SDL_GPUTexture* t = osdl_gpu_live_texture(texture);
+        if (osdl_gpu_texture_borrowed(texture))
+            caml_invalid_argument("Use owned textures in a custom GPU render state");
         SDL_GPUSampler* s = osdl_live(sampler);
         if (osdl_parent(texture) != device || osdl_parent(sampler) != device)
             caml_invalid_argument("Use textures and samplers from the GPU renderer's device");

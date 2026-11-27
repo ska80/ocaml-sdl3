@@ -4,14 +4,23 @@
 #include "sdl3_stubs.h"
 
 /* Internal GPU device and shader layouts. */
-enum { GPU_DEVICE_IDLE_MARK = GPU_DEVICE_RENDERING + 1, GPU_DEVICE_OWNED };
+enum {
+    GPU_DEVICE_IDLE_MARK = GPU_DEVICE_RENDERING + 1,
+    GPU_DEVICE_OWNED,
+    GPU_DEVICE_ATLAS_READERS,
+};
 
 static inline value osdl_new_gpu_device(value parent, bool owned) {
     CAMLparam1(parent);
     CAMLlocal1(cell);
 
     cell = osdl_new_cell(parent, &osdl_handle_ops);
-    CAMLreturn(caml_alloc_5(0, cell, parent, Val_false, Val_unit, Val_bool(owned)));
+    CAMLreturn(caml_alloc_6(0, cell, parent, Val_false, Val_unit, Val_bool(owned), Val_int(0)));
+}
+
+static inline void osdl_gpu_require_no_atlas_reads(value device) {
+    if (Long_val(Field(device, GPU_DEVICE_ATLAS_READERS)))
+        caml_invalid_argument("Submit or cancel GPU commands that read a glyph atlas first");
 }
 
 enum {
@@ -44,8 +53,41 @@ enum {
     GPU_TEXTURE_FORMAT,
     GPU_TEXTURE_USAGE,
     GPU_TEXTURE_LEVELS,
+    GPU_TEXTURE_LEASE,
     GPU_MAX_MIP_LEVEL = 14,
 };
+
+static inline value osdl_new_gpu_texture(value device, value lease, value width, value height,
+                                         value levels, SDL_GPUTextureFormat format,
+                                         SDL_GPUTextureUsageFlags usage) {
+    CAMLparam5(device, lease, width, height, levels);
+    CAMLlocal1(cell);
+
+    cell = osdl_new_cell(device, &osdl_handle_ops);
+    CAMLreturn(caml_alloc_8(0, cell, device, width, height, Val_int(format), Val_int(usage), levels,
+                            lease));
+}
+
+static inline bool osdl_gpu_texture_borrowed(value texture) {
+    return Field(texture, GPU_TEXTURE_LEASE) != Val_unit;
+}
+
+static inline bool osdl_gpu_texture_valid(value texture) {
+    value lease = Field(texture, GPU_TEXTURE_LEASE);
+    return osdl_cell_val(texture)->ptr && (lease == Val_unit || osdl_cell_val(lease)->ptr);
+}
+
+static inline SDL_GPUTexture* osdl_gpu_live_texture(value texture) {
+    SDL_GPUTexture* ptr = osdl_live(texture);
+    if (!osdl_gpu_texture_valid(texture))
+        caml_invalid_argument("The borrowed GPU texture is no longer available");
+    return ptr;
+}
+
+static inline void osdl_gpu_require_owned_texture(value texture) {
+    if (osdl_gpu_texture_borrowed(texture))
+        caml_invalid_argument("Do not modify or release a borrowed GPU texture");
+}
 
 typedef struct {
     Uint32 level, w, h;

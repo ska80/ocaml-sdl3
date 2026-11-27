@@ -173,3 +173,17 @@ done
 
 The Aurora Tunnel example has a [separate short test](../examples/aurora_tunnel/README.md#run-a-short-test).
 The [Music Player tests](../examples/music_player/README.md#run-the-tests) also include a GPU test.
+
+## Test GPU text
+
+Use `dune build --force @runtest-gpu-text` with a working SDL GPU driver and SDL_ttf with SDF
+support. On Linux with offscreen Vulkan, set `SDL_VIDEO_DRIVER=offscreen`. The alias runs both
+native code and bytecode.
+
+The tests check atlas size, triangle order, borrowing, and cleanup. They compare pixels for alpha
+and SDF glyphs and for solid underline geometry. They test reads recorded before a borrow ends.
+Pixel tests need SPIR-V. If Noto Color Emoji is installed, set `OSDL_TEST_COLOR_FONT` to the path of
+`NotoColorEmoji.ttf` with the 109-pixel bitmap size to also draw a color glyph.
+
+If you edit the [GPU text shaders](../test/gpu_text/shaders), rebuild them with the same
+`glslangValidator` flags as for the GPU tests.

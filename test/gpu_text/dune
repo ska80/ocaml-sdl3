@@ -1,0 +1,21 @@
+(executable
+ (name gpu_text_test)
+ (enabled_if %{lib-available:sdl3-ttf})
+ (libraries sdl3 sdl3-ttf)
+ (modes exe byte_complete))
+
+(rule
+ (alias runtest-gpu-text)
+ (package sdl3-ttf)
+ (deps
+  ../ttf/tiny.bdf
+  ../../examples/music_player/assets/DejaVuSans.ttf
+  shaders/text.vert.spv
+  shaders/text.frag.spv
+  shaders/fill.vert.spv
+  shaders/fill.frag.spv
+  (env_var OSDL_TEST_COLOR_FONT))
+ (action
+  (progn
+   (run %{exe:gpu_text_test.exe})
+   (run ./gpu_text_test.bc.exe))))

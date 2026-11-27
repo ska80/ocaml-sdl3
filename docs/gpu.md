@@ -202,6 +202,67 @@ whole one-level destination. For a render pass, use `Clear` or `Dont_care` with 
 use `Dont_care` and cover the whole destination. If you cancel cycling work, initialize the texture
 again before reading it.
 
+## Draw text from a glyph atlas
+
+An atlas is a texture that stores several glyphs. A glyph is the shape a font draws for text.
+`Sdl3_ttf.Text_engine.create_gpu ttf device` creates an engine that builds these textures. Use the
+existing `Text.create`, layout, and editing calls. Set `~atlas_size` to change the side of each
+square atlas. The default is 1024 pixels. Each glyph needs one extra pixel for padding.
+
+Prepare the text with `Text.gpu_draw_data` before you start a render pass. Use `Text.gpu_sequences`
+to get batches of triangles in SDL_ttf's order. Each batch has packed `float32` positions and 32-bit
+indices. Positions use pixels relative to the top left of the text, with Y up. Transform them in
+your vertex shader. Set `Text_engine.set_gpu_winding` if you need the opposite triangle order. It
+applies the next time you prepare the text.
+
+For an `Atlas` batch, put the positions and UV pairs in two vertex buffers. UV pairs identify points
+in the texture. Use a `Float32x2` attribute with stride 8 in each buffer. Bind the atlas texture
+with a sampler. Use linear filtering for smoothly scaled text. A `Solid` batch has no texture or UV
+pairs. Draw it with a pipeline that reads only the position buffer.
+
+This function records uploads for one batch. Pass buffers large enough for the batch. For an atlas
+batch, also pass a vertex buffer for the UV pairs:
+
+```ocaml
+let upload_text_batch commands staging ~positions ~indices ~uv_buffer
+    (batch : Sdl3_ttf.Text.gpu_sequence) =
+  let open Sdl3.Gpu in
+  let pass = begin_copy_pass commands in
+  Fun.protect ~finally:(fun () -> end_copy_pass pass) (fun () ->
+      let upload dst data =
+        write_upload_buffer staging data;
+        upload_to_buffer pass ~src:staging ~dst ~size:(4 * Bigarray.Array1.dim data)
+      in
+      upload positions batch.positions;
+      upload indices batch.indices;
+      match batch.source with
+      | Solid -> ()
+      | Atlas { uv; _ } -> upload (Option.get uv_buffer) uv)
+```
+
+Use `Uint32` for the index buffer. Bind the buffers and pass the index count to
+`Gpu.draw_indexed_primitives`. Use `Text.color` if the shader needs the color set with
+`Text.set_color`.
+
+Choose how the fragment shader reads each image:
+
+- `Alpha`: Use alpha as coverage and supply the glyph color.
+- `Color`: Keep the glyph RGB and alpha. Use premultiplied alpha blending for color glyphs.
+- `Sdf`: Use alpha as a signed distance field. This records distance from the glyph edge.  Turn
+  distance into coverage in your shader, for example with `smoothstep` around `0.5`.
+
+Enable SDF with `Font.set_sdf font true` on a scalable font. On SDL_ttf 3.2.2, use separate text
+objects for alpha and SDF glyphs. This also applies when you use fallback fonts.
+
+Reuse the draw data while the text stays the same. The geometry buffers are copies. The atlas
+textures are read-only borrows. Do not use them after `Text.release_gpu_draw_data`. Use
+`Text.with_gpu_draw_data` to close the borrow if drawing raises an exception. Submit or cancel
+commands that read an atlas before you rebuild text on that device. You do not need to wait for
+submitted draws to finish. Close draw data before you edit or destroy the text. Close each text,
+then its engine, before you close the GPU device.
+
+See the [GPU text test](../test/gpu_text/gpu_text_test.ml) for drawing and shader setup.
+
 ## Read back GPU data
 
 A download buffer holds data copied from the GPU. Create one with `Gpu.create_download_buffer`.

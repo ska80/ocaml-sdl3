@@ -1,6 +1,6 @@
-#include "sdl3_stubs.h"
+#include "gpu_handles.h"
 
-#include <SDL3_ttf/SDL_ttf.h>
+#include <SDL3_ttf/SDL_textengine.h>
 
 #define OSDL_MIN_TTF_VERSION SDL_VERSIONNUM(3, 2, 2)
 #if SDL_TTF_VERSION < OSDL_MIN_TTF_VERSION
@@ -309,6 +309,22 @@ CAMLprim value osdl_ttf_font_kerning(value font) {
     return Val_bool(TTF_GetFontKerning(osdl_live(font)));
 }
 
+CAMLprim value osdl_ttf_font_set_sdf(value font, value enabled) {
+    TTF_Font* f   = osdl_live(font);
+    bool      sdf = Bool_val(enabled);
+    if (sdf && !TTF_FontIsScalable(f))
+        caml_invalid_argument("Use a scalable font for signed distance field glyphs");
+    if (TTF_GetFontSDF(f) != sdf) {
+        osdl_check(TTF_SetFontSDF(f, sdf), "TTF_SetFontSDF");
+        ttf_invalidate_fallback_users(font);
+    }
+    return Val_unit;
+}
+
+CAMLprim value osdl_ttf_font_sdf(value font) {
+    return Val_bool(TTF_GetFontSDF(osdl_live(font)));
+}
+
 static const TTF_HorizontalAlignment ttf_alignments[] = {
     TTF_HORIZONTAL_ALIGN_LEFT, TTF_HORIZONTAL_ALIGN_CENTER, TTF_HORIZONTAL_ALIGN_RIGHT};
 
@@ -441,14 +457,25 @@ CAMLprim value osdl_ttf_font_render(value mode, value wrap_width, value font, va
                             "TTF_RenderText_Blended_Wrapped"));
 }
 
-/* Text engines are children of the TTF context. A renderer engine also
- * keeps its renderer open until the engine releases its textures. */
+/* Text engines are children of the TTF context. The attachment keeps any
+ * renderer or GPU device open until the engine releases its textures. */
+enum { TTF_ENGINE_KIND = 3, TTF_ENGINE_ATLAS_SIZE };
+enum { TTF_ENGINE_SURFACE, TTF_ENGINE_RENDERER, TTF_ENGINE_GPU };
+enum { TTF_GPU_DEFAULT_ATLAS_SIZE = 1024, TTF_GPU_MAX_OPERATIONS = 4096 };
+
+static value ttf_new_engine(value context, value owner, int kind, int atlas_size) {
+    CAMLparam2(context, owner);
+    CAMLlocal1(cell);
+
+    cell = osdl_new_cell(context, &osdl_handle_ops);
+    CAMLreturn(caml_alloc_5(0, cell, context, owner, Val_int(kind), Val_int(atlas_size)));
+}
 
 CAMLprim value osdl_ttf_engine_create_surface(value context) {
     CAMLparam1(context);
     CAMLlocal1(handle);
 
-    handle = osdl_new_attached_handle(context, Val_unit);
+    handle = ttf_new_engine(context, Val_unit, TTF_ENGINE_SURFACE, 0);
     osdl_live(context);
 
     TTF_TextEngine* engine = TTF_CreateSurfaceTextEngine();
@@ -459,7 +486,7 @@ CAMLprim value osdl_ttf_engine_create_renderer(value context, value renderer) {
     CAMLparam2(context, renderer);
     CAMLlocal1(handle);
 
-    handle = osdl_new_attached_handle(context, renderer);
+    handle = ttf_new_engine(context, renderer, TTF_ENGINE_RENDERER, 0);
     osdl_live(context);
     SDL_Renderer* r = osdl_renderer_ready(renderer);
 
@@ -469,25 +496,90 @@ CAMLprim value osdl_ttf_engine_create_renderer(value context, value renderer) {
     CAMLreturn(handle);
 }
 
+CAMLprim value osdl_ttf_engine_create_gpu(value atlas_size, value context, value device) {
+    CAMLparam3(atlas_size, context, device);
+    CAMLlocal1(handle);
+
+    intnat size = Is_long(atlas_size) ? TTF_GPU_DEFAULT_ATLAS_SIZE : Long_val(Some_val(atlas_size));
+    if (size < 4 || size > 16384 || size % 4)
+        caml_invalid_argument("GPU glyph atlas size must be a multiple of four in [4, 16384]");
+    handle = ttf_new_engine(context, device, TTF_ENGINE_GPU, (int)size);
+
+    osdl_live(context);
+    SDL_GPUDevice* d = osdl_live(device);
+    if (!SDL_GPUTextureSupportsFormat(
+            d, SDL_GPU_TEXTUREFORMAT_B8G8R8A8_UNORM, SDL_GPU_TEXTURETYPE_2D,
+            SDL_GPU_TEXTUREUSAGE_SAMPLER | SDL_GPU_TEXTUREUSAGE_COLOR_TARGET))
+        osdl_raise_error(
+            "SDL_GPUTextureSupportsFormat: The GPU device does not support glyph atlases");
+
+    /* The SDL_ttf 3.2.2 convenience constructor does not destroy its properties. */
+    SDL_PropertiesID props = SDL_CreateProperties();
+    if (!props) osdl_fail("SDL_CreateProperties");
+    bool set = SDL_SetPointerProperty(props, TTF_PROP_GPU_TEXT_ENGINE_DEVICE, d) &&
+               SDL_SetNumberProperty(props, TTF_PROP_GPU_TEXT_ENGINE_ATLAS_TEXTURE_SIZE, size);
+    TTF_TextEngine* ptr = set ? TTF_CreateGPUTextEngineWithProperties(props) : NULL;
+    if (!ptr) {
+        char message[1024];
+        osdl_error_message(message, sizeof(message), "TTF_CreateGPUTextEngineWithProperties");
+        SDL_DestroyProperties(props);
+        osdl_raise_error(message);
+    }
+    SDL_DestroyProperties(props);
+    osdl_publish(handle, ptr, "TTF_CreateGPUTextEngineWithProperties");
+    ++osdl_cell_val(device)->children;
+    CAMLreturn(handle);
+}
+
+static const TTF_GPUTextEngineWinding ttf_gpu_windings[] = {
+    TTF_GPU_TEXTENGINE_WINDING_CLOCKWISE,
+    TTF_GPU_TEXTENGINE_WINDING_COUNTER_CLOCKWISE,
+};
+
+CAMLprim value osdl_ttf_engine_set_gpu_winding(value engine, value winding) {
+    TTF_SetGPUTextEngineWinding(osdl_live(engine), ttf_gpu_windings[Int_val(winding)]);
+    return Val_unit;
+}
+
+static value ttf_gpu_winding(TTF_TextEngine* engine) {
+    TTF_GPUTextEngineWinding winding = TTF_GetGPUTextEngineWinding(engine);
+    for (int i = 0; i < (int)SDL_arraysize(ttf_gpu_windings); ++i)
+        if (winding == ttf_gpu_windings[i]) return Val_int(i);
+    osdl_fail("TTF_GetGPUTextEngineWinding");
+}
+
+CAMLprim value osdl_ttf_engine_gpu_winding(value engine) {
+    return ttf_gpu_winding(osdl_live(engine));
+}
+
 CAMLprim value osdl_ttf_engine_destroy(value engine) {
     osdl_cell* cell = osdl_cell_val(engine);
     osdl_require_thread(osdl_cell_thread(cell));
     if (!cell->ptr) return Val_unit;
 
-    value renderer = osdl_attachment(engine);
-    if (renderer != Val_unit) osdl_renderer_ready(renderer);
+    int   kind  = Int_val(Field(engine, TTF_ENGINE_KIND));
+    value owner = osdl_attachment(engine);
+    if (kind == TTF_ENGINE_RENDERER) osdl_renderer_ready(owner);
+    if (kind == TTF_ENGINE_GPU) {
+        osdl_gpu_require_no_render_pass(owner);
+        osdl_gpu_require_no_atlas_reads(owner);
+    }
     TTF_TextEngine* ptr = osdl_take(engine);
-    if (renderer == Val_unit) {
+    if (kind == TTF_ENGINE_SURFACE)
         TTF_DestroySurfaceTextEngine(ptr);
-    } else {
-        TTF_DestroyRendererTextEngine(ptr);
-        --osdl_cell_val(renderer)->children;
+    else {
+        if (kind == TTF_ENGINE_RENDERER)
+            TTF_DestroyRendererTextEngine(ptr);
+        else
+            TTF_DestroyGPUTextEngine(ptr);
+        --osdl_cell_val(owner)->children;
         osdl_forget_attachment(engine);
     }
     return Val_unit;
 }
 
 /* Text belongs to its engine and retains the font as a second dependency. */
+enum { TTF_TEXT_WINDING = 3, TTF_TEXT_ALPHA_IS_SDF };
 
 static size_t ttf_text_length(value string) {
     size_t length = caml_string_length(string);
@@ -497,9 +589,10 @@ static size_t ttf_text_length(value string) {
 
 CAMLprim value osdl_ttf_text_create(value engine, value font, value string) {
     CAMLparam3(engine, font, string);
-    CAMLlocal1(handle);
+    CAMLlocal2(cell, handle);
 
-    handle                 = osdl_new_attached_handle(engine, font);
+    cell                   = osdl_new_cell(engine, &osdl_handle_ops);
+    handle                 = caml_alloc_5(0, cell, engine, font, Val_int(-1), Val_false);
     TTF_TextEngine* e      = osdl_live(engine);
     TTF_Font*       f      = osdl_live(font);
     size_t          length = ttf_text_length(string);
@@ -526,8 +619,15 @@ CAMLprim value osdl_ttf_text_string(value text) {
     return caml_copy_string(ptr->text ? ptr->text : "");
 }
 
+static TTF_Text* ttf_text_not_borrowed(value text) {
+    TTF_Text* ptr = osdl_live(text);
+    if (osdl_cell_val(text)->children)
+        caml_invalid_argument("Release the GPU draw data before editing or updating this text");
+    return ptr;
+}
+
 CAMLprim value osdl_ttf_text_set_string(value text, value string) {
-    TTF_Text*   ptr    = osdl_live(text);
+    TTF_Text*   ptr    = ttf_text_not_borrowed(text);
     size_t      length = ttf_text_length(string);
     const char* s      = osdl_cstring(string);
 
@@ -550,7 +650,7 @@ static void ttf_check_edit_boundary(TTF_Text* text, int bytes, int offset) {
 }
 
 CAMLprim value osdl_ttf_text_insert(value text, value offset, value string) {
-    TTF_Text*   ptr    = osdl_live(text);
+    TTF_Text*   ptr    = ttf_text_not_borrowed(text);
     int         bytes  = ttf_text_bytes(ptr);
     int         start  = osdl_nonnegative_int(offset);
     size_t      length = ttf_text_length(string);
@@ -565,7 +665,7 @@ CAMLprim value osdl_ttf_text_insert(value text, value offset, value string) {
 }
 
 CAMLprim value osdl_ttf_text_delete(value text, value offset, value length) {
-    TTF_Text* ptr   = osdl_live(text);
+    TTF_Text* ptr   = ttf_text_not_borrowed(text);
     int       bytes = ttf_text_bytes(ptr);
     int       start = osdl_nonnegative_int(offset), count = osdl_nonnegative_int(length);
     ttf_check_byte_range(bytes, start, count);
@@ -598,8 +698,14 @@ CAMLprim value osdl_ttf_text_set_color(value text, value color) {
     return Val_unit;
 }
 
+CAMLprim value osdl_ttf_text_color(value text) {
+    SDL_Color c;
+    osdl_check(TTF_GetTextColor(osdl_live(text), &c.r, &c.g, &c.b, &c.a), "TTF_GetTextColor");
+    return caml_alloc_4(0, Val_int(c.r), Val_int(c.g), Val_int(c.b), Val_int(c.a));
+}
+
 CAMLprim value osdl_ttf_text_set_wrap_width(value text, value width) {
-    TTF_Text* ptr = osdl_live(text);
+    TTF_Text* ptr = ttf_text_not_borrowed(text);
     int       w   = osdl_nonnegative_int(width);
 
     osdl_check(TTF_SetTextWrapWidth(ptr, w), "TTF_SetTextWrapWidth");
@@ -607,7 +713,7 @@ CAMLprim value osdl_ttf_text_set_wrap_width(value text, value width) {
 }
 
 CAMLprim value osdl_ttf_text_set_direction(value text, value direction) {
-    osdl_check(TTF_SetTextDirection(osdl_live(text), ttf_direction(direction)),
+    osdl_check(TTF_SetTextDirection(ttf_text_not_borrowed(text), ttf_direction(direction)),
                "TTF_SetTextDirection");
     return Val_unit;
 }
@@ -617,7 +723,8 @@ CAMLprim value osdl_ttf_text_direction(value text) {
 }
 
 CAMLprim value osdl_ttf_text_set_script(value text, value script) {
-    osdl_check(TTF_SetTextScript(osdl_live(text), ttf_script(script)), "TTF_SetTextScript");
+    osdl_check(TTF_SetTextScript(ttf_text_not_borrowed(text), ttf_script(script)),
+               "TTF_SetTextScript");
     return Val_unit;
 }
 
@@ -625,11 +732,91 @@ CAMLprim value osdl_ttf_text_script(value text) {
     return ttf_script_value(TTF_GetTextScript(osdl_live(text)));
 }
 
-/* A layout query can update the renderer engine's glyph textures. */
+static bool ttf_mislabels_sdf(void) {
+    return TTF_Version() == SDL_VERSIONNUM(3, 2, 2);
+}
+
+/* SDL_ttf 3.2.2 checks the glyph size but not the extra pixel for packing.
+ * Inspect the shaped glyphs before allowing it to create or reuse atlases. */
+static bool ttf_check_gpu_glyphs(const TTF_TextData* data, int atlas_size) {
+    if (data->num_ops > TTF_GPU_MAX_OPERATIONS)
+        caml_invalid_argument("Split GPU text into parts with at most 4096 draw operations each");
+
+    bool fix_sdf   = ttf_mislabels_sdf();
+    bool has_alpha = false, has_sdf = false;
+    struct {
+        TTF_Font* font;
+        Uint32    index;
+    } checked[32] = {0};
+    for (int i = 0; i < data->num_ops; ++i) {
+        const TTF_DrawOperation* op = &data->ops[i];
+        if (op->cmd != TTF_DRAW_COMMAND_COPY) continue;
+        TTF_Font* font  = op->copy.glyph_font;
+        Uint32    index = op->copy.glyph_index;
+        Uint32    slot  = index % SDL_arraysize(checked);
+        if (checked[slot].font == font && checked[slot].index == index) continue;
+
+        TTF_ImageType image;
+        SDL_Surface*  glyph = TTF_GetGlyphImageForIndex(font, index, &image);
+        if (!glyph) osdl_fail("TTF_GetGlyphImageForIndex");
+        bool fits = glyph->w < atlas_size && glyph->h < atlas_size;
+        SDL_DestroySurface(glyph);
+        if (!fits)
+            osdl_raise_error(
+                "TTF_GetGPUTextDrawData: Use an atlas that fits the glyph and its padding");
+        /* This version labels grayscale SDF as alpha. If both sorts of
+         * grayscale glyph occur, SDL can merge them in one sequence. */
+        if (fix_sdf && image == TTF_IMAGE_ALPHA) {
+            if (TTF_GetFontSDF(font))
+                has_sdf = true;
+            else
+                has_alpha = true;
+        }
+        checked[slot].font  = font;
+        checked[slot].index = index;
+    }
+    if (has_alpha && has_sdf)
+        caml_invalid_argument("Use separate GPU texts for alpha and SDF glyphs on SDL_ttf 3.2.2");
+    return has_sdf;
+}
+
+static void ttf_prepare_gpu_layout(value text, TTF_Text* ptr, value engine) {
+    value device = osdl_attachment(engine);
+    osdl_gpu_require_no_render_pass(device);
+    TTF_TextEngine*     native  = osdl_cell_val(engine)->ptr;
+    value               winding = ttf_gpu_winding(native);
+    const TTF_TextData* data    = ptr->internal;
+    bool                reshape = data->needs_layout_update;
+    bool                rewind  = winding != Field(text, TTF_TEXT_WINDING);
+    if (!reshape && !rewind && !data->needs_engine_update) return;
+    osdl_gpu_require_no_atlas_reads(device);
+
+    if (reshape || rewind) {
+        /* Use SDL_ttf's own layout without an engine, then restore the GPU
+         * engine to build atlas geometry only after validation. Reattaching
+         * also makes SDL rebuild geometry for the new winding. */
+        osdl_check(TTF_SetTextEngine(ptr, NULL), "TTF_SetTextEngine");
+        bool ok = !reshape || TTF_UpdateText(ptr);
+        osdl_check(TTF_SetTextEngine(ptr, native), "TTF_SetTextEngine");
+        osdl_check(ok, "TTF_UpdateText");
+    }
+    bool sdf = ttf_check_gpu_glyphs(data, Int_val(Field(engine, TTF_ENGINE_ATLAS_SIZE)));
+    Store_field(text, TTF_TEXT_WINDING, winding);
+    Store_field(text, TTF_TEXT_ALPHA_IS_SDF, Val_bool(sdf));
+}
+
+/* Queries can rebuild the engine's glyph textures. */
 static TTF_Text* ttf_text_for_layout(value text) {
-    TTF_Text* ptr      = osdl_live(text);
-    value     renderer = osdl_attachment(osdl_parent(text));
-    if (renderer != Val_unit) osdl_renderer_ready(renderer);
+    TTF_Text* ptr    = ttf_text_not_borrowed(text);
+    value     engine = osdl_parent(text);
+    switch (Int_val(Field(engine, TTF_ENGINE_KIND))) {
+    case TTF_ENGINE_RENDERER:
+        osdl_renderer_ready(osdl_attachment(engine));
+        break;
+    case TTF_ENGINE_GPU:
+        ttf_prepare_gpu_layout(text, ptr, engine);
+        break;
+    }
     return ptr;
 }
 
@@ -767,4 +954,93 @@ CAMLprim value osdl_ttf_text_draw_renderer(value text, value x, value y) {
 
     osdl_check(TTF_DrawRendererText(ptr, dx, dy), "TTF_DrawRendererText");
     return Val_unit;
+}
+
+/* A draw-data lease keeps SDL_ttf's layout and glyph references alive during
+ * the copy and until the caller closes the lease. Only C sees native arrays. */
+static char ttf_empty_gpu_data;
+
+CAMLprim value osdl_ttf_text_acquire_gpu_draw_data(value text) {
+    CAMLparam1(text);
+    CAMLlocal1(lease);
+
+    lease         = osdl_new_handle(text);
+    TTF_Text* ptr = ttf_text_for_layout(text);
+    osdl_check(TTF_UpdateText(ptr), "TTF_UpdateText");
+    SDL_ClearError();
+    TTF_GPUAtlasDrawSequence* head = TTF_GetGPUTextDrawData(ptr);
+    if (!head && *SDL_GetError()) osdl_fail("TTF_GetGPUTextDrawData");
+
+    CAMLreturn(
+        osdl_publish(lease, head ? (void*)head : &ttf_empty_gpu_data, "TTF_GetGPUTextDrawData"));
+}
+
+CAMLprim value osdl_ttf_text_release_gpu_draw_data(value lease) {
+    osdl_take(lease);
+    return Val_unit;
+}
+
+static value ttf_gpu_image_type(TTF_ImageType type, bool alpha_is_sdf, bool fix_sdf) {
+    /* Text.gpu_image: Alpha | Color | Sdf. */
+    switch (type) {
+    case TTF_IMAGE_ALPHA:
+        return Val_int(alpha_is_sdf ? 2 : 0);
+    case TTF_IMAGE_COLOR:
+        return Val_int(1);
+    case TTF_IMAGE_SDF:
+        /* 3.2.2 only takes this branch for actual BGRA color glyphs. */
+        return Val_int(fix_sdf ? 1 : 2);
+    default:
+        osdl_raise_error("TTF_GetGPUTextDrawData: Unsupported glyph image type");
+    }
+}
+
+static value ttf_copy_geometry(int kind, intnat length, const void* data, size_t element_size) {
+    value buffer = caml_ba_alloc_dims(kind | CAML_BA_C_LAYOUT | CAML_BA_MANAGED, 1, NULL, length);
+    memcpy(Caml_ba_data_val(buffer), data, (size_t)length * element_size);
+    return buffer;
+}
+
+CAMLprim value osdl_ttf_text_copy_gpu_draw_sequences(value lease) {
+    CAMLparam1(lease);
+    CAMLlocal5(device, positions, indices, uvs, atlas);
+    CAMLlocal3(source, sequence, reversed);
+
+    void* head = osdl_live(lease);
+    if (head == &ttf_empty_gpu_data) CAMLreturn(Val_emptylist);
+    value text = osdl_parent(lease), engine = osdl_parent(text);
+    device             = osdl_attachment(engine);
+    value atlas_size   = Field(engine, TTF_ENGINE_ATLAS_SIZE);
+    bool  alpha_is_sdf = Bool_val(Field(text, TTF_TEXT_ALPHA_IS_SDF));
+    bool  fix_sdf      = ttf_mislabels_sdf();
+
+    _Static_assert(sizeof(SDL_FPoint) == 2 * sizeof(float), "Copy packed SDL_FPoint coordinates");
+    _Static_assert(sizeof(int) == sizeof(Sint32), "Copy TTF GPU indices as int32");
+    reversed = Val_emptylist;
+    for (const TTF_GPUAtlasDrawSequence* seq = head; seq; seq = seq->next) {
+        /* A glyph with no bitmap can have a transparent placeholder texture
+         * entry. It is not a solid fill and contributes no pixels. */
+        if (seq->atlas_texture && seq->image_type == TTF_IMAGE_INVALID) continue;
+        int vertices = seq->num_vertices, count = seq->num_indices;
+        if (vertices <= 0 || vertices > TTF_GPU_MAX_OPERATIONS * 4 || !seq->xy || count <= 0 ||
+            count > TTF_GPU_MAX_OPERATIONS * 6 || !seq->indices)
+            osdl_raise_error("TTF_GetGPUTextDrawData: Invalid glyph geometry");
+        positions = ttf_copy_geometry(CAML_BA_FLOAT32, 2 * vertices, seq->xy, sizeof(float));
+        indices   = ttf_copy_geometry(CAML_BA_INT32, count, seq->indices, sizeof(Sint32));
+        source    = Val_int(0); /* Text.gpu_source.Solid */
+        if (seq->atlas_texture) {
+            if (!seq->uv) osdl_raise_error("TTF_GetGPUTextDrawData: Missing atlas coordinates");
+            value image = ttf_gpu_image_type(seq->image_type, alpha_is_sdf, fix_sdf);
+            uvs         = ttf_copy_geometry(CAML_BA_FLOAT32, 2 * vertices, seq->uv, sizeof(float));
+            atlas       = osdl_new_gpu_texture(device, lease, atlas_size, atlas_size, Val_int(1),
+                                               SDL_GPU_TEXTUREFORMAT_B8G8R8A8_UNORM,
+                                               SDL_GPU_TEXTUREUSAGE_SAMPLER);
+            /* SDL_ttf owns the texture. Do not count it as a device child. */
+            osdl_cell_val(atlas)->ptr = seq->atlas_texture;
+            source = caml_alloc_3(0, atlas, image, uvs); /* Text.gpu_source.Atlas */
+        }
+        sequence = caml_alloc_3(0, positions, indices, source);
+        reversed = caml_alloc_2(0, sequence, reversed);
+    }
+    CAMLreturn(reversed);
 }

@@ -521,7 +521,8 @@ module Gpu : sig
   (** Temporary memory that receives bytes from the GPU. *)
 
   type texture
-  (** An owned 2D GPU image. Its use depends on how you allocate it. *)
+  (** A 2D GPU image. An owned texture's use depends on how you allocate it. A
+      borrowed texture is read-only and is valid only during its borrow. *)
 
   type texture_format =
     | R8_unorm  (** One red byte. *)
@@ -793,11 +794,13 @@ module Gpu : sig
   (** Allocate memory for uploads. The same byte size rules apply as for
       [create_vertex_buffer]. *)
 
-  val write_upload_buffer : upload_buffer -> byte_buffer -> unit
-  (** Copy a nonempty bigarray to the start of the upload buffer. The array must
-      fit in the buffer. Only the bytes written by this call are valid for new
-      copies. SDL can use separate storage if a recorded copy still uses the
-      previous bytes. The bigarray can be reused after this call. *)
+  val write_upload_buffer :
+    upload_buffer -> ('a, 'b, Bigarray.c_layout) Bigarray.Array1.t -> unit
+  (** Copy the native bytes of a nonempty bigarray to the start of the upload
+      buffer. Its byte size must fit in the buffer. Only the written bytes are
+      valid for new copies. SDL can use separate storage if a recorded copy
+      still uses the previous bytes. The bigarray can be reused after this call.
+  *)
 
   val release_upload_buffer : upload_buffer -> unit
   (** Release the upload buffer. SDL keeps already recorded copies valid.
@@ -870,7 +873,7 @@ module Gpu : sig
   (** Release the texture. End any render pass that uses it as its target and
       destroy any custom render states that sample it first. SDL keeps already
       recorded commands valid. Calling this again on a released texture does
-      nothing. *)
+      nothing. Do not call this on a borrowed texture. *)
 
   val create_sampler :
     ?max_mip_level:int ->
@@ -1227,7 +1230,8 @@ module Renderer : sig
     gpu_render_state
   (** Create a state for a GPU renderer. The shader and extra sampler pairs must
       belong to its device. The textures must support sampling. The state keeps
-      all these resources open, but does not own them.
+      all these resources open, but does not own them. Pass only owned textures,
+      not borrowed ones.
 
       For [Textured], the draw binds its own texture at slot zero. Extra pairs
       start at slot one. For [Untextured], pairs start at slot zero. Declare

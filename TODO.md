@@ -51,6 +51,7 @@
 - [x] SDL3_image animation loading and SDL3_ttf text engines for surfaces and renderers.
 - [x] Font styles, outlines, hinting, kerning, alignment, fallback fonts, and glyph metrics.
 - [x] Text direction and script settings, UTF-8 edits, substring bounds, and hit testing.
+- [x] GPU text engines, borrowed glyph atlases, copied triangle data, and SDF glyphs.
 - [x] Native text input areas and clipboard text.
 - [x] Platform directories for assets and saves, and a timed wait for events.
 - [x] Window icons, minimum size, and fullscreen mode selection. Gamepad vibration and audio device
@@ -118,3 +119,12 @@ need them.
       Keep the middle-delete test and run it with an instrumented SDL_ttf before removing the copy.
 - [ ] Recheck subpixel hinting before exposing it. `TTF_SetFontHinting` does not store the subpixel
       flag in SDL_ttf 3.2.2. The binding exposes the four working hinting modes.
+- [ ] Recheck GPU glyph packing after an SDL_ttf update. The
+      [3.2.2 packer](https://github.com/libsdl-org/SDL_ttf/blob/release-3.2.2/src/SDL_gpu_textengine.c#L532-L548)
+      checks glyph dimensions before adding padding. The binding checks the padded size before
+      building the atlas. The convenience constructor also leaves its SDL properties open. The
+      binding uses the properties constructor and closes them after the call.
+- [ ] Recheck [glyph image types](https://github.com/libsdl-org/SDL_ttf/blob/release-3.2.2/src/SDL_ttf.c#L3208-L3213)
+      after an SDL_ttf update. SDL_ttf 3.2.2 labels grayscale SDF as alpha and can label color as
+      SDF. The binding corrects the types for that version. It rejects mixed alpha and SDF glyphs
+      in one text because SDL can group them in one batch.

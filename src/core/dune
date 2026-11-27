@@ -1,7 +1,7 @@
 (library
  (name sdl3)
  (public_name sdl3)
- (install_c_headers sdl3_stubs)
+ (install_c_headers gpu_handles sdl3_stubs)
  (foreign_stubs
   (language c)
   (names core_stubs event_stubs gpu_stubs io_stubs renderer_stubs)

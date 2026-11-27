@@ -59,6 +59,8 @@ module Font = struct
   external hinting : t -> hinting = "osdl_ttf_font_hinting"
   external set_kerning : t -> bool -> unit = "osdl_ttf_font_set_kerning"
   external kerning : t -> bool = "osdl_ttf_font_kerning"
+  external set_sdf : t -> bool -> unit = "osdl_ttf_font_set_sdf"
+  external sdf : t -> bool = "osdl_ttf_font_sdf"
 
   external set_wrap_alignment : t -> alignment -> unit
     = "osdl_ttf_font_set_wrap_alignment"
@@ -99,7 +101,9 @@ end
 module Text_engine = struct
   type surface
   type renderer
+  type gpu
   type 'target t
+  type winding = Clockwise | Counter_clockwise
 
   external create_surface : context -> surface t
     = "osdl_ttf_engine_create_surface"
@@ -107,6 +111,13 @@ module Text_engine = struct
   external create_renderer : context -> Sdl3.Renderer.t -> renderer t
     = "osdl_ttf_engine_create_renderer"
 
+  external create_gpu : ?atlas_size:int -> context -> Sdl3.Gpu.device -> gpu t
+    = "osdl_ttf_engine_create_gpu"
+
+  external set_gpu_winding : gpu t -> winding -> unit
+    = "osdl_ttf_engine_set_gpu_winding"
+
+  external gpu_winding : gpu t -> winding = "osdl_ttf_engine_gpu_winding"
   external destroy : 'target t -> unit = "osdl_ttf_engine_destroy"
 end
 
@@ -155,6 +166,8 @@ module Text = struct
   external set_color : 'target t -> Sdl3.Color.t -> unit
     = "osdl_ttf_text_set_color"
 
+  external color : 'target t -> Sdl3.Color.t = "osdl_ttf_text_color"
+
   external set_wrap_width : 'target t -> int -> unit
     = "osdl_ttf_text_set_wrap_width"
 
@@ -186,4 +199,55 @@ module Text = struct
 
   external draw_renderer : Text_engine.renderer t -> x:float -> y:float -> unit
     = "osdl_ttf_text_draw_renderer"
+
+  type gpu_coordinates =
+    (float, Bigarray.float32_elt, Bigarray.c_layout) Bigarray.Array1.t
+
+  type gpu_indices =
+    (int32, Bigarray.int32_elt, Bigarray.c_layout) Bigarray.Array1.t
+
+  type gpu_image = Alpha | Color | Sdf
+
+  type gpu_source =
+    | Solid
+    | Atlas of {
+        texture : Sdl3.Gpu.texture;
+        image : gpu_image;
+        uv : gpu_coordinates;
+      }
+
+  type gpu_sequence = {
+    positions : gpu_coordinates;
+    indices : gpu_indices;
+    source : gpu_source;
+  }
+
+  type gpu_lease
+  type gpu_draw_data = { lease : gpu_lease; sequences : gpu_sequence list }
+
+  external acquire_gpu_draw_data : Text_engine.gpu t -> gpu_lease
+    = "osdl_ttf_text_acquire_gpu_draw_data"
+
+  external copy_gpu_draw_sequences : gpu_lease -> gpu_sequence list
+    = "osdl_ttf_text_copy_gpu_draw_sequences"
+
+  external release_gpu_lease : gpu_lease -> unit
+    = "osdl_ttf_text_release_gpu_draw_data"
+
+  let gpu_draw_data text =
+    let lease = acquire_gpu_draw_data text in
+    try { lease; sequences = List.rev (copy_gpu_draw_sequences lease) }
+    with exn ->
+      let backtrace = Printexc.get_raw_backtrace () in
+      release_gpu_lease lease;
+      Printexc.raise_with_backtrace exn backtrace
+
+  let gpu_sequences data = data.sequences
+  let release_gpu_draw_data data = release_gpu_lease data.lease
+
+  let with_gpu_draw_data text f =
+    let data = gpu_draw_data text in
+    Fun.protect
+      ~finally:(fun () -> release_gpu_draw_data data)
+      (fun () -> f data)
 end

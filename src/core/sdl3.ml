@@ -557,7 +557,8 @@ module Gpu = struct
   external create_upload_buffer : device -> size:int -> upload_buffer
     = "osdl_gpu_create_upload_buffer"
 
-  external write_upload_buffer : upload_buffer -> byte_buffer -> unit
+  external write_upload_buffer :
+    upload_buffer -> ('a, 'b, Bigarray.c_layout) Bigarray.Array1.t -> unit
     = "osdl_gpu_write_upload_buffer"
 
   external release_upload_buffer : upload_buffer -> unit

@@ -90,6 +90,15 @@ module Font : sig
 
   val kerning : t -> bool
 
+  val set_sdf : t -> bool -> unit
+  (** Enable signed distance field (SDF) glyphs on a scalable font. The alpha
+      channel holds the signed distance to the glyph edge, not opacity. Use a
+      shader to turn it into coverage. This updates texts that use the font. If
+      SDL_ttf lacks SDF support, enabling it raises [Sdl3.Error]. *)
+
+  val sdf : t -> bool
+  (** Return whether SDF rendering is enabled. It starts disabled. *)
+
   val set_wrap_alignment : t -> alignment -> unit
   (** Align wrapped lines to the left, center, or right of the text area. *)
 
@@ -139,7 +148,13 @@ module Text_engine : sig
 
   type surface
   type renderer
+  type gpu
   type 'target t
+
+  type winding =
+    | Clockwise
+    | Counter_clockwise
+        (** The order of each GPU triangle's vertices in the plane with Y up. *)
 
   val create_surface : context -> surface t
   (** Create an engine that can draw to SDL surfaces. *)
@@ -148,8 +163,23 @@ module Text_engine : sig
   (** Create an engine for this renderer. Destroy the engine before you destroy
       the renderer. *)
 
+  val create_gpu : ?atlas_size:int -> context -> Sdl3.Gpu.device -> gpu t
+  (** Create an engine that packs glyphs into square GPU textures. [atlas_size]
+      is their width and height in pixels. It defaults to 1024. Use a multiple
+      of four from 4 to 16384. Each rendered glyph must fit with one pixel of
+      padding. Otherwise preparing the text raises [Sdl3.Error]. The engine
+      keeps the device open but does not own it. *)
+
+  val set_gpu_winding : gpu t -> winding -> unit
+  (** Set the triangle order for later preparations. This does not change draw
+      data you already hold. *)
+
+  val gpu_winding : gpu t -> winding
+  (** Return the triangle order. It starts as [Clockwise]. *)
+
   val destroy : 'target t -> unit
-  (** Destroy all text objects from the engine first. *)
+  (** Destroy all text objects from the engine first. For a GPU engine, finish
+      recording atlas reads and end the active render pass on its device. *)
 end
 
 module Text : sig
@@ -189,6 +219,10 @@ module Text : sig
       Both ends must be at code point boundaries, including the end of text. *)
 
   val set_color : 'target t -> Sdl3.Color.t -> unit
+
+  val color : 'target t -> Sdl3.Color.t
+  (** Read the current color. GPU draw data does not include this color. Pass it
+      to the shader if you want to use it. *)
 
   val set_wrap_width : 'target t -> int -> unit
   (** Set a nonnegative line width in pixels. The default is zero, which wraps
@@ -238,4 +272,65 @@ module Text : sig
   val draw_renderer : Text_engine.renderer t -> x:float -> y:float -> unit
   (** Draw at the given position on the engine renderer's current target.
       Coordinates use the renderer's units. *)
+
+  type gpu_coordinates =
+    (float, Bigarray.float32_elt, Bigarray.c_layout) Bigarray.Array1.t
+  (** Pairs of 32-bit coordinates, with no padding. *)
+
+  type gpu_indices =
+    (int32, Bigarray.int32_elt, Bigarray.c_layout) Bigarray.Array1.t
+  (** Zero-based indices for a triangle list. Use [Sdl3.Gpu.Uint32]. *)
+
+  type gpu_image =
+    | Alpha  (** The atlas alpha channel holds glyph coverage. *)
+    | Color  (** The glyph has its own RGB and alpha data. *)
+    | Sdf  (** The atlas alpha channel holds a signed distance. *)
+
+  type gpu_source =
+    | Solid  (** Needs no texture, for example for an underline. *)
+    | Atlas of {
+        texture : Sdl3.Gpu.texture;
+        image : gpu_image;
+        uv : gpu_coordinates;
+      }
+        (** A read-only texture and one normalized coordinate pair per vertex.
+            Use the coordinates as returned by SDL_ttf when sampling it. *)
+
+  type gpu_sequence = private {
+    positions : gpu_coordinates;
+    indices : gpu_indices;
+    source : gpu_source;
+  }
+  (** A batch of triangles. Positions use pixels relative to the text's top
+      left, with X increasing right and Y increasing up. *)
+
+  type gpu_draw_data
+  (** A copy of the geometry and a borrow of the atlas textures for one text. *)
+
+  val gpu_draw_data : Text_engine.gpu t -> gpu_draw_data
+  (** Prepare the text and borrow its draw data on the main thread. Do this
+      before beginning a render pass on the text's GPU device. If the text needs
+      a rebuild, first submit or cancel commands that read an atlas on that
+      device. Split text into parts if it needs more than 4096 glyph or fill
+      operations. On SDL_ttf 3.2.2, do not mix alpha and SDF glyphs in one text,
+      including glyphs from fallback fonts. Empty text gives no sequences.
+
+      There can be one live borrow per text. Release it before editing,
+      updating, measuring, or destroying that text. Font changes affect later
+      preparations, not this borrow. *)
+
+  val gpu_sequences : gpu_draw_data -> gpu_sequence list
+  (** Read the batches in SDL_ttf's draw order. Use the existing GPU buffer and
+      sampler APIs to draw them. The bigarrays are independent copies. The
+      textures cannot be modified, released, or used in custom 2D renderer
+      states. They are valid only while this draw data is live. *)
+
+  val release_gpu_draw_data : gpu_draw_data -> unit
+  (** End the borrow. New commands cannot use its textures. The CPU bigarrays
+      and any commands already recorded remain valid. Submit or cancel those
+      commands before the next atlas update on this device. Calling this again
+      does nothing. *)
+
+  val with_gpu_draw_data : Text_engine.gpu t -> (gpu_draw_data -> 'a) -> 'a
+  (** Prepare draw data and release it when the function returns or raises. *)
 end

@@ -173,8 +173,9 @@ text earlier, call `Text.update`.
 Use `Text.destroy` before closing the font or destroying the engine. If an engine uses a renderer,
 destroy the engine first. Close all fonts and engines before quitting SDL_ttf.
 
-For GPU drawing, use `Font.render` to draw text to a surface. Use `Surface.read_rgba` to copy the
-surface into a buffer for upload. Each pixel has four bytes: red, green, blue, and alpha.
+If you need one texture for a whole label, use `Font.render` to draw text to a surface. Use
+`Surface.read_rgba` to copy the surface into a buffer for upload. To draw glyph geometry directly,
+use a [GPU text engine](gpu.md#draw-text-from-a-glyph-atlas).
 
 ## Style and lay out text
 
