@@ -24,6 +24,16 @@ for `Window.display window`. Pass it as `Some mode` to `Window.set_fullscreen_mo
 borderless fullscreen again, pass `None`. Use `Window.set_fullscreen window true` to enter
 fullscreen. Selecting a mode alone does not enter it.
 
+### Read window visibility
+
+Call `Window.visibility` on the main thread with a live window. It reads SDL's `hidden`,
+`minimized`, and `occluded` flags without pumping events or waiting. The flags are independent.
+Three false values do not prove that the window is visible. Some backends do not report occlusion.
+
+`Event.Window` reports `Occluded` when SDL signals occlusion. `Exposed { live_resize }` requests a
+redraw. It does not prove that the window is visible. The `live_resize` field is true when SDL marks
+the request as part of a live resize.
+
 ## Wait when idle
 
 Use `Event.wait_timeout` in an idle menu or editor that has no frame to draw. The wait runs on the

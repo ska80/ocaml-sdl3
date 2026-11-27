@@ -409,6 +409,8 @@ module Window : sig
     | Borderless
     | High_pixel_density
 
+  type visibility = { hidden : bool; minimized : bool; occluded : bool }
+
   val create :
     ?flags:flag list -> context -> title:string -> w:int -> h:int -> t
 
@@ -419,6 +421,13 @@ module Window : sig
   val size : t -> int * int
   val size_in_pixels : t -> int * int
   val position : t -> int * int
+
+  val visibility : t -> visibility
+  (** Read SDL's current flags for a live window on the main thread. This call
+      does not pump events or wait. The flags are independent. Three false
+      values do not prove visibility because some backends do not report
+      occlusion. *)
+
   val display : t -> Display.id
 
   val display_scale : t -> float
@@ -2056,6 +2065,10 @@ module Event : sig
     | Left_fullscreen
     | Mouse_entered  (** The window gained mouse focus. *)
     | Mouse_left  (** The window lost mouse focus. *)
+    | Occluded  (** SDL reports that the window is occluded. *)
+    | Exposed of { live_resize : bool }
+        (** SDL requests a redraw. [live_resize] is true for a redraw request
+            during a live resize. This event does not prove visibility. *)
 
   type display_change =
     | Connected

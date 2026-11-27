@@ -327,6 +327,13 @@ CAMLprim value osdl_window_position(value window) {
     return osdl_int_pair(x, y);
 }
 
+CAMLprim value osdl_window_visibility(value window) {
+    SDL_WindowFlags flags = SDL_GetWindowFlags(osdl_live(window));
+    return caml_alloc_3(0, Val_bool((flags & SDL_WINDOW_HIDDEN) != 0),
+                        Val_bool((flags & SDL_WINDOW_MINIMIZED) != 0),
+                        Val_bool((flags & SDL_WINDOW_OCCLUDED) != 0));
+}
+
 CAMLprim value osdl_window_display(value window) {
     SDL_DisplayID id = SDL_GetDisplayForWindow(osdl_live(window));
     if (!id) osdl_fail("SDL_GetDisplayForWindow");

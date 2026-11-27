@@ -342,6 +342,8 @@ module Window = struct
     | Borderless
     | High_pixel_density
 
+  type visibility = { hidden : bool; minimized : bool; occluded : bool }
+
   let id_to_int32 id = id
 
   external create :
@@ -354,6 +356,7 @@ module Window = struct
   external size : t -> int * int = "osdl_window_size"
   external size_in_pixels : t -> int * int = "osdl_window_size_in_pixels"
   external position : t -> int * int = "osdl_window_position"
+  external visibility : t -> visibility = "osdl_window_visibility"
   external display : t -> Display.id = "osdl_window_display"
   external display_scale : t -> float = "osdl_window_display_scale"
   external set_title : t -> string -> unit = "osdl_window_set_title"
@@ -1355,6 +1358,8 @@ module Event = struct
     | Left_fullscreen
     | Mouse_entered
     | Mouse_left
+    | Occluded
+    | Exposed of { live_resize : bool }
 
   type display_change =
     | Connected

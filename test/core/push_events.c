@@ -230,6 +230,26 @@ CAMLprim value test_push_device_events(value window) {
     return Val_unit;
 }
 
+CAMLprim value test_push_window_visibility_events(value window) {
+    SDL_WindowID        id      = (SDL_WindowID)Int32_val(window);
+    const SDL_EventType types[] = {
+        SDL_EVENT_WINDOW_OCCLUDED,
+        SDL_EVENT_WINDOW_EXPOSED,
+        SDL_EVENT_WINDOW_EXPOSED,
+    };
+    SDL_PumpEvents();
+    SDL_FlushEvents(SDL_EVENT_FIRST, SDL_EVENT_LAST);
+    for (size_t i = 0; i < SDL_arraysize(types); ++i) {
+        push((SDL_Event){
+            .window = {.type      = types[i],
+                       .timestamp = UINT64_C(0x89abcdef01234560) + i,
+                       .windowID  = id,
+                       .data1     = i == 2 ? 1 : 0}
+        });
+    }
+    return Val_unit;
+}
+
 CAMLprim value test_push_render_events(value window) {
     SDL_WindowID        id      = (SDL_WindowID)Int32_val(window);
     const SDL_EventType types[] = {

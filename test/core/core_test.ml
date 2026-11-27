@@ -4,6 +4,10 @@ external set_data_home : string option -> bool = "test_set_data_home"
 external push_events : int32 -> unit = "test_push_events"
 external push_wait_events : int32 -> unit = "test_push_wait_events"
 external push_device_events : int32 -> unit = "test_push_device_events"
+
+external push_window_visibility_events : int32 -> unit
+  = "test_push_window_visibility_events"
+
 external push_render_events : int32 -> unit = "test_push_render_events"
 
 external push_audio_events :
@@ -365,6 +369,40 @@ let window_services context window =
       sdl_error "SDL_SetWindowIcon" (fun () -> Window.set_icon window icon);
       Surface.destroy icon;
       invalid (fun () -> Window.set_icon window icon))
+
+let window_visibility context =
+  using Window.destroy
+    (Window.create ~flags:[ Hidden ] context ~title:"Visibility test" ~w:32
+       ~h:24) (fun window ->
+      check (Window.visibility window).hidden "Window starts hidden";
+      Window.show window;
+      check (not (Window.visibility window).hidden) "Shown window is not hidden";
+      Window.hide window;
+      check (Window.visibility window).hidden "Window is hidden again";
+      Domain.join
+        (Domain.spawn (fun () -> invalid (fun () -> Window.visibility window)));
+      Window.destroy window;
+      invalid (fun () -> Window.visibility window))
+
+let window_visibility_events context window =
+  let window = Window.id window in
+  push_window_visibility_events (Window.id_to_int32 window);
+  let open Event in
+  List.iteri
+    (fun index change ->
+      let event =
+        if index = 1 then wait_timeout context ~timeout_ms:100 else poll context
+      in
+      let timestamp_ns =
+        Int64.add 0x89ab_cdef_0123_4560L (Int64.of_int index)
+      in
+      check
+        (event = Some { timestamp_ns; kind = Window { window; change } })
+        "Window visibility event fields")
+    [
+      Occluded; Exposed { live_resize = false }; Exposed { live_resize = true };
+    ];
+  check (poll context = None) "No extra window visibility events"
 
 let device_events context window =
   let window_id = Window.id window in
@@ -1650,6 +1688,7 @@ let () =
       surface_rgba context;
       detached_readback context;
       indexed_readback context;
+      window_visibility context;
       invalid (fun () ->
           Window.create context ~title:"embedded\000NUL" ~w:1 ~h:1);
       using Window.destroy
@@ -1671,6 +1710,7 @@ let () =
           events context window;
           wait_events context window;
           device_events context window;
+          window_visibility_events context window;
           text_input_area window;
           renderer_views context window;
           render context window;
