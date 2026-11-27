@@ -8,7 +8,7 @@ SDL3_mixer 3.2.4, and SDL3_ttf 3.2.2.
 | Priority | Improvement | Reason |
 | ---: | --- | --- |
 | 1 | Windows and macOS testing | Platform compatibility |
-| 2 | Comprehensive performance benchmarks | Establish practical rendering limits |
+| 2 | [Comprehensive performance benchmarks](docs/benchmarks.md) | Establish practical rendering limits |
 | 3 | Extended worker-domain image decoding | Background asset loading |
 | 4 | Multisample anti-aliasing | Smooth vector geometry |
 | 5 | Optional depth and stencil buffers | Masking and specialized isometric rendering |
