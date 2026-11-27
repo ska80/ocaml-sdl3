@@ -40,6 +40,41 @@ let load_bmp context path =
   Sdl3.Io.with_file context ~mode:Read path Sdl3.Surface.load_bmp_io
 ```
 
+## Decode BMP assets on a worker domain
+
+An OCaml domain can run code in parallel with the main thread. Use `Image_data.load_bmp` to open and
+decode a trusted BMP file on a worker domain. Use `Image_data.load_bmp_memory` for a bigarray that
+already holds the encoded file. Keep the input buffer unchanged until the load returns.
+
+The result holds only the image size and a buffer of RGBA bytes. The binding frees the temporary SDL
+surface on the thread that loaded it. The pixel buffer can outlive SDL and needs no explicit
+cleanup. The binding does not create a domain or manage a queue for you. If you load many files,
+reuse a small group of domains to limit the number of images in memory at once.
+
+```ocaml
+open Sdl3
+
+let start_load context path =
+  Domain.spawn (fun () -> Image_data.load_bmp context path)
+
+let upload_loaded_bmp renderer job =
+  let image = Domain.join job in
+  Texture.of_image_data renderer image
+```
+
+Call `upload_loaded_bmp` on the main thread. `Domain.join` waits for the result and raises any
+exception from the load. If you need to keep drawing without waiting, use a synchronized queue or an
+atomic value to receive completed images. Keep their bytes unchanged during upload. For the GPU API,
+pass `image.rgba` to `Gpu.write_upload_buffer` on the main thread.
+
+Keep the SDL context open until all loading jobs finish. Join them even if the game loop raises an
+exception. `Sdl3.quit` refuses to close a context during a load. If it refuses, finish the jobs and
+call it again. Destroy each uploaded texture on the main thread before destroying its renderer.
+
+Only the new BMP loaders support this workflow. The existing `Surface`, `Io`, and SDL_image loaders
+still require the main thread. In SDL 3.4.20, the PNG decoder shares error state across threads. Do
+not use the BMP API for PNG files.
+
 ## Compose images in memory
 
 A surface is a pixel buffer in memory. A blit copies pixels between surfaces. Use `Surface.blit

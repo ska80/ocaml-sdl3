@@ -1,0 +1,11 @@
+(test
+ (name image_data_test)
+ (package sdl3)
+ (libraries sdl3)
+ (modes exe byte_complete))
+
+(rule
+ (alias runtest)
+ (package sdl3)
+ (action
+  (run ./image_data_test.bc.exe)))

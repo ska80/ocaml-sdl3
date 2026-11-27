@@ -35,6 +35,7 @@
 - [x] Aurora Tunnel example with GPU mesh copies, a color texture, and interactive animation.
 - [x] Music Player example with file drops, mixer titles, GPU text, and an FFTW spectrum.
 - [x] Image loading from a file or memory, texture loading, and PNG and JPEG output.
+- [x] BMP decoding on worker domains, with pixel buffers for upload on the main thread.
 - [x] Mixer and track playback, looping, gain, and mixing to a device or memory.
 - [x] Font loading, metrics, UTF-8 text measurement, and solid or blended text rendering.
 - [x] Typed file and memory streams, with stream input for BMP, images, audio, and fonts.  Stream
@@ -62,6 +63,10 @@ SDL3_mixer 3.2.4, and SDL3_ttf 3.2.2.
 ## Next
 
 - [ ] Add macOS and Windows builds.
+- [ ] Recheck worker PNG loads after SDL fixes shared decoder state. SDL 3.4.20 disables
+      thread-local error storage in [`SDL_stb.c`](https://github.com/libsdl-org/SDL/blob/release-3.4.20/src/video/SDL_stb.c).
+      SDL_image can use the same decoder. Review other SDL_image codecs separately before allowing
+      calls from workers. Do not change the thread rules for existing handles.
 
 ## Mixer compatibility follow-ups
 

@@ -38,6 +38,10 @@ Run `dune runtest --force test/surface` to test image copies, transforms, and pa
 native and bytecode tests also check pixel row copies, lock cleanup, and upload of an atlas made
 from indexed sprites. They need no window or add-on.
 
+Run `dune runtest --force test/image_data` to test BMP loads on worker domains. The tests compare
+pixels from files and memory buffers. They test a shutdown attempt during a load, cleanup after a
+failed load, and texture upload on the main thread. They need no window or add-on.
+
 Run `dune runtest --force test/ttf` to test reusable text in native and bytecode. The tests check
 style changes in drawn pixels, kerning, fallback font lifetimes, edits, and bounds across wrapped
 lines. If SDL_ttf uses HarfBuzz, they also check a ligature and right-to-left layout. Without

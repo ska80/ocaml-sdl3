@@ -93,8 +93,9 @@ Close children before their parents. For example, destroy textures before their 
 resources before `Sdl3.quit`. Keep only one SDL context open at a time. Do not shut down SDL through
 another binding.
 
-Timer and version calls can run on other threads. Do not change a buffer from another domain while
-SDL uses it.
+Timer and version calls can run on other threads. You can also [decode BMP assets on worker
+domains](docs/assets.md#decode-bmp-assets-on-a-worker-domain) and pass the pixels to the main
+thread. Do not change a buffer from another domain while SDL uses it.
 
 Using a closed handle or closing a parent with live children raises `Invalid_argument`. When an SDL
 call reports a failure, the binding raises `Sdl3.Error` with the function name and message.

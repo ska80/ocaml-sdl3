@@ -2,6 +2,7 @@
 #include "sdl3_stubs.h"
 
 #include <SDL3/SDL_main.h>
+#include <caml/signals.h>
 #include <caml/threads.h>
 
 #include <math.h>
@@ -10,6 +11,10 @@
 
 static SDL_ThreadID main_thread;
 static bool         initialized;
+
+/* The context is unavailable at -1. Otherwise count the worker-safe loads
+ * that still use native SDL data. This count does not include public handles. */
+static SDL_AtomicInt image_loads = {.value = -1};
 
 CAMLprim value osdl_bind_main_thread(value unit) {
     (void)unit;
@@ -63,16 +68,50 @@ CAMLprim value osdl_init(value subsystems) {
         osdl_raise_error(message);
     }
 
+    /* Fill SDL's CPU feature and SIMD alignment caches on the main thread
+     * before workers allocate surfaces. SDL_Quit resets the feature cache. */
+    (void)SDL_HasSSE2();
     initialized = true;
-    CAMLreturn(osdl_publish(context, &initialized, "SDL_Init"));
+    osdl_publish(context, &initialized, "SDL_Init");
+    SDL_SetAtomicInt(&image_loads, 0);
+    CAMLreturn(context);
 }
 
 CAMLprim value osdl_quit(value context) {
-    if (osdl_take(context)) {
-        SDL_Quit();
-        initialized = false;
-    }
+    osdl_cell* cell = osdl_cell_val(context);
+    osdl_require_thread(osdl_cell_thread(cell));
+    if (!cell->ptr) return Val_unit;
+    if (cell->children) caml_invalid_argument("Close the child SDL handles first");
+    if (!SDL_CompareAndSwapAtomicInt(&image_loads, 0, -1))
+        caml_invalid_argument("Finish the SDL image loads before quitting");
+
+    cell->ptr = NULL;
+    SDL_Quit();
+    initialized = false;
     return Val_unit;
+}
+
+static void osdl_begin_image_load(value context) {
+    int count;
+    do {
+        count = SDL_GetAtomicInt(&image_loads);
+        if (count < 0) caml_invalid_argument("SDL handle is closed");
+        if (count == INT_MAX) caml_invalid_argument("Too many SDL image loads");
+    } while (!SDL_CompareAndSwapAtomicInt(&image_loads, count, count + 1));
+
+    /* A load can hold a stale context even if another context is open. Only
+     * read the handle's liveness after the count prevents SDL shutdown. */
+    if (!osdl_cell_val(context)->ptr) {
+        SDL_AddAtomicInt(&image_loads, -1);
+        caml_invalid_argument("SDL handle is closed");
+    }
+}
+
+static void osdl_end_image_load(void) {
+    /* OCaml threads are not created by SDL. Clear their SDL error storage
+     * before they can exit or the main thread can shut down SDL. */
+    if (SDL_GetCurrentThreadID() != main_thread) SDL_CleanupTLS();
+    SDL_AddAtomicInt(&image_loads, -1);
 }
 
 /* Temporary SDL allocations. The private OCaml wrapper creates the owner
@@ -579,6 +618,141 @@ CAMLprim value osdl_surface_save_bmp_io(value surface, value stream) {
     if (osdl_append_io(stream)) caml_invalid_argument("BMP output cannot use an append stream");
 
     osdl_check(SDL_SaveBMP_IO(s, io, false), "SDL_SaveBMP_IO");
+    return Val_unit;
+}
+
+/* Image_data uses private, temporary BMP surfaces. Their pixels are copied
+ * to a managed bigarray, and no native handle crosses to another thread. */
+
+CAMLprim value osdl_image_data_prepare(value unit) {
+    (void)unit;
+    return osdl_new_handle(Val_unit);
+}
+
+static value osdl_image_data_load(value context, value job, value input, bool from_memory) {
+    CAMLparam3(context, job, input);
+
+    osdl_cell* cell = osdl_cell_val(job);
+    osdl_require_thread(osdl_cell_thread(cell));
+    if (cell->ptr) caml_invalid_argument("The image load already has pixels");
+
+    const char* path = from_memory ? NULL : osdl_cstring(input);
+    const void* data = from_memory ? Caml_ba_data_val(input) : NULL;
+    size_t      size = from_memory ? (size_t)Caml_ba_array_val(input)->dim[0] : 0;
+    if (from_memory && !size) caml_invalid_argument("The BMP buffer is empty");
+
+    osdl_begin_image_load(context);
+    /* An OCaml string can move while the domain lock is released. A rooted
+     * bigarray's data cannot move. Use only native pointers while outside OCaml. */
+    char* file = path ? SDL_strdup(path) : NULL;
+    if (path && !file) {
+        osdl_end_image_load();
+        caml_raise_out_of_memory();
+    }
+
+    const char*  fn = "SDL_LoadBMP";
+    char         message[1024];
+    SDL_Surface* pixels;
+
+    caml_enter_blocking_section_no_pending();
+    SDL_ClearError();
+    if (from_memory) {
+        SDL_IOStream* stream = SDL_IOFromConstMem(data, size);
+        fn                   = stream ? "SDL_LoadBMP_IO" : "SDL_IOFromConstMem";
+        pixels               = stream ? SDL_LoadBMP_IO(stream, true) : NULL;
+    } else {
+        pixels = SDL_LoadBMP(file);
+    }
+    if (!pixels) osdl_error_message(message, sizeof(message), fn);
+    SDL_free(file);
+    if (!pixels) osdl_end_image_load();
+    caml_leave_blocking_section();
+
+    if (!pixels) osdl_raise_error(message);
+    /* The OCaml wrapper releases the job if validation or allocation raises. */
+    osdl_publish(job, pixels, fn);
+    int bpp = SDL_BYTESPERPIXEL(pixels->format);
+    if (pixels->w <= 0 || pixels->h <= 0 || !pixels->pixels || SDL_MUSTLOCK(pixels) ||
+        SDL_ISPIXELFORMAT_FOURCC(pixels->format) || SDL_BITSPERPIXEL(pixels->format) < 8 ||
+        bpp < 1 || bpp > 4 || pixels->pitch < 0 || pixels->pitch / bpp < pixels->w)
+        osdl_raise_error("SDL BMP decoder returned invalid pixel storage");
+    if (pixels->pitch > INT_MAX / pixels->h || pixels->w > INT_MAX / 4 / pixels->h ||
+        pixels->w > Max_long / 4 / pixels->h)
+        osdl_raise_error("SDL BMP image is too large to copy to RGBA");
+
+    CAMLreturn(osdl_int_pair(pixels->w, pixels->h));
+}
+
+CAMLprim value osdl_image_data_load_bmp(value context, value job, value path) {
+    return osdl_image_data_load(context, job, path, false);
+}
+
+CAMLprim value osdl_image_data_load_bmp_memory(value context, value job, value buffer) {
+    return osdl_image_data_load(context, job, buffer, true);
+}
+
+static bool osdl_copy_bmp_rgba(SDL_Surface* s, Uint8* dst) {
+    size_t       row_bytes = (size_t)s->w * 4;
+    const Uint8* pixels    = s->pixels;
+    if (s->format == SDL_PIXELFORMAT_RGBA32 && (size_t)s->pitch == row_bytes) {
+        memcpy(dst, pixels, row_bytes * (size_t)s->h);
+        return true;
+    }
+
+    int red    = s->format == SDL_PIXELFORMAT_RGB24 ? 0 : 2;
+    int stride = s->format == SDL_PIXELFORMAT_BGRA32 ? 4 : 3;
+    for (int y = 0; y < s->h; ++y, dst += row_bytes) {
+        const Uint8* src = pixels + (size_t)y * (size_t)s->pitch;
+        if (s->format == SDL_PIXELFORMAT_RGBA32) {
+            memcpy(dst, src, row_bytes);
+        } else if (s->format == SDL_PIXELFORMAT_RGB24 || s->format == SDL_PIXELFORMAT_BGR24 ||
+                   s->format == SDL_PIXELFORMAT_BGRA32) {
+            for (int x = 0; x < s->w; ++x, src += stride) {
+                Uint8* rgba = dst + (size_t)x * 4;
+                rgba[0]     = src[red];
+                rgba[1]     = src[1];
+                rgba[2]     = src[2 - red];
+                rgba[3]     = stride == 4 ? src[3] : 255;
+            }
+        } else {
+            /* Do not call SDL_ConvertSurface here. Its blit code can write
+             * to a shared CPU feature cache on first use. */
+            for (int x = 0; x < s->w; ++x) {
+                Uint8* rgba = dst + (size_t)x * 4;
+                if (!SDL_ReadSurfacePixel(s, x, y, rgba, rgba + 1, rgba + 2, rgba + 3))
+                    return false;
+            }
+        }
+    }
+    return true;
+}
+
+CAMLprim value osdl_image_data_copy_rgba(value job, value buffer) {
+    CAMLparam2(job, buffer);
+
+    SDL_Surface* s   = osdl_live(job);
+    Uint8*       dst = Caml_ba_data_val(buffer);
+    if ((size_t)Caml_ba_array_val(buffer)->dim[0] < (size_t)s->w * (size_t)s->h * 4)
+        caml_invalid_argument("The RGBA buffer is too small for the BMP image");
+
+    char message[1024];
+    caml_enter_blocking_section_no_pending();
+    bool ok = osdl_copy_bmp_rgba(s, dst);
+    if (!ok) osdl_error_message(message, sizeof(message), "SDL_ReadSurfacePixel");
+    caml_leave_blocking_section();
+
+    if (!ok) osdl_raise_error(message);
+    CAMLreturn(Val_unit);
+}
+
+CAMLprim value osdl_image_data_release(value job) {
+    SDL_Surface* s = osdl_take(job);
+    if (s) {
+        caml_enter_blocking_section_no_pending();
+        SDL_DestroySurface(s);
+        osdl_end_image_load();
+        caml_leave_blocking_section();
+    }
     return Val_unit;
 }
 
@@ -1607,6 +1781,25 @@ CAMLprim value osdl_texture_of_surface(value renderer, value surface) {
 
     SDL_Texture* texture =
         SDL_CreateTextureFromSurface(osdl_live(renderer), osdl_unlocked_surface(surface));
+    CAMLreturn(osdl_publish(handle, texture, "SDL_CreateTextureFromSurface"));
+}
+
+CAMLprim value osdl_texture_of_image_data(value renderer, value image) {
+    CAMLparam2(renderer, image);
+    CAMLlocal1(handle);
+
+    SDL_Renderer* r = osdl_live(renderer);
+    handle          = osdl_new_handle(renderer);
+
+    /* Image_data.t has positive dimensions and a packed RGBA bigarray. */
+    int          w = Int_val(Field(image, 0)), h = Int_val(Field(image, 1));
+    void*        pixels  = Caml_ba_data_val(Field(image, 2));
+    SDL_Surface* surface = SDL_CreateSurfaceFrom(w, h, SDL_PIXELFORMAT_RGBA32, pixels, w * 4);
+    if (!surface) osdl_fail("SDL_CreateSurfaceFrom");
+
+    SDL_Texture* texture = SDL_CreateTextureFromSurface(r, surface);
+    if (!texture) osdl_surface_fail_and_destroy(surface, "SDL_CreateTextureFromSurface");
+    SDL_DestroySurface(surface);
     CAMLreturn(osdl_publish(handle, texture, "SDL_CreateTextureFromSurface"));
 }
 

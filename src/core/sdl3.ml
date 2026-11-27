@@ -298,6 +298,39 @@ module Surface = struct
         f view)
 end
 
+module Image_data = struct
+  type t = { w : int; h : int; rgba : byte_buffer }
+  type pending
+
+  external prepare : unit -> pending = "osdl_image_data_prepare"
+  external release : pending -> unit = "osdl_image_data_release"
+
+  external load_bmp_raw : context -> pending -> string -> int * int
+    = "osdl_image_data_load_bmp"
+
+  external load_bmp_memory_raw : context -> pending -> byte_buffer -> int * int
+    = "osdl_image_data_load_bmp_memory"
+
+  external copy_rgba : pending -> byte_buffer -> unit
+    = "osdl_image_data_copy_rgba"
+
+  let load decode context input =
+    let job = prepare () in
+    Fun.protect
+      ~finally:(fun () -> release job)
+      (fun () ->
+        let w, h = decode context job input in
+        let rgba =
+          Bigarray.Array1.create Bigarray.int8_unsigned Bigarray.c_layout
+            (4 * w * h)
+        in
+        copy_rgba job rgba;
+        { w; h; rgba })
+
+  let load_bmp context path = load load_bmp_raw context path
+  let load_bmp_memory context buffer = load load_bmp_memory_raw context buffer
+end
+
 module Window = struct
   type t
   type id = int32
@@ -446,6 +479,9 @@ module Texture = struct
   type borders = { left : float; right : float; top : float; bottom : float }
 
   external of_surface : Renderer.t -> Surface.t -> t = "osdl_texture_of_surface"
+
+  external of_image_data : Renderer.t -> Image_data.t -> t
+    = "osdl_texture_of_image_data"
 
   external create_streaming : Renderer.t -> w:int -> h:int -> streaming
     = "osdl_texture_create_streaming"

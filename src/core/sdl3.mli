@@ -35,12 +35,12 @@ val init : subsystem list -> context
     time. Pass [[]] if you do not need any SDL subsystem. *)
 
 val quit : context -> unit
-(** Close SDL. Raise [Invalid_argument] if any resources are still open. A
-    second call on a closed context does nothing. *)
+(** Close SDL. Raise [Invalid_argument] if a resource is open or an image load
+    is in progress. Calling this again on a closed context does nothing. *)
 
 val with_init : subsystem list -> (context -> 'a) -> 'a
-(** Start SDL and call [quit] when the function exits. Close all resources
-    inside the function, including when an exception occurs. *)
+(** Start SDL and call [quit] when the function exits. Close all resources and
+    join image loading jobs inside the function, even if an exception occurs. *)
 
 module Path : sig
   (** Platform directories for application assets and user data. Call on the
@@ -376,6 +376,28 @@ module Surface : sig
       [size] and [format]. *)
 end
 
+module Image_data : sig
+  (** Decode trusted BMP assets on any thread, including an OCaml worker domain.
+      Use a live SDL context. No subsystem is needed. These calls run to
+      completion on the calling thread. They do not create threads or keep SDL
+      surfaces open. Join loading jobs before calling [quit]. The decoded byte
+      count must fit both an OCaml [int] and a C [int]. *)
+
+  type t = private { w : int; h : int; rgba : byte_buffer }
+  (** The buffer holds [4 * w * h] bytes in red, green, blue, alpha order. Rows
+      start at the top and have no padding. The result can outlive the SDL
+      context and needs no explicit cleanup. Use a synchronized handoff such as
+      [Domain.join] to pass it to another domain. Do not change its bytes while
+      another thread reads or uploads them. *)
+
+  val load_bmp : context -> string -> t
+  (** Open a BMP file, decode it, and close the file. *)
+
+  val load_bmp_memory : context -> byte_buffer -> t
+  (** Decode a nonempty buffer. Keep the input bytes unchanged during this call.
+      The result does not retain the input. *)
+end
+
 module Window : sig
   type t
   type id
@@ -657,6 +679,11 @@ module Texture : sig
 
   val of_surface : Renderer.t -> Surface.t -> t
   (** Copy the pixels. You can then destroy the surface. *)
+
+  val of_image_data : Renderer.t -> Image_data.t -> t
+  (** Create a static texture from decoded pixels on the main thread. The
+      texture does not retain the buffer. Keep its bytes unchanged during the
+      call. *)
 
   val create_streaming : Renderer.t -> w:int -> h:int -> streaming
   (** Create a texture for repeated pixel uploads. Fill it with [update] or
