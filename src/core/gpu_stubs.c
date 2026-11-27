@@ -1,8 +1,10 @@
-#include "gpu_render_pass.h"
+#include "gpu_handles.h"
 
 #include <caml/signals.h>
 
 /* GPU device selection. */
+
+enum { GPU_DEVICE_RENDERING = 2 };
 
 /* Sdl3.Gpu.shader_format constructor order. */
 static const SDL_GPUShaderFormat osdl_gpu_format_bits[] = {
@@ -56,7 +58,7 @@ CAMLprim value osdl_gpu_create_device(value driver, value debug, value context, 
     CAMLparam4(driver, debug, context, formats);
     CAMLlocal1(handle);
 
-    handle = osdl_new_handle(context);
+    handle = osdl_new_attached_handle(context, Val_false);
 
     osdl_gpu_require_video(context);
     SDL_GPUShaderFormat flags      = osdl_gpu_format_flags(formats);
@@ -121,6 +123,14 @@ CAMLprim value osdl_gpu_claim_window(value device, value window) {
 /* A live child keeps its device open. Use only after checking the child. */
 static SDL_GPUDevice* osdl_gpu_parent_device(value child) {
     return osdl_cell_val(osdl_parent(child))->ptr;
+}
+
+static SDL_GPUTextureFormat osdl_gpu_swapchain_native_format(value claim) {
+    SDL_Window*          w = osdl_live(claim);
+    SDL_GPUTextureFormat format =
+        SDL_GetGPUSwapchainTextureFormat(osdl_gpu_parent_device(claim), w);
+    if (format == SDL_GPU_TEXTUREFORMAT_INVALID) osdl_fail("SDL_GetGPUSwapchainTextureFormat");
+    return format;
 }
 
 static SDL_Window* osdl_gpu_available_window(value claim) {
@@ -201,6 +211,20 @@ static Uint32 osdl_gpu_aligned_size(value size) {
 
 static bool osdl_gpu_range_fits(Uint32 offset, Uint32 size, Uint32 limit) {
     return offset <= limit && size <= limit - offset;
+}
+
+static SDL_Rect osdl_gpu_rect(value rect, Uint32 width, Uint32 height, const char* error) {
+    Uint32 x = osdl_gpu_uint32(Field(rect, 0), error);
+    Uint32 y = osdl_gpu_uint32(Field(rect, 1), error);
+    Uint32 w = osdl_gpu_uint32(Field(rect, 2), error);
+    Uint32 h = osdl_gpu_uint32(Field(rect, 3), error);
+    if (!w || !h || !osdl_gpu_range_fits(x, w, width) || !osdl_gpu_range_fits(y, h, height))
+        caml_invalid_argument(error);
+    return (SDL_Rect){(int)x, (int)y, (int)w, (int)h};
+}
+
+static bool osdl_gpu_cycle(value cycle) {
+    return Is_block(cycle) && Bool_val(Some_val(cycle));
 }
 
 /* Vertex, index, and upload buffers. */
@@ -284,37 +308,117 @@ CAMLprim value osdl_gpu_release_upload_buffer(value upload) {
     return Val_unit;
 }
 
-/* Sampled textures and samplers. */
+/* Textures and samplers. */
 
-enum {
-    GPU_TEXTURE_WIDTH = 2,
-    GPU_TEXTURE_HEIGHT,
+/* Gpu.texture_format constructor order. Only uncompressed color formats. */
+static const SDL_GPUTextureFormat osdl_gpu_texture_formats[] = {
+    SDL_GPU_TEXTUREFORMAT_R8_UNORM,
+    SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM,
+    SDL_GPU_TEXTUREFORMAT_B8G8R8A8_UNORM,
+    SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM_SRGB,
+    SDL_GPU_TEXTUREFORMAT_B8G8R8A8_UNORM_SRGB,
+    SDL_GPU_TEXTUREFORMAT_R16G16B16A16_FLOAT,
+    SDL_GPU_TEXTUREFORMAT_R10G10B10A2_UNORM,
 };
 
-CAMLprim value osdl_gpu_create_sampled_texture(value device, value width, value height) {
-    CAMLparam3(device, width, height);
+static value osdl_gpu_texture_format_value(SDL_GPUTextureFormat format) {
+    for (size_t i = 0; i < SDL_arraysize(osdl_gpu_texture_formats); ++i)
+        if (osdl_gpu_texture_formats[i] == format) return Val_int(i);
+    osdl_raise_error("Unsupported SDL GPU texture format");
+}
+
+CAMLprim value osdl_gpu_swapchain_format(value claim) {
+    return osdl_gpu_texture_format_value(osdl_gpu_swapchain_native_format(claim));
+}
+
+static SDL_GPUTextureUsageFlags osdl_gpu_texture_usage(value usage) {
+    /* Gpu.texture_usage constructor order. */
+    static const SDL_GPUTextureUsageFlags flags[] = {
+        SDL_GPU_TEXTUREUSAGE_SAMPLER,
+        SDL_GPU_TEXTUREUSAGE_COLOR_TARGET,
+        SDL_GPU_TEXTUREUSAGE_SAMPLER | SDL_GPU_TEXTUREUSAGE_COLOR_TARGET,
+    };
+    return flags[Int_val(usage)];
+}
+
+CAMLprim value osdl_gpu_supports_texture_format(value device, value format, value usage) {
+    SDL_GPUDevice* d = osdl_live(device);
+    return Val_bool(SDL_GPUTextureSupportsFormat(d, osdl_gpu_texture_formats[Int_val(format)],
+                                                 SDL_GPU_TEXTURETYPE_2D,
+                                                 osdl_gpu_texture_usage(usage)));
+}
+
+static void osdl_gpu_require_texture_format(SDL_GPUDevice* device, SDL_GPUTextureFormat format,
+                                            SDL_GPUTextureUsageFlags usage) {
+    if (!SDL_GPUTextureSupportsFormat(device, format, SDL_GPU_TEXTURETYPE_2D, usage))
+        osdl_raise_error("SDL_GPUTextureSupportsFormat: Unsupported format for this texture use");
+}
+
+CAMLprim value osdl_gpu_create_texture(value mip_levels, value device, value format, value usage,
+                                       value width, value height) {
+    CAMLparam5(mip_levels, device, format, usage, width);
+    CAMLxparam1(height);
     CAMLlocal2(cell, handle);
 
-    cell   = osdl_new_cell(device, &osdl_handle_ops);
-    handle = caml_alloc_4(0, cell, device, width, height);
+    SDL_GPUTextureFormat     native = osdl_gpu_texture_formats[Int_val(format)];
+    SDL_GPUTextureUsageFlags flags  = osdl_gpu_texture_usage(usage);
+    intnat                   levels = Is_long(mip_levels) ? 1 : Long_val(Some_val(mip_levels));
+    cell                            = osdl_new_cell(device, &osdl_handle_ops);
+    handle = caml_alloc_7(0, cell, device, width, height, Val_int(native), Val_int(flags),
+                          Val_long(levels));
 
     SDL_GPUDevice* d = osdl_live(device);
     intnat         w = Long_val(width), h = Long_val(height);
     if (w < 1 || h < 1 || w > 16384 || h > 16384)
         caml_invalid_argument("GPU texture width and height must be in [1, 16384]");
+    int max_levels = 1;
+    for (intnat size = SDL_max(w, h); size > 1; size >>= 1)
+        ++max_levels;
+    if (levels < 1 || levels > max_levels)
+        caml_invalid_argument("The GPU mip level count must fit the texture dimensions");
 
+    osdl_gpu_require_texture_format(d, native, flags);
     SDL_GPUTextureCreateInfo info = {
         .type                 = SDL_GPU_TEXTURETYPE_2D,
-        .format               = SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM,
-        .usage                = SDL_GPU_TEXTUREUSAGE_SAMPLER,
+        .format               = native,
+        .usage                = flags,
         .width                = (Uint32)w,
         .height               = (Uint32)h,
         .layer_count_or_depth = 1,
-        .num_levels           = 1,
+        .num_levels           = (Uint32)levels,
         .sample_count         = SDL_GPU_SAMPLECOUNT_1,
     };
     SDL_GPUTexture* texture = SDL_CreateGPUTexture(d, &info);
     CAMLreturn(osdl_publish(handle, texture, "SDL_CreateGPUTexture"));
+}
+
+CAMLprim value osdl_gpu_create_texture_byte(value* argv, int argc) {
+    (void)argc;
+    return osdl_gpu_create_texture(argv[0], argv[1], argv[2], argv[3], argv[4], argv[5]);
+}
+
+static value osdl_gpu_mip_index(value level) {
+    return Is_long(level) ? Val_int(0) : Some_val(level);
+}
+
+static SDL_GPUTextureUsageFlags osdl_gpu_image_usage(value texture) {
+    return Int_val(Field(texture, GPU_TEXTURE_USAGE));
+}
+
+CAMLprim value osdl_gpu_texture_format(value texture) {
+    osdl_live(texture);
+    return osdl_gpu_texture_format_value(osdl_gpu_image_format(texture));
+}
+
+CAMLprim value osdl_gpu_texture_mip_levels(value texture) {
+    osdl_live(texture);
+    return Field(texture, GPU_TEXTURE_LEVELS);
+}
+
+CAMLprim value osdl_gpu_texture_size(value level, value texture) {
+    osdl_live(texture);
+    osdl_gpu_texture_mip mip = osdl_gpu_mip(texture, osdl_gpu_mip_index(level), false);
+    return osdl_int_pair((int)mip.w, (int)mip.h);
 }
 
 CAMLprim value osdl_gpu_release_texture(value texture) {
@@ -323,15 +427,22 @@ CAMLprim value osdl_gpu_release_texture(value texture) {
     return Val_unit;
 }
 
-CAMLprim value osdl_gpu_create_sampler(value device, value filter) {
-    CAMLparam2(device, filter);
+static SDL_GPUFilter osdl_gpu_filter(value filter) {
+    /* Gpu.sampler_filter: Nearest | Linear. */
+    return Int_val(filter) == 0 ? SDL_GPU_FILTER_NEAREST : SDL_GPU_FILTER_LINEAR;
+}
+
+CAMLprim value osdl_gpu_create_sampler(value max_mip_level, value device, value filter) {
+    CAMLparam3(max_mip_level, device, filter);
     CAMLlocal1(handle);
 
     handle = osdl_new_handle(device);
 
-    /* Sdl3.Gpu.sampler_filter: Nearest | Linear. */
-    SDL_GPUDevice* d    = osdl_live(device);
-    SDL_GPUFilter  mode = Int_val(filter) == 0 ? SDL_GPU_FILTER_NEAREST : SDL_GPU_FILTER_LINEAR;
+    SDL_GPUDevice* d   = osdl_live(device);
+    intnat         lod = Long_val(osdl_gpu_mip_index(max_mip_level));
+    if (lod < 0 || lod > GPU_MAX_MIP_LEVEL)
+        caml_invalid_argument("The sampler's maximum mip level must be in [0, 14]");
+    SDL_GPUFilter mode = osdl_gpu_filter(filter);
 
     SDL_GPUSamplerCreateInfo info = {
         .min_filter     = mode,
@@ -342,6 +453,7 @@ CAMLprim value osdl_gpu_create_sampler(value device, value filter) {
         .address_mode_w = SDL_GPU_SAMPLERADDRESSMODE_CLAMP_TO_EDGE,
         .max_anisotropy = 1.0f,
         .compare_op     = SDL_GPU_COMPAREOP_NEVER,
+        .max_lod        = (float)lod,
     };
     SDL_GPUSampler* sampler = SDL_CreateGPUSampler(d, &info);
     CAMLreturn(osdl_publish(handle, sampler, "SDL_CreateGPUSampler"));
@@ -548,21 +660,24 @@ static SDL_GPUColorTargetBlendState osdl_gpu_blend_state(value blend, value writ
     return state;
 }
 
-CAMLprim value osdl_gpu_create_swapchain_pipeline(value layout, value blend, value write_mask,
-                                                  value claim, value vertex, value fragment,
-                                                  value primitive) {
-    CAMLparam5(layout, blend, write_mask, claim, vertex);
+/* An unspecified native format means that owner is a window claim. */
+static value osdl_gpu_create_pipeline(value layout, value blend, value write_mask, value owner,
+                                      value vertex, value fragment, value primitive,
+                                      SDL_GPUTextureFormat format) {
+    CAMLparam5(layout, blend, write_mask, owner, vertex);
     CAMLxparam2(fragment, primitive);
-    CAMLlocal2(cell, pipeline);
+    CAMLlocal3(device, cell, pipeline);
 
+    bool swapchain             = format == SDL_GPU_TEXTUREFORMAT_INVALID;
+    device                     = swapchain ? osdl_parent(owner) : owner;
+    cell                       = osdl_new_cell(device, &osdl_handle_ops);
     /* Keep the resource counts after the shader handles are released. */
     unsigned vertex_uniforms   = (1u << Int_val(Field(vertex, GPU_SHADER_UNIFORMS))) - 1;
     unsigned fragment_uniforms = (1u << Int_val(Field(fragment, GPU_SHADER_UNIFORMS))) - 1;
     unsigned mask              = vertex_uniforms | (fragment_uniforms << GPU_MAX_UNIFORMS);
-    cell                       = osdl_new_cell(osdl_parent(claim), &osdl_handle_ops);
-    pipeline                   = caml_alloc_7(0, cell, osdl_parent(claim), Val_unit, Val_int(0),
-                                              Field(vertex, GPU_SHADER_SAMPLERS),
-                                              Field(fragment, GPU_SHADER_SAMPLERS), Val_int(mask));
+    pipeline =
+        caml_alloc_7(0, cell, device, Val_unit, Val_int(0), Field(vertex, GPU_SHADER_SAMPLERS),
+                     Field(fragment, GPU_SHADER_SAMPLERS), Val_int(mask));
 
     /* Sdl3.Gpu.primitive constructor order. */
     static const SDL_GPUPrimitiveType primitives[] = {
@@ -570,19 +685,20 @@ CAMLprim value osdl_gpu_create_swapchain_pipeline(value layout, value blend, val
         SDL_GPU_PRIMITIVETYPE_LINELIST,     SDL_GPU_PRIMITIVETYPE_LINESTRIP,
         SDL_GPU_PRIMITIVETYPE_POINTLIST,
     };
-    SDL_Window*    w  = osdl_live(claim);
+    SDL_GPUDevice* d  = osdl_live(device);
     SDL_GPUShader* vs = osdl_live(vertex);
     SDL_GPUShader* fs = osdl_live(fragment);
-    if (osdl_parent(claim) != osdl_parent(vertex) || osdl_parent(claim) != osdl_parent(fragment))
-        caml_invalid_argument("Use shaders from the GPU device that claimed the window");
+    if (device != osdl_parent(vertex) || device != osdl_parent(fragment))
+        caml_invalid_argument("Use shaders from the pipeline's GPU device");
 
     SDL_GPUVertexBufferDescription vertex_buffer = {0};
     SDL_GPUVertexAttribute         attributes[GPU_MAX_VERTEX_ATTRIBUTES];
     Uint32 count = osdl_gpu_vertex_attributes(layout, &vertex_buffer, attributes);
 
-    SDL_GPUDevice*       d      = osdl_gpu_parent_device(claim);
-    SDL_GPUTextureFormat format = SDL_GetGPUSwapchainTextureFormat(d, w);
-    if (format == SDL_GPU_TEXTUREFORMAT_INVALID) osdl_fail("SDL_GetGPUSwapchainTextureFormat");
+    if (swapchain)
+        format = osdl_gpu_swapchain_native_format(owner);
+    else
+        osdl_gpu_require_texture_format(d, format, SDL_GPU_TEXTUREUSAGE_COLOR_TARGET);
     Store_field(pipeline, GPU_PIPELINE_FORMAT, Val_int(format));
     Store_field(pipeline, GPU_PIPELINE_STRIDE, Val_int(vertex_buffer.pitch));
 
@@ -605,6 +721,26 @@ CAMLprim value osdl_gpu_create_swapchain_pipeline(value layout, value blend, val
     };
     SDL_GPUGraphicsPipeline* ptr = SDL_CreateGPUGraphicsPipeline(d, &info);
     CAMLreturn(osdl_publish(pipeline, ptr, "SDL_CreateGPUGraphicsPipeline"));
+}
+
+CAMLprim value osdl_gpu_create_graphics_pipeline(value layout, value blend, value write_mask,
+                                                 value device, value format, value vertex,
+                                                 value fragment, value primitive) {
+    return osdl_gpu_create_pipeline(layout, blend, write_mask, device, vertex, fragment, primitive,
+                                    osdl_gpu_texture_formats[Int_val(format)]);
+}
+
+CAMLprim value osdl_gpu_create_graphics_pipeline_byte(value* argv, int argc) {
+    (void)argc;
+    return osdl_gpu_create_graphics_pipeline(argv[0], argv[1], argv[2], argv[3], argv[4], argv[5],
+                                             argv[6], argv[7]);
+}
+
+CAMLprim value osdl_gpu_create_swapchain_pipeline(value layout, value blend, value write_mask,
+                                                  value claim, value vertex, value fragment,
+                                                  value primitive) {
+    return osdl_gpu_create_pipeline(layout, blend, write_mask, claim, vertex, fragment, primitive,
+                                    SDL_GPU_TEXTUREFORMAT_INVALID);
 }
 
 CAMLprim value osdl_gpu_create_swapchain_pipeline_byte(value* argv, int argc) {
@@ -650,6 +786,12 @@ static SDL_GPUCommandBuffer* osdl_gpu_commands_without_pass(value buffer) {
 
 static value osdl_gpu_pass_device(value pass) {
     return osdl_parent(osdl_parent(pass));
+}
+
+static void osdl_gpu_require_no_render_pass(value device) {
+    /* SDL's debug viewport bounds belong to the device, not to each command buffer. */
+    if (Bool_val(Field(device, GPU_DEVICE_RENDERING)))
+        caml_invalid_argument("End the active render pass on this GPU device first");
 }
 
 CAMLprim value osdl_gpu_push_uniform_data(value buffer, value stage, value slot, value data) {
@@ -784,8 +926,8 @@ CAMLprim value osdl_gpu_upload_to_buffer_byte(value* argv, int argc) {
     return osdl_gpu_upload_to_buffer(argv[0], argv[1], argv[2], argv[3], argv[4], argv[5], argv[6]);
 }
 
-CAMLprim value osdl_gpu_upload_to_texture(value src_offset, value cycle, value pass, value src,
-                                          value dst) {
+CAMLprim value osdl_gpu_upload_to_texture(value src_offset, value cycle, value level, value pass,
+                                          value src, value dst) {
     SDL_GPUCopyPass*       p           = osdl_live(pass);
     SDL_GPUTransferBuffer* source      = osdl_live(src);
     SDL_GPUTexture*        destination = osdl_live(dst);
@@ -793,38 +935,205 @@ CAMLprim value osdl_gpu_upload_to_texture(value src_offset, value cycle, value p
     if (osdl_parent(src) != device || osdl_parent(dst) != device)
         caml_invalid_argument("Use an upload buffer and texture from the copy pass's GPU device");
 
-    Uint32 start = osdl_gpu_offset(src_offset);
-    Uint32 w = Int_val(Field(dst, GPU_TEXTURE_WIDTH)), h = Int_val(Field(dst, GPU_TEXTURE_HEIGHT));
-    Uint32 row_bytes = 4 * w;
-    bool   rotate    = Is_block(cycle) && Bool_val(Some_val(cycle));
-    if (start % 4) caml_invalid_argument("GPU texture upload offsets must be multiples of four");
-    if (!osdl_gpu_range_fits(start, row_bytes * h, Long_val(Field(src, GPU_UPLOAD_WRITTEN))))
+    osdl_gpu_texture_mip mip    = osdl_gpu_mip(dst, osdl_gpu_mip_index(level), false);
+    Uint32               start  = osdl_gpu_offset(src_offset);
+    Uint32               pixel  = SDL_GPUTextureFormatTexelBlockSize(osdl_gpu_image_format(dst));
+    Uint64               end    = (Uint64)start + (Uint64)pixel * mip.w * mip.h;
+    bool                 rotate = osdl_gpu_cycle(cycle);
+    if (start % SDL_max(4u, pixel))
+        caml_invalid_argument("Align the GPU texture upload offset to four bytes and to a pixel");
+    if (end > (Uint64)Long_val(Field(src, GPU_UPLOAD_WRITTEN)))
         caml_invalid_argument(
             "The texture copy must fit in the written bytes of the upload buffer");
+    if (rotate && Int_val(Field(dst, GPU_TEXTURE_LEVELS)) != 1)
+        caml_invalid_argument("A cycling GPU upload needs a texture with one mip level");
 
     SDL_GPUTextureTransferInfo from = {.transfer_buffer = source, .offset = start};
-    SDL_GPUTextureRegion       to   = {.texture = destination, .w = w, .h = h, .d = 1};
+    SDL_GPUTextureRegion       to   = {
+                .texture = destination, .mip_level = mip.level, .w = mip.w, .h = mip.h, .d = 1};
     SDL_UploadToGPUTexture(p, &from, &to, rotate);
+    return Val_unit;
+}
+
+CAMLprim value osdl_gpu_upload_to_texture_byte(value* argv, int argc) {
+    (void)argc;
+    return osdl_gpu_upload_to_texture(argv[0], argv[1], argv[2], argv[3], argv[4], argv[5]);
+}
+
+static SDL_GPUBlitRegion osdl_gpu_region(value region, bool render) {
+    /* Gpu.texture_region: texture, mip_level, rect. */
+    value                texture = Field(region, 0);
+    SDL_GPUTexture*      ptr     = osdl_live(texture);
+    osdl_gpu_texture_mip mip     = osdl_gpu_mip(texture, Field(region, 1), render);
+    SDL_Rect             rect    = osdl_gpu_rect(Field(region, 2), mip.w, mip.h,
+                                                 "The GPU region must have positive size and fit the mip level");
+    return (SDL_GPUBlitRegion){.texture   = ptr,
+                               .mip_level = mip.level,
+                               .x         = (Uint32)rect.x,
+                               .y         = (Uint32)rect.y,
+                               .w         = (Uint32)rect.w,
+                               .h         = (Uint32)rect.h};
+}
+
+static void osdl_gpu_require_region_devices(value device, value src, value dst) {
+    if (osdl_parent(src) != device || osdl_parent(dst) != device)
+        caml_invalid_argument("Use textures from the command buffer's GPU device");
+    if (src == dst) caml_invalid_argument("Copy or blit between distinct GPU textures");
+}
+
+static bool osdl_gpu_full_texture(value texture, SDL_GPUBlitRegion region) {
+    return Int_val(Field(texture, GPU_TEXTURE_LEVELS)) == 1 && !region.x && !region.y &&
+           region.w == (Uint32)Int_val(Field(texture, GPU_TEXTURE_WIDTH)) &&
+           region.h == (Uint32)Int_val(Field(texture, GPU_TEXTURE_HEIGHT));
+}
+
+CAMLprim value osdl_gpu_copy_texture(value cycle, value pass, value src, value dst) {
+    SDL_GPUCopyPass*  p      = osdl_live(pass);
+    value             source = Field(src, 0), destination = Field(dst, 0);
+    SDL_GPUBlitRegion from = osdl_gpu_region(src, false), to = osdl_gpu_region(dst, false);
+    osdl_gpu_require_region_devices(osdl_gpu_pass_device(pass), source, destination);
+    if (osdl_gpu_image_format(source) != osdl_gpu_image_format(destination))
+        caml_invalid_argument("GPU texture copies need matching pixel formats");
+    if (from.w != to.w || from.h != to.h)
+        caml_invalid_argument("GPU texture copies need regions of the same size");
+    bool rotate = osdl_gpu_cycle(cycle);
+    if (rotate && !osdl_gpu_full_texture(destination, to))
+        caml_invalid_argument("A cycling GPU copy must replace the whole destination texture");
+
+    SDL_GPUTextureLocation source_location = {
+        .texture = from.texture, .mip_level = from.mip_level, .x = from.x, .y = from.y};
+    SDL_GPUTextureLocation destination_location = {
+        .texture = to.texture, .mip_level = to.mip_level, .x = to.x, .y = to.y};
+    SDL_CopyGPUTextureToTexture(p, &source_location, &destination_location, from.w, from.h, 1,
+                                rotate);
     return Val_unit;
 }
 
 OSDL_DESTROY(osdl_gpu_end_copy_pass, SDL_GPUCopyPass, SDL_EndGPUCopyPass)
 
+/* Blitting and render passes. */
+
+static SDL_FColor osdl_gpu_clear_color(value color) {
+    SDL_Color rgba = osdl_color(color);
+    return (SDL_FColor){rgba.r / 255.0f, rgba.g / 255.0f, rgba.b / 255.0f, rgba.a / 255.0f};
+}
+
+static SDL_GPULoadOp osdl_gpu_load_op(value load, SDL_FColor* clear) {
+    /* Gpu.load_op: Load | Clear of Color.t | Dont_care. */
+    if (Is_block(load)) {
+        *clear = osdl_gpu_clear_color(Field(load, 0));
+        return SDL_GPU_LOADOP_CLEAR;
+    }
+    return Int_val(load) == 0 ? SDL_GPU_LOADOP_LOAD : SDL_GPU_LOADOP_DONT_CARE;
+}
+
+CAMLprim value osdl_gpu_blit_texture(value filter, value flip, value cycle, value buffer, value src,
+                                     value dst, value load) {
+    SDL_GPUCommandBuffer* commands = osdl_gpu_commands_without_pass(buffer);
+    value                 device   = osdl_parent(buffer);
+    osdl_gpu_require_no_render_pass(device);
+
+    value           source = Field(src, 0), destination = Field(dst, 0);
+    SDL_GPUBlitInfo info = {
+        .source      = osdl_gpu_region(src, true),
+        .destination = osdl_gpu_region(dst, true),
+        .filter      = Is_long(filter) ? SDL_GPU_FILTER_NEAREST : osdl_gpu_filter(Some_val(filter)),
+        .flip_mode   = Is_long(flip) ? SDL_FLIP_NONE : osdl_flip_mode(Some_val(flip)),
+        .cycle       = osdl_gpu_cycle(cycle),
+    };
+    info.load_op = osdl_gpu_load_op(load, &info.clear_color);
+    osdl_gpu_require_region_devices(device, source, destination);
+    if (!(osdl_gpu_image_usage(source) & SDL_GPU_TEXTUREUSAGE_SAMPLER))
+        caml_invalid_argument("The GPU blit source must support sampling");
+    if (!(osdl_gpu_image_usage(destination) & SDL_GPU_TEXTUREUSAGE_COLOR_TARGET))
+        caml_invalid_argument("The GPU blit destination must support color targets");
+    /* SDL's Vulkan backend can cycle twice if the blit clears first. */
+    if (info.cycle && (info.load_op != SDL_GPU_LOADOP_DONT_CARE ||
+                       !osdl_gpu_full_texture(destination, info.destination)))
+        caml_invalid_argument("A cycling GPU blit needs Dont_care and a whole destination texture");
+
+    SDL_BlitGPUTexture(commands, &info);
+    /* SDL uses fragment uniform slot zero for blits on Metal and Direct3D 12. */
+    int mask = Int_val(Field(buffer, GPU_COMMAND_UNIFORMS));
+    Store_field(buffer, GPU_COMMAND_UNIFORMS, Val_int(mask & ~(1 << GPU_MAX_UNIFORMS)));
+    return Val_unit;
+}
+
+CAMLprim value osdl_gpu_blit_texture_byte(value* argv, int argc) {
+    (void)argc;
+    return osdl_gpu_blit_texture(argv[0], argv[1], argv[2], argv[3], argv[4], argv[5], argv[6]);
+}
+
+static value osdl_gpu_publish_render_pass(value pass, SDL_GPURenderPass* ptr, value target,
+                                          SDL_GPUTextureFormat format, Uint32 w, Uint32 h) {
+    osdl_publish(pass, ptr, "SDL_BeginGPURenderPass");
+    Store_field(pass, GPU_PASS_FORMAT, Val_int(format));
+    Store_field(pass, GPU_PASS_WIDTH, Val_long(w));
+    Store_field(pass, GPU_PASS_HEIGHT, Val_long(h));
+    if (target != Val_unit) {
+        Store_field(pass, GPU_PASS_TARGET, target);
+        ++osdl_cell_val(target)->children;
+    }
+    value device = osdl_gpu_pass_device(pass);
+    Store_field(device, GPU_DEVICE_RENDERING, Val_true);
+    return pass;
+}
+
+CAMLprim value osdl_gpu_begin_render_pass(value level, value store, value cycle, value buffer,
+                                          value target, value load) {
+    CAMLparam5(level, store, cycle, buffer, target);
+    CAMLxparam1(load);
+    CAMLlocal1(pass);
+
+    pass = osdl_gpu_new_render_pass(buffer);
+
+    SDL_GPUCommandBuffer* commands = osdl_gpu_commands_without_pass(buffer);
+    SDL_GPUTexture*       texture  = osdl_live(target);
+    value                 device   = osdl_parent(buffer);
+    if (osdl_parent(target) != device)
+        caml_invalid_argument("Use a render target from the command buffer's GPU device");
+    if (!(osdl_gpu_image_usage(target) & SDL_GPU_TEXTUREUSAGE_COLOR_TARGET))
+        caml_invalid_argument("The GPU texture must support color targets");
+    osdl_gpu_require_no_render_pass(device);
+    osdl_gpu_texture_mip mip = osdl_gpu_mip(target, osdl_gpu_mip_index(level), true);
+
+    SDL_GPUColorTargetInfo info = {
+        .texture   = texture,
+        .mip_level = mip.level,
+        .store_op  = Is_long(store) || Int_val(Some_val(store)) == 0 ? SDL_GPU_STOREOP_STORE
+                                                                     : SDL_GPU_STOREOP_DONT_CARE,
+        .cycle     = osdl_gpu_cycle(cycle),
+    };
+    info.load_op = osdl_gpu_load_op(load, &info.clear_color);
+    if (info.cycle &&
+        (info.load_op == SDL_GPU_LOADOP_LOAD || Int_val(Field(target, GPU_TEXTURE_LEVELS)) != 1))
+        caml_invalid_argument("A cycling GPU render pass needs one mip level and cannot load it");
+
+    SDL_GPURenderPass* ptr = SDL_BeginGPURenderPass(commands, &info, 1, NULL);
+    CAMLreturn(osdl_gpu_publish_render_pass(pass, ptr, target, osdl_gpu_image_format(target), mip.w,
+                                            mip.h));
+}
+
+CAMLprim value osdl_gpu_begin_render_pass_byte(value* argv, int argc) {
+    (void)argc;
+    return osdl_gpu_begin_render_pass(argv[0], argv[1], argv[2], argv[3], argv[4], argv[5]);
+}
+
 /* Swapchain render passes. */
 
 static bool osdl_gpu_wait_for_image(SDL_GPUCommandBuffer* commands, SDL_Window* window,
-                                    SDL_GPUTexture** image) {
+                                    SDL_GPUTexture** image, Uint32* width, Uint32* height) {
     caml_enter_blocking_section_no_pending();
-    bool ok = SDL_WaitAndAcquireGPUSwapchainTexture(commands, window, image, NULL, NULL);
+    bool ok = SDL_WaitAndAcquireGPUSwapchainTexture(commands, window, image, width, height);
     caml_leave_blocking_section();
     return ok;
 }
 
 static SDL_GPURenderPass* osdl_gpu_begin_clear_pass(SDL_GPUCommandBuffer* commands,
-                                                    SDL_GPUTexture* image, SDL_Color color) {
+                                                    SDL_GPUTexture* image, value color) {
     SDL_GPUColorTargetInfo target = {
         .texture     = image,
-        .clear_color = {color.r / 255.0f, color.g / 255.0f, color.b / 255.0f, color.a / 255.0f},
+        .clear_color = osdl_gpu_clear_color(color),
         .load_op     = SDL_GPU_LOADOP_CLEAR,
         .store_op    = SDL_GPU_STOREOP_STORE,
     };
@@ -858,9 +1167,11 @@ CAMLprim value osdl_gpu_begin_swapchain_render_pass(value buffer, value claim, v
     SDL_Window* w = osdl_gpu_available_window(claim);
     if (osdl_parent(buffer) != osdl_parent(claim))
         caml_invalid_argument("Use the GPU device that claimed the window");
+    osdl_gpu_require_no_render_pass(osdl_parent(buffer));
 
     SDL_GPUTexture* image = NULL;
-    if (!osdl_gpu_wait_for_image(commands, w, &image))
+    Uint32          width = 0, height = 0;
+    if (!osdl_gpu_wait_for_image(commands, w, &image, &width, &height))
         osdl_gpu_fail_frame(osdl_gpu_take_live_commands(buffer), image != NULL,
                             "SDL_WaitAndAcquireGPUSwapchainTexture");
     if (!image) CAMLreturn(Val_none);
@@ -870,16 +1181,58 @@ CAMLprim value osdl_gpu_begin_swapchain_render_pass(value buffer, value claim, v
     if (format == SDL_GPU_TEXTUREFORMAT_INVALID)
         osdl_gpu_fail_frame(osdl_gpu_take_live_commands(buffer), true,
                             "SDL_GetGPUSwapchainTextureFormat");
-    Store_field(pass, GPU_PASS_FORMAT, Val_int(format));
+    if (!width || !height || width > SDL_min(INT_MAX, Max_long) ||
+        height > SDL_min(INT_MAX, Max_long)) {
+        SDL_SetError("Invalid GPU swapchain image size");
+        osdl_gpu_fail_frame(osdl_gpu_take_live_commands(buffer), true,
+                            "SDL_WaitAndAcquireGPUSwapchainTexture");
+    }
 
-    SDL_GPURenderPass* ptr = osdl_gpu_begin_clear_pass(commands, image, osdl_color(color));
+    SDL_GPURenderPass* ptr = osdl_gpu_begin_clear_pass(commands, image, color);
     if (!ptr)
         osdl_gpu_fail_frame(osdl_gpu_take_live_commands(buffer), true, "SDL_BeginGPURenderPass");
 
     Store_field(buffer, GPU_COMMAND_CLAIM, claim);
     ++osdl_cell_val(claim)->children;
-    osdl_publish(pass, ptr, "SDL_BeginGPURenderPass");
+    osdl_gpu_publish_render_pass(pass, ptr, Val_unit, format, width, height);
     CAMLreturn(result);
+}
+
+CAMLprim value osdl_gpu_render_pass_size(value pass) {
+    osdl_live(pass);
+    return osdl_int_pair(Int_val(Field(pass, GPU_PASS_WIDTH)),
+                         Int_val(Field(pass, GPU_PASS_HEIGHT)));
+}
+
+CAMLprim value osdl_gpu_set_viewport(value pass, value viewport) {
+    SDL_GPURenderPass* ptr   = osdl_live(pass);
+    int                width = Int_val(Field(pass, GPU_PASS_WIDTH)),
+        height               = Int_val(Field(pass, GPU_PASS_HEIGHT));
+    SDL_GPUViewport native   = {.w = (float)width, .h = (float)height, .max_depth = 1.0f};
+    if (Is_block(viewport)) {
+        value rect = Some_val(viewport);
+        native.x   = osdl_float(Double_flat_field(rect, 0));
+        native.y   = osdl_float(Double_flat_field(rect, 1));
+        native.w   = osdl_float(Double_flat_field(rect, 2));
+        native.h   = osdl_float(Double_flat_field(rect, 3));
+        if (native.x < 0.0f || native.y < 0.0f || native.w <= 0.0f || native.h <= 0.0f ||
+            (double)native.x + native.w > width || (double)native.y + native.h > height)
+            caml_invalid_argument("The GPU viewport must have positive size and fit the target");
+    }
+    SDL_SetGPUViewport(ptr, &native);
+    return Val_unit;
+}
+
+CAMLprim value osdl_gpu_set_scissor(value pass, value scissor) {
+    SDL_GPURenderPass* ptr   = osdl_live(pass);
+    int                width = Int_val(Field(pass, GPU_PASS_WIDTH)),
+        height               = Int_val(Field(pass, GPU_PASS_HEIGHT));
+    SDL_Rect native          = {0, 0, width, height};
+    if (Is_block(scissor))
+        native = osdl_gpu_rect(Some_val(scissor), (Uint32)width, (Uint32)height,
+                               "The GPU scissor must have positive size and fit the target");
+    SDL_SetGPUScissor(ptr, &native);
+    return Val_unit;
 }
 
 CAMLprim value osdl_gpu_bind_graphics_pipeline(value pass, value pipeline) {
@@ -944,6 +1297,10 @@ CAMLprim value osdl_gpu_bind_samplers(value first_slot, value pass, value stage,
         SDL_GPUSampler* s = osdl_live(sampler);
         if (osdl_parent(tex) != device || osdl_parent(sampler) != device)
             caml_invalid_argument("Use textures and samplers from the render pass's GPU device");
+        if (!(osdl_gpu_image_usage(tex) & SDL_GPU_TEXTUREUSAGE_SAMPLER))
+            caml_invalid_argument("The GPU texture must support sampling");
+        if (tex == Field(pass, GPU_PASS_TARGET))
+            caml_invalid_argument("Do not sample the color target in its own GPU render pass");
         native[i] = (SDL_GPUTextureSamplerBinding){.texture = t, .sampler = s};
         pairs[i]  = pair;
     }
@@ -1069,6 +1426,13 @@ CAMLprim value osdl_gpu_end_render_pass(value pass) {
     SDL_GPURenderPass* ptr = osdl_take(pass);
     if (ptr) {
         SDL_EndGPURenderPass(ptr);
+        value device = osdl_gpu_pass_device(pass);
+        value target = Field(pass, GPU_PASS_TARGET);
+        if (target != Val_unit) {
+            --osdl_cell_val(target)->children;
+            Store_field(pass, GPU_PASS_TARGET, Val_unit);
+        }
+        Store_field(device, GPU_DEVICE_RENDERING, Val_false);
         Store_field(pass, GPU_PASS_PIPELINE, Val_unit);
         Store_field(pass, GPU_PASS_VERTEX_BUFFER, Val_unit);
         Store_field(pass, GPU_PASS_INDEX_BUFFER, Val_unit);
@@ -1082,19 +1446,20 @@ CAMLprim value osdl_gpu_clear_and_present(value claim, value color) {
 
     SDL_Window*    w = osdl_gpu_available_window(claim);
     SDL_GPUDevice* d = osdl_gpu_parent_device(claim);
+    osdl_gpu_require_no_render_pass(osdl_parent(claim));
 
     SDL_GPUCommandBuffer* commands = SDL_AcquireGPUCommandBuffer(d);
     if (!commands) osdl_fail("SDL_AcquireGPUCommandBuffer");
 
     SDL_GPUTexture* image = NULL;
-    if (!osdl_gpu_wait_for_image(commands, w, &image))
+    if (!osdl_gpu_wait_for_image(commands, w, &image, NULL, NULL))
         osdl_gpu_fail_frame(commands, image != NULL, "SDL_WaitAndAcquireGPUSwapchainTexture");
     if (!image) {
         osdl_check(SDL_CancelGPUCommandBuffer(commands), "SDL_CancelGPUCommandBuffer");
         CAMLreturn(Val_false);
     }
 
-    SDL_GPURenderPass* pass = osdl_gpu_begin_clear_pass(commands, image, osdl_color(color));
+    SDL_GPURenderPass* pass = osdl_gpu_begin_clear_pass(commands, image, color);
     if (!pass) osdl_gpu_fail_frame(commands, true, "SDL_BeginGPURenderPass");
     SDL_EndGPURenderPass(pass);
     osdl_check(SDL_SubmitGPUCommandBuffer(commands), "SDL_SubmitGPUCommandBuffer");

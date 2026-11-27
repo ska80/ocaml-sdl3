@@ -516,13 +516,6 @@ static SDL_ScaleMode osdl_scale_mode(value mode) {
     return Int_val(mode) == 0 ? SDL_SCALEMODE_NEAREST : SDL_SCALEMODE_LINEAR;
 }
 
-static SDL_FlipMode osdl_flip_mode(value mode) {
-    /* Surface.flip and Texture.flip. */
-    static const SDL_FlipMode modes[] = {SDL_FLIP_NONE, SDL_FLIP_HORIZONTAL, SDL_FLIP_VERTICAL,
-                                         SDL_FLIP_HORIZONTAL_AND_VERTICAL};
-    return modes[Int_val(mode)];
-}
-
 /* Surfaces. */
 
 /* Pixel_format.t constructor order. */

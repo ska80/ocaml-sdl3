@@ -10,23 +10,46 @@ let invalid f =
 let using destroy handle f =
   Fun.protect ~finally:(fun () -> destroy handle) (fun () -> f handle)
 
+let ( let@ ) scope f = scope f
+
 external gpu_buffer_matches : 'kind Gpu.buffer -> string -> bool
   = "test_gpu_buffer_matches"
 
-type color_target
+external gpu_texture_matches :
+  Gpu.texture_region -> string -> tolerance:int -> bool
+  = "test_gpu_texture_matches"
 
-external create_color_target : Gpu.swapchain -> color_target
-  = "test_gpu_create_color_target"
+let rect x y w h = Rect.make ~x ~y ~w ~h
 
-external release_color_target : color_target -> unit
-  = "test_gpu_release_color_target"
+let create_color_target device claim =
+  Gpu.(
+    create_texture device ~format:(swapchain_format claim) ~usage:Color_target
+      ~w:1 ~h:1)
 
-external begin_color_pass :
-  Gpu.command_buffer -> color_target -> clear:Color.t -> Gpu.render_pass
-  = "test_gpu_begin_color_pass"
+let image_matches ?(tolerance = 0) ?mip_level target pixel =
+  let region = Gpu.texture_region ?mip_level target in
+  let { Rect.w; h; _ } = region.rect in
+  let bgra =
+    match Gpu.texture_format target with
+    | Bgra8_unorm | Bgra8_srgb -> true
+    | Rgba8_unorm | Rgba8_srgb -> false
+    | _ -> failwith "Expected an 8-bit RGBA or BGRA target"
+  in
+  let expected = Bytes.create (w * h * 4) in
+  for y = 0 to h - 1 do
+    for x = 0 to w - 1 do
+      let { Color.r; g; b; a } = pixel x y in
+      let offset = 4 * ((y * w) + x) in
+      Bytes.set_uint8 expected offset (if bgra then b else r);
+      Bytes.set_uint8 expected (offset + 1) g;
+      Bytes.set_uint8 expected (offset + 2) (if bgra then r else b);
+      Bytes.set_uint8 expected (offset + 3) a
+    done
+  done;
+  gpu_texture_matches region (Bytes.to_string expected) ~tolerance
 
-external color_target_matches : color_target -> Color.t -> tolerance:int -> bool
-  = "test_gpu_color_target_matches"
+let color_target_matches target color ~tolerance =
+  image_matches ~tolerance target (fun _ _ -> color)
 
 let packed_bytes bytes =
   Bigarray.Array1.init Bigarray.int8_unsigned Bigarray.c_layout
@@ -34,6 +57,17 @@ let packed_bytes bytes =
 
 let with_copy_pass commands f =
   using Gpu.end_copy_pass (Gpu.begin_copy_pass commands) f
+
+let with_color_pass ?mip_level ?store ?cycle commands ~target ~load f =
+  using Gpu.end_render_pass
+    (Gpu.begin_render_pass ?mip_level ?store ?cycle commands ~target ~load)
+    f
+
+let submit_gpu device record =
+  let open Gpu in
+  using cancel_command_buffer (acquire_command_buffer device) (fun commands ->
+      record commands;
+      using release_fence (submit_and_acquire_fence commands) wait_fence)
 
 let command_buffers device =
   let open Gpu in
@@ -172,6 +206,10 @@ let render_pass device claim =
       let commands =
         with_render_pass device claim ~clear (fun commands pass ->
             Gc.full_major ();
+            let w, h = render_pass_size pass in
+            check (w > 0 && h > 0) "Acquired swapchain image size";
+            set_viewport pass None;
+            set_scissor pass None;
             invalid (fun () -> submit_command_buffer commands);
             invalid (fun () -> submit_and_acquire_fence commands);
             invalid (fun () -> begin_copy_pass commands);
@@ -198,14 +236,26 @@ let wrong_upload_device device other =
         write_upload_buffer src data;
         using release_buffer (create_vertex_buffer d ~size:4) (fun dst ->
             using release_texture
-              (create_sampled_texture d ~w:1 ~h:1)
+              (create_texture d ~format:Rgba8_unorm ~usage:Sampled_color_target
+                 ~w:1 ~h:1)
               (f src dst)))
   in
   with_resources device (fun src dst texture ->
       with_resources other (fun other_src other_dst other_texture ->
           using cancel_command_buffer (acquire_command_buffer device)
             (fun commands ->
+              let here = texture_region texture
+              and there = texture_region other_texture in
+              invalid (fun () ->
+                  begin_render_pass commands ~target:other_texture
+                    ~load:Dont_care);
+              invalid (fun () ->
+                  blit_texture commands ~src:there ~dst:here ~load:Dont_care);
+              invalid (fun () ->
+                  blit_texture commands ~src:here ~dst:there ~load:Dont_care);
               with_copy_pass commands (fun pass ->
+                  invalid (fun () -> copy_texture pass ~src:there ~dst:here);
+                  invalid (fun () -> copy_texture pass ~src:here ~dst:there);
                   invalid (fun () ->
                       upload_to_buffer pass ~src:other_src ~dst ~size:4);
                   invalid (fun () ->
@@ -267,12 +317,14 @@ let shader_checks device =
         (Domain.spawn (fun () -> invalid (fun () -> release_shader shader)));
       release_shader shader)
 
+let with_triangle_shaders device f =
+  using Gpu.release_shader (triangle_vertex device) (fun vertex ->
+      using Gpu.release_shader (triangle_fragment device) (f vertex))
+
 let triangle_pipeline device claim =
-  let open Gpu in
-  using release_shader (triangle_vertex device) (fun vertex ->
-      using release_shader (triangle_fragment device) (fun fragment ->
-          create_swapchain_pipeline claim ~vertex ~fragment
-            ~primitive:Triangle_list))
+  with_triangle_shaders device (fun vertex fragment ->
+      Gpu.create_swapchain_pipeline claim ~vertex ~fragment
+        ~primitive:Triangle_list)
 
 let wrong_pipeline_device device context claim ~clear =
   let open Gpu in
@@ -283,7 +335,10 @@ let wrong_pipeline_device device context claim ~clear =
           using release_shader (triangle_fragment device) (fun fragment ->
               invalid (fun () ->
                   create_swapchain_pipeline claim ~vertex ~fragment
-                    ~primitive:Triangle_list)));
+                    ~primitive:Triangle_list);
+              invalid (fun () ->
+                  create_graphics_pipeline device ~format:Rgba8_unorm ~vertex
+                    ~fragment ~primitive:Triangle_list)));
       let pipeline =
         using Window.destroy
           (Window.create context ~title:"Other GPU window" ~w:64 ~h:48)
@@ -488,28 +543,23 @@ let blending device claim =
   let size = Bigarray.Array1.dim data in
   let equation src dst op : Blend_mode.equation = { src; dst; op } in
   let blend color alpha : Blend.t = { color; alpha } in
-  let submit record =
-    using cancel_command_buffer (acquire_command_buffer device) (fun commands ->
-        record commands;
-        using release_fence (submit_and_acquire_fence commands) wait_fence)
-  in
   using release_buffer (create_vertex_buffer device ~size) (fun vertices ->
-      submit (fun commands ->
+      submit_gpu device (fun commands ->
           using release_upload_buffer (create_upload_buffer device ~size)
             (fun src ->
               write_upload_buffer src data;
               with_copy_pass commands (fun pass ->
                   upload_to_buffer pass ~src ~dst:vertices ~size)));
-      using release_color_target (create_color_target claim) (fun target ->
+      using release_texture (create_color_target device claim) (fun target ->
           with_mesh_shaders device (fun vertex fragment ->
               let expect ?blend ?color_write_mask label color =
                 using release_graphics_pipeline
                   (create_swapchain_pipeline ~vertex_layout:mesh_layout ?blend
                      ?color_write_mask claim ~vertex ~fragment
                      ~primitive:Triangle_list) (fun pipeline ->
-                    submit (fun commands ->
-                        using end_render_pass
-                          (begin_color_pass commands target ~clear) (fun pass ->
+                    submit_gpu device (fun commands ->
+                        with_color_pass commands ~target ~load:(Clear clear)
+                          (fun pass ->
                             bind_graphics_pipeline pass pipeline;
                             bind_vertex_buffer pass vertices;
                             draw_primitives pass ~vertices:3)));
@@ -551,7 +601,7 @@ let blending device claim =
               expect ~color_write_mask:[]
                 "GPU empty mask preserves the clear color" clear)))
 
-let resource_pipeline device claim =
+let resource_pipeline device ~format =
   let open Gpu in
   using release_shader
     (create_shader device ~stage:Vertex ~format:Spirv ~samplers:1
@@ -563,7 +613,7 @@ let resource_pipeline device claim =
            ~uniform_buffers:1
            (shader_code "resources.frag.spv"))
         (fun fragment ->
-          create_swapchain_pipeline claim ~vertex ~fragment
+          create_graphics_pipeline device ~format ~vertex ~fragment
             ~primitive:Triangle_list))
 
 let wrong_sampler_device device context claim pipeline texture sampler =
@@ -621,12 +671,10 @@ let upload_resource_textures device commands a b index =
 let resource_draws device claim pipeline a b nearest linear =
   let open Gpu in
   let with_target f =
-    using release_color_target (create_color_target claim) f
+    using release_texture (create_color_target device claim) f
   in
   let with_pass commands target f =
-    using end_render_pass
-      (begin_color_pass commands target ~clear:(Color.rgba 0 0 0 0))
-      f
+    with_color_pass commands ~target ~load:(Clear (Color.rgba 0 0 0 0)) f
   in
   let vertex = uniform_coordinates 0.75 0.25 0. 0. in
   let initial = uniform_coordinates 0.25 0.25 0.25 0.25 in
@@ -678,6 +726,9 @@ let resource_draws device claim pipeline a b nearest linear =
                       draw ());
                   with_pass commands second (fun pass ->
                       bind_graphics_pipeline pass pipeline;
+                      invalid (fun () ->
+                          bind_samplers pass ~stage:Vertex
+                            [| (first, nearest) |]);
                       bind_samplers pass ~stage:Vertex va;
                       bind_samplers pass ~stage:Fragment fb;
                       push Fragment 0 initial;
@@ -702,7 +753,8 @@ let resource_draws device claim pipeline a b nearest linear =
 let shader_resources device context claim =
   let open Gpu in
   let texture () = create_sampled_texture device ~w:2 ~h:2 in
-  using release_graphics_pipeline (resource_pipeline device claim)
+  using release_graphics_pipeline
+    (resource_pipeline device ~format:(swapchain_format claim))
     (fun pipeline ->
       using release_texture (texture ()) (fun a ->
           using release_texture (texture ()) (fun b ->
@@ -713,6 +765,264 @@ let shader_resources device context claim =
                       wrong_sampler_device device context claim pipeline a
                         nearest;
                       resource_draws device claim pipeline a b nearest linear)))))
+
+let texture_upload_formats device =
+  let open Gpu in
+  check
+    (supports_texture_format device ~format:Rgba8_unorm
+       ~usage:Sampled_color_target)
+    "RGBA8 can be sampled and rendered to";
+  let test format bytes alignment =
+    if supports_texture_format device ~format ~usage:Sampled then
+      using release_texture
+        (create_texture device ~format ~usage:Sampled ~w:1 ~h:1) (fun target ->
+          check (texture_format target = format) "GPU texture format";
+          check (texture_mip_levels target = 1) "Default mip level count";
+          let region = texture_region target in
+          let padded = String.make alignment '\000' ^ bytes in
+          let size = (String.length padded + 3) land lnot 3 in
+          submit_gpu device (fun commands ->
+              invalid (fun () ->
+                  begin_render_pass commands ~target ~load:Dont_care);
+              using release_upload_buffer (create_upload_buffer device ~size)
+                (fun src ->
+                  write_upload_buffer src
+                    (packed_bytes (Bytes.of_string padded));
+                  with_copy_pass commands (fun pass ->
+                      invalid (fun () ->
+                          upload_to_texture ~src_offset:(alignment / 2) pass
+                            ~src ~dst:target);
+                      upload_to_texture ~src_offset:alignment pass ~src
+                        ~dst:target)));
+          check
+            (gpu_texture_matches region bytes ~tolerance:0)
+            "Packed mip upload bytes";
+          release_texture target;
+          invalid (fun () -> texture_size target))
+  in
+  test R8_unorm "\213" 4;
+  let half = Bytes.create 8 in
+  List.iteri
+    (fun i n -> Bytes.set_uint16_ne half (2 * i) n)
+    [ 0x3c00; 0x3800; 0x3400; 0x3c00 ];
+  test Rgba16_float (Bytes.to_string half) 8;
+  let packed = Bytes.create 4 in
+  Bytes.set_int32_ne packed 0 0xc8040200l;
+  test Rgb10a2_unorm (Bytes.to_string packed) 4
+
+let texture_copies device =
+  let open Gpu in
+  let make ?mip_levels ~w ~h format usage =
+    create_texture ?mip_levels device ~format ~usage ~w ~h
+  in
+  let red = Color.rgb 255 0 0
+  and green = Color.rgb 0 255 0
+  and blue = Color.rgb 0 0 255
+  and bg = Color.rgb 10 20 30 in
+  let pixels =
+    Bytes.of_string "\255\000\000\255\000\255\000\255\000\000\255\255"
+  in
+  invalid (fun () -> make ~mip_levels:0 ~w:4 ~h:2 Rgba8_unorm Sampled);
+  invalid (fun () -> make ~mip_levels:4 ~w:4 ~h:2 Rgba8_unorm Sampled);
+  let@ source =
+    using release_texture
+      (make ~mip_levels:3 ~w:4 ~h:2 Rgba8_unorm Sampled_color_target)
+  in
+  let@ copied =
+    using release_texture (make ~w:3 ~h:2 Rgba8_unorm Color_target)
+  in
+  let@ scaled =
+    using release_texture (make ~w:6 ~h:4 Bgra8_unorm Color_target)
+  in
+  check (texture_mip_levels source = 3) "Configurable GPU mip levels";
+  check (texture_size ~mip_level:1 source = (2, 1)) "GPU first mip size";
+  check (texture_size ~mip_level:2 source = (1, 1)) "GPU mip size clamps to one";
+  invalid (fun () -> texture_size ~mip_level:(-1) source);
+  let mip = texture_region ~mip_level:1 source in
+  let thin = texture_region ~mip_level:2 source in
+  let crop texture x y w h = texture_region ~rect:(rect x y w h) texture in
+  let dest = crop copied 1 0 2 1 and enlarged = crop scaled 1 1 4 2 in
+  let dst = texture_region scaled and whole_copy = texture_region copied in
+  submit_gpu device (fun commands ->
+      invalid (fun () ->
+          begin_render_pass ~mip_level:2 commands ~target:source ~load:Dont_care);
+      invalid (fun () -> blit_texture commands ~src:thin ~dst ~load:Dont_care);
+      invalid (fun () ->
+          blit_texture commands ~src:whole_copy ~dst ~load:Dont_care);
+      invalid (fun () ->
+          blit_texture commands ~src:mip ~dst:(texture_region source)
+            ~load:Dont_care);
+      invalid (fun () ->
+          blit_texture ~cycle:true commands ~src:mip ~dst ~load:(Clear bg));
+      using release_upload_buffer (create_upload_buffer device ~size:12)
+        (fun src ->
+          write_upload_buffer src (packed_bytes pixels);
+          with_copy_pass commands (fun pass ->
+              invalid (fun () ->
+                  blit_texture commands ~src:mip ~dst ~load:Dont_care);
+              invalid (fun () -> upload_to_texture pass ~src ~dst:source);
+              invalid (fun () ->
+                  upload_to_texture ~cycle:true ~mip_level:1 pass ~src
+                    ~dst:source);
+              upload_to_texture ~mip_level:1 pass ~src ~dst:source;
+              upload_to_texture ~mip_level:2 ~src_offset:8 pass ~src ~dst:source));
+      with_color_pass commands ~target:copied ~load:(Clear bg) ignore;
+      with_copy_pass commands (fun pass ->
+          invalid (fun () ->
+              copy_texture pass ~src:mip ~dst:(crop scaled 0 0 2 1));
+          invalid (fun () -> copy_texture pass ~src:mip ~dst:whole_copy);
+          invalid (fun () ->
+              copy_texture pass ~src:mip ~dst:(crop copied max_int 0 2 1));
+          invalid (fun () -> copy_texture pass ~src:mip ~dst:thin);
+          invalid (fun () -> copy_texture ~cycle:true pass ~src:mip ~dst:dest);
+          copy_texture pass ~src:mip ~dst:dest;
+          copy_texture pass ~src:thin ~dst:(crop copied 0 1 1 1));
+      blit_texture ~flip:Horizontal commands ~src:mip ~dst:enlarged
+        ~load:(Clear bg);
+      blit_texture ~filter:Linear commands ~src:mip ~dst:(crop scaled 4 3 1 1)
+        ~load:Load);
+  check
+    (image_matches copied (fun x y ->
+         match (x, y) with
+         | 1, 0 -> red
+         | 2, 0 -> green
+         | 0, 1 -> blue
+         | _ -> bg))
+    "GPU rectangular copy from two mip levels";
+  check
+    (image_matches ~tolerance:1 scaled (fun x y ->
+         if y = 3 && x = 4 then Color.rgb 128 128 0
+         else if y >= 1 && y <= 2 && x >= 1 && x <= 4 then
+           if x <= 2 then green else red
+         else bg))
+    "GPU flipped nearest blit, linear blit, and BGRA conversion";
+  submit_gpu device (fun commands ->
+      with_color_pass commands ~target:source ~load:(Clear blue) ignore;
+      with_color_pass commands ~target:copied ~load:(Clear bg) ignore;
+      with_copy_pass commands (fun pass ->
+          copy_texture ~cycle:true pass ~src:(crop source 0 0 3 2)
+            ~dst:whole_copy);
+      with_color_pass commands ~target:scaled ~load:(Clear bg) ignore;
+      invalid (fun () ->
+          blit_texture ~cycle:true commands ~src:mip ~dst:enlarged
+            ~load:Dont_care);
+      blit_texture ~cycle:true commands ~src:mip ~dst ~load:Dont_care);
+  check (color_target_matches copied blue ~tolerance:0) "Whole cycling GPU copy";
+  check
+    (image_matches scaled (fun x _ -> if x < 3 then red else green))
+    "Whole cycling GPU blit"
+
+let offscreen_rendering device =
+  let open Gpu in
+  let clear = Color.rgb 5 10 15 and draw_color = Color.rgb 64 191 255 in
+  let pipeline =
+    with_triangle_shaders device (fun vertex fragment ->
+        create_graphics_pipeline device ~format:Rgba8_unorm ~vertex ~fragment
+          ~primitive:Triangle_list)
+  in
+  let@ pipeline = using release_graphics_pipeline pipeline in
+  let@ target =
+    using release_texture
+      (create_texture ~mip_levels:2 device ~format:Rgba8_unorm
+         ~usage:Color_target ~w:16 ~h:16)
+  in
+  let@ other_format =
+    using release_texture
+      (create_texture device ~format:Bgra8_unorm ~usage:Color_target ~w:1 ~h:1)
+  in
+  let@ spare = using cancel_command_buffer (acquire_command_buffer device) in
+  submit_gpu device (fun commands ->
+      with_color_pass commands ~target:other_format ~load:Dont_care
+        ~store:Discard (fun pass ->
+          invalid (fun () -> bind_graphics_pipeline pass pipeline));
+      invalid (fun () ->
+          begin_render_pass ~mip_level:2 commands ~target ~load:Dont_care);
+      invalid (fun () ->
+          begin_render_pass ~cycle:true commands ~target ~load:Dont_care);
+      with_color_pass ~mip_level:1 commands ~target ~load:(Clear clear) ignore;
+      let ended =
+        let@ pass = with_color_pass ~mip_level:1 commands ~target ~load:Load in
+        check (render_pass_size pass = (8, 8)) "Offscreen mip pass size";
+        Gc.full_major ();
+        invalid (fun () -> release_texture target);
+        invalid (fun () -> begin_copy_pass commands);
+        invalid (fun () -> submit_command_buffer commands);
+        invalid (fun () ->
+            begin_render_pass spare ~target:other_format ~load:Dont_care);
+        Domain.join
+          (Domain.spawn (fun () -> invalid (fun () -> set_scissor pass None)));
+        let viewport x w = Some (Frect.make ~x ~y:0. ~w ~h:4.) in
+        set_viewport pass (viewport 0. 4.);
+        set_scissor pass (Some (rect 2 2 1 1));
+        invalid (fun () -> set_viewport pass (viewport nan 4.));
+        invalid (fun () -> set_viewport pass (viewport 5. 4.));
+        invalid (fun () -> set_scissor pass (Some (rect 7 7 2 1)));
+        bind_graphics_pipeline pass pipeline;
+        draw_primitives pass ~vertices:3;
+        set_viewport pass None;
+        set_scissor pass None;
+        pass
+      in
+      end_render_pass ended;
+      invalid (fun () -> render_pass_size ended);
+      invalid (fun () -> set_scissor ended None));
+  with_color_pass ~mip_level:1 spare ~target ~load:(Clear draw_color) ignore;
+  cancel_command_buffer spare;
+  check
+    (image_matches ~tolerance:1 ~mip_level:1 target (fun x y ->
+         if x = 2 && y = 2 then draw_color else clear))
+    "GPU load preserves the clear outside the viewport and scissor"
+
+let offscreen_sampling device =
+  let open Gpu in
+  let black = Color.rgb 0 0 0 and red = Color.rgb 255 0 0 in
+  let make ?mip_levels w h =
+    create_texture ?mip_levels device ~w ~h ~format:Rgba8_unorm
+      ~usage:Sampled_color_target
+  in
+  let@ pipeline =
+    using release_graphics_pipeline
+      (resource_pipeline device ~format:Rgba8_unorm)
+  in
+  let@ source = using release_texture (make ~mip_levels:2 4 4) in
+  let@ target = using release_texture (make 1 1) in
+  invalid (fun () -> create_sampler ~max_mip_level:15 device ~filter:Nearest);
+  let@ mip =
+    using release_sampler
+      (create_sampler ~max_mip_level:1 device ~filter:Nearest)
+  in
+  let@ base = using release_sampler (create_sampler device ~filter:Nearest) in
+  submit_gpu device (fun commands ->
+      with_color_pass commands ~target:source ~load:(Clear black) ignore;
+      with_color_pass ~mip_level:1 commands ~target:source ~load:(Clear red)
+        ignore;
+      with_color_pass commands ~target ~load:(Clear red) ignore;
+      invalid (fun () ->
+          begin_render_pass ~cycle:true commands ~target ~load:Load);
+      with_color_pass ~cycle:true commands ~target ~load:(Clear black) ignore;
+      push_uniform_data commands ~stage:Vertex ~slot:0
+        (uniform_coordinates 0.5 0.5 1. 0.);
+      let fragment = uniform_coordinates 0.5 0.5 0.5 0.5 in
+      push_uniform_data commands ~stage:Fragment ~slot:0 fragment;
+      blit_texture commands ~src:(texture_region source)
+        ~dst:(texture_region target) ~load:Load;
+      with_color_pass commands ~target ~load:Load (fun pass ->
+          bind_graphics_pipeline pass pipeline;
+          invalid (fun () ->
+              bind_samplers pass ~stage:Vertex [| (target, mip) |]);
+          invalid (fun () ->
+              bind_samplers pass ~stage:Fragment
+                [| (source, base); (target, base) |]);
+          bind_samplers pass ~stage:Vertex [| (source, mip) |];
+          bind_samplers pass ~stage:Fragment
+            [| (source, base); (source, base) |];
+          invalid (fun () -> draw_primitives pass ~vertices:3);
+          push_uniform_data commands ~stage:Fragment ~slot:0 fragment;
+          draw_primitives pass ~vertices:3);
+      release_texture source);
+  check
+    (color_target_matches target red ~tolerance:0)
+    "A later pass samples the mip rendered by an earlier pass"
 
 let hidden_window device claim =
   let open Gpu in
@@ -777,8 +1087,12 @@ let () =
           command_buffers device;
           buffer_uploads device;
           sampled_handles device;
-          if List.mem Gpu.Spirv (Gpu.shader_formats device) then
+          texture_upload_formats device;
+          texture_copies device;
+          if List.mem Gpu.Spirv (Gpu.shader_formats device) then (
             shader_checks device;
+            offscreen_rendering device;
+            offscreen_sampling device);
           window device context;
           Gpu.destroy_device device;
           invalid (fun () -> Gpu.wait_idle device);

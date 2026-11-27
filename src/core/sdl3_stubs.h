@@ -243,6 +243,13 @@ static inline SDL_Color osdl_color(value v) {
                        Int_val(Field(v, 3))};
 }
 
+/* Surface.flip and Texture.flip. */
+static inline SDL_FlipMode osdl_flip_mode(value mode) {
+    static const SDL_FlipMode modes[] = {SDL_FLIP_NONE, SDL_FLIP_HORIZONTAL, SDL_FLIP_VERTICAL,
+                                         SDL_FLIP_HORIZONTAL_AND_VERTICAL};
+    return modes[Int_val(mode)];
+}
+
 /* OCaml result values. */
 
 static inline value osdl_val_int(int n) {

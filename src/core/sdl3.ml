@@ -686,6 +686,20 @@ module Gpu = struct
   type 'kind buffer
   type upload_buffer
   type texture
+
+  type texture_format =
+    | R8_unorm
+    | Rgba8_unorm
+    | Bgra8_unorm
+    | Rgba8_srgb
+    | Bgra8_srgb
+    | Rgba16_float
+    | Rgb10a2_unorm
+
+  type texture_usage = Sampled | Color_target | Sampled_color_target
+  type texture_region = { texture : texture; mip_level : int; rect : Rect.t }
+  type load_op = Load | Clear of Color.t | Dont_care
+  type store_op = Store | Discard
   type sampler
   type sampler_filter = Nearest | Linear
   type index_format = Uint16 | Uint32
@@ -764,6 +778,9 @@ module Gpu = struct
   external supports_composition : swapchain -> composition -> bool
     = "osdl_gpu_supports_composition"
 
+  external swapchain_format : swapchain -> texture_format
+    = "osdl_gpu_swapchain_format"
+
   external set_swapchain_parameters :
     swapchain -> composition:composition -> present_mode:present_mode -> unit
     = "osdl_gpu_set_swapchain_parameters"
@@ -779,6 +796,19 @@ module Gpu = struct
     'stage shader = "osdl_gpu_create_shader_byte" "osdl_gpu_create_shader"
 
   external release_shader : 'stage shader -> unit = "osdl_gpu_release_shader"
+
+  external create_graphics_pipeline :
+    ?vertex_layout:vertex_layout ->
+    ?blend:Blend.t ->
+    ?color_write_mask:color_component list ->
+    device ->
+    format:texture_format ->
+    vertex:vertex shader ->
+    fragment:fragment shader ->
+    primitive:primitive ->
+    graphics_pipeline
+    = "osdl_gpu_create_graphics_pipeline_byte"
+      "osdl_gpu_create_graphics_pipeline"
 
   external create_swapchain_pipeline :
     ?vertex_layout:vertex_layout ->
@@ -813,12 +843,44 @@ module Gpu = struct
   external release_upload_buffer : upload_buffer -> unit
     = "osdl_gpu_release_upload_buffer"
 
-  external create_sampled_texture : device -> w:int -> h:int -> texture
-    = "osdl_gpu_create_sampled_texture"
+  external supports_texture_format :
+    device -> format:texture_format -> usage:texture_usage -> bool
+    = "osdl_gpu_supports_texture_format"
+
+  external create_texture :
+    ?mip_levels:int ->
+    device ->
+    format:texture_format ->
+    usage:texture_usage ->
+    w:int ->
+    h:int ->
+    texture = "osdl_gpu_create_texture_byte" "osdl_gpu_create_texture"
+
+  let create_sampled_texture device ~w ~h =
+    create_texture device ~format:Rgba8_unorm ~usage:Sampled ~w ~h
+
+  external texture_format : texture -> texture_format
+    = "osdl_gpu_texture_format"
+
+  external texture_mip_levels : texture -> int = "osdl_gpu_texture_mip_levels"
+
+  external texture_size : ?mip_level:int -> texture -> int * int
+    = "osdl_gpu_texture_size"
+
+  let texture_region ?(mip_level = 0) ?rect texture =
+    let rect =
+      match rect with
+      | Some rect -> rect
+      | None ->
+          let w, h = texture_size ~mip_level texture in
+          Rect.make ~x:0 ~y:0 ~w ~h
+    in
+    { texture; mip_level; rect }
 
   external release_texture : texture -> unit = "osdl_gpu_release_texture"
 
-  external create_sampler : device -> filter:sampler_filter -> sampler
+  external create_sampler :
+    ?max_mip_level:int -> device -> filter:sampler_filter -> sampler
     = "osdl_gpu_create_sampler"
 
   external release_sampler : sampler -> unit = "osdl_gpu_release_sampler"
@@ -862,16 +924,49 @@ module Gpu = struct
   external upload_to_texture :
     ?src_offset:int ->
     ?cycle:bool ->
+    ?mip_level:int ->
     copy_pass ->
     src:upload_buffer ->
     dst:texture ->
-    unit = "osdl_gpu_upload_to_texture"
+    unit = "osdl_gpu_upload_to_texture_byte" "osdl_gpu_upload_to_texture"
+
+  external copy_texture :
+    ?cycle:bool -> copy_pass -> src:texture_region -> dst:texture_region -> unit
+    = "osdl_gpu_copy_texture"
 
   external end_copy_pass : copy_pass -> unit = "osdl_gpu_end_copy_pass"
+
+  external blit_texture :
+    ?filter:sampler_filter ->
+    ?flip:Surface.flip ->
+    ?cycle:bool ->
+    command_buffer ->
+    src:texture_region ->
+    dst:texture_region ->
+    load:load_op ->
+    unit = "osdl_gpu_blit_texture_byte" "osdl_gpu_blit_texture"
+
+  external begin_render_pass :
+    ?mip_level:int ->
+    ?store:store_op ->
+    ?cycle:bool ->
+    command_buffer ->
+    target:texture ->
+    load:load_op ->
+    render_pass = "osdl_gpu_begin_render_pass_byte" "osdl_gpu_begin_render_pass"
 
   external begin_swapchain_render_pass :
     command_buffer -> swapchain -> clear:Color.t -> render_pass option
     = "osdl_gpu_begin_swapchain_render_pass"
+
+  external render_pass_size : render_pass -> int * int
+    = "osdl_gpu_render_pass_size"
+
+  external set_viewport : render_pass -> Frect.t option -> unit
+    = "osdl_gpu_set_viewport"
+
+  external set_scissor : render_pass -> Rect.t option -> unit
+    = "osdl_gpu_set_scissor"
 
   external bind_graphics_pipeline : render_pass -> graphics_pipeline -> unit
     = "osdl_gpu_bind_graphics_pipeline"

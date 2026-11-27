@@ -146,10 +146,12 @@ driver. On Linux with offscreen Vulkan support, set `SDL_VIDEO_DRIVER=offscreen`
 display.
 
 The drawing tests use SPIR-V, a shader format that Vulkan accepts. They skip drawing on devices that
-do not accept SPIR-V. The tests read pixels from a texture with the swapchain format to check
-blending and write masks. The repository includes compiled shaders, so the tests do not need a
-shader compiler. If you edit the [test shaders](../test/gpu/shaders), rebuild the compiled files
-from the repository root:
+do not accept SPIR-V. The tests read pixels to check blending, write masks, viewports, and clips.
+They also check mip uploads, copies, scaled blits, and sampling a texture in a later pass. They
+reject attempts to sample the current target or to use a pipeline with a different format.
+
+The repository includes compiled shaders, so the tests do not need a shader compiler. If you edit
+the [test shaders](../test/gpu/shaders), rebuild the compiled files from the repository root:
 
 ```sh
 for shader in test/gpu/shaders/*.vert test/gpu/shaders/*.frag; do

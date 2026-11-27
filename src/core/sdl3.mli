@@ -971,7 +971,39 @@ module Gpu : sig
   (** Temporary memory that holds bytes to copy to the GPU. *)
 
   type texture
-  (** A GPU image that a shader can read. *)
+  (** An owned 2D GPU image. Its use depends on how you allocate it. *)
+
+  type texture_format =
+    | R8_unorm  (** One red byte. *)
+    | Rgba8_unorm  (** Four bytes in red, green, blue, alpha order. *)
+    | Bgra8_unorm  (** Four bytes in blue, green, red, alpha order. *)
+    | Rgba8_srgb  (** Like [Rgba8_unorm], with sRGB encoding for RGB. *)
+    | Bgra8_srgb  (** Like [Bgra8_unorm], with sRGB encoding for RGB. *)
+    | Rgba16_float  (** Four native-endian 16-bit floats in RGBA order. *)
+    | Rgb10a2_unorm
+        (** A native-endian 32-bit word. Red occupies the low 10 bits, then
+            green and blue each occupy 10 bits. Alpha occupies the high 2 bits.
+        *)
+
+  type texture_usage =
+    | Sampled  (** Read the pixels in a shader. *)
+    | Color_target  (** Draw into the texture. *)
+    | Sampled_color_target
+        (** Draw into and sample the texture in separate passes. *)
+
+  type texture_region = { texture : texture; mip_level : int; rect : Rect.t }
+  (** A rectangle in a mip level. Level zero is the full-size image. *)
+
+  type load_op =
+    | Load  (** Keep the previous pixels. Load only initialized pixels. *)
+    | Clear of Color.t
+        (** Set the whole target level to one color. Each color byte maps to a
+            component from 0 to 1 before the target format encodes it. *)
+    | Dont_care  (** The previous pixels are undefined. *)
+
+  type store_op =
+    | Store  (** Keep the pixels after the pass. *)
+    | Discard  (** The pixels are undefined after the pass. *)
 
   type sampler
   (** Rules for how a shader reads pixels from a texture. *)
@@ -1088,6 +1120,10 @@ module Gpu : sig
   val supports_present_mode : swapchain -> present_mode -> bool
   val supports_composition : swapchain -> composition -> bool
 
+  val swapchain_format : swapchain -> texture_format
+  (** Return the claim's current image format. Read again after a change in
+      swapchain composition. *)
+
   val set_swapchain_parameters :
     swapchain -> composition:composition -> present_mode:present_mode -> unit
   (** Set the display color format and presentation timing. If a command buffer
@@ -1118,6 +1154,26 @@ module Gpu : sig
   (** Release the shader. Existing pipelines can still use it. Calling this
       again on a released shader does nothing. *)
 
+  val create_graphics_pipeline :
+    ?vertex_layout:vertex_layout ->
+    ?blend:Blend.t ->
+    ?color_write_mask:color_component list ->
+    device ->
+    format:texture_format ->
+    vertex:vertex shader ->
+    fragment:fragment shader ->
+    primitive:primitive ->
+    graphics_pipeline
+  (** Create a pipeline for a single color target of [format]. Both shaders must
+      belong to [device]. No window claim is needed. If the vertex shader reads
+      attributes, pass the layout for one vertex buffer. The pipeline uses no
+      depth test or face culling.
+
+      Without [blend], fragments replace the target values. If
+      [color_write_mask] is present, draws write only the listed channels,
+      whether or not blending is enabled. An empty list writes no channels.
+      Omitting the mask writes all channels. The mask does not affect clears. *)
+
   val create_swapchain_pipeline :
     ?vertex_layout:vertex_layout ->
     ?blend:Blend.t ->
@@ -1127,21 +1183,10 @@ module Gpu : sig
     fragment:fragment shader ->
     primitive:primitive ->
     graphics_pipeline
-  (** Create a pipeline for the claim's current pixel format. Both shaders must
-      belong to the device that claimed the window. If the vertex shader has
-      attributes, pass its layout for one vertex buffer. Otherwise omit
-      [vertex_layout]. The pipeline uses one color target with no depth test or
-      face culling.
-
-      Without [blend], fragments replace the target values. If
-      [color_write_mask] is present, draws write only the listed channels,
-      whether or not blending is enabled. An empty list writes no channels.
-      Omitting the mask writes all channels. The mask does not affect clears.
-
-      The pipeline belongs to the device, not the claim. Use it with any
-      swapchain on that device that has the same pixel format. If a change to
-      the swapchain parameters changes the format, create a matching pipeline.
-  *)
+  (** Like [create_graphics_pipeline], using the claim's device and current
+      format. The pipeline can also draw into textures with that format. It does
+      not keep the claim open. If the swapchain format changes, use a matching
+      pipeline. *)
 
   val release_graphics_pipeline : graphics_pipeline -> unit
   (** Release the pipeline. SDL keeps any work already recorded in command
@@ -1178,19 +1223,52 @@ module Gpu : sig
   (** Release the upload buffer. SDL keeps already recorded copies valid.
       Calling this again on a released buffer does nothing. *)
 
+  val supports_texture_format :
+    device -> format:texture_format -> usage:texture_usage -> bool
+  (** Ask SDL if the device supports this combination of format and use for a 2D
+      texture. This does not check a particular size or allocate an image. *)
+
+  val create_texture :
+    ?mip_levels:int ->
+    device ->
+    format:texture_format ->
+    usage:texture_usage ->
+    w:int ->
+    h:int ->
+    texture
+  (** Allocate a 2D texture. Width and height must be in [1, 16384]. The mip
+      level count defaults to one. It must fit the dimensions, including level
+      zero. Each successive level halves each dimension, rounds down, and stops
+      at one pixel per axis. Initialize each level before reading it. This
+      function does not generate the smaller images. Raise [Error] if the device
+      does not support the format and use. *)
+
   val create_sampled_texture : device -> w:int -> h:int -> texture
-  (** Allocate a 2D texture with one level. Each pixel uses four bytes in red,
-      green, blue, alpha order. Each byte maps to a value from 0 to 1. Width and
-      height must be in [1, 16384]. Upload pixels before sampling. *)
+  (** Allocate a one-level [Rgba8_unorm] texture with [Sampled] usage. *)
+
+  val texture_format : texture -> texture_format
+  val texture_mip_levels : texture -> int
+
+  val texture_size : ?mip_level:int -> texture -> int * int
+  (** Return the size in pixels of a level. The index defaults to zero. *)
+
+  val texture_region :
+    ?mip_level:int -> ?rect:Rect.t -> texture -> texture_region
+  (** Describe a rectangle in a texture level. The index defaults to zero. If
+      you omit [rect], select the whole level. Copy and blit calls check the
+      region before recording GPU work. *)
 
   val release_texture : texture -> unit
-  (** Release the texture. SDL keeps already recorded commands valid. Calling
-      this again on a released texture does nothing. *)
+  (** Release the texture. End any render pass that uses it as its target first.
+      SDL keeps already recorded commands valid. Calling this again on a
+      released texture does nothing. *)
 
-  val create_sampler : device -> filter:sampler_filter -> sampler
-  (** Create a sampler for a texture with one level. [Nearest] reads the closest
-      pixel. [Linear] blends nearby pixels. Coordinates outside the texture use
-      its edge pixels. *)
+  val create_sampler :
+    ?max_mip_level:int -> device -> filter:sampler_filter -> sampler
+  (** Create a sampler. [Nearest] reads the closest pixel. [Linear] blends
+      nearby pixels. Coordinates outside the texture use its edge pixels. The
+      maximum mip level index is in [0, 14] and defaults to zero. SDL picks the
+      nearest mip level within the limit and the texture's levels. *)
 
   val release_sampler : sampler -> unit
   (** Release the sampler. SDL keeps already recorded commands valid. Calling
@@ -1212,7 +1290,8 @@ module Gpu : sig
 
       Call this before or during a render pass. The data applies to subsequent
       draws in this command buffer until you replace it in the same slot and
-      stage. You can reuse the bigarray as soon as this call returns. *)
+      stage. [blit_texture] invalidates fragment slot zero. You can reuse the
+      bigarray as soon as this call returns. *)
 
   val submit_command_buffer : command_buffer -> unit
   (** Queue the recorded work and present any acquired window image. End any
@@ -1238,8 +1317,8 @@ module Gpu : sig
   (** Release the fence. Calling this again on a released fence does nothing. *)
 
   val begin_copy_pass : command_buffer -> copy_pass
-  (** Start a pass for uploads. End any open pass on the command buffer first.
-  *)
+  (** Start a pass for uploads and copies. End any open pass on the command
+      buffer first. *)
 
   val upload_to_buffer :
     ?src_offset:int ->
@@ -1262,35 +1341,100 @@ module Gpu : sig
   val upload_to_texture :
     ?src_offset:int ->
     ?cycle:bool ->
+    ?mip_level:int ->
     copy_pass ->
     src:upload_buffer ->
     dst:texture ->
     unit
-  (** Record a copy that replaces all pixels in [dst]. Write the pixels to [src]
-      in row order with no padding between rows. The byte offset defaults to
-      zero and must be a multiple of four. Use an upload buffer and texture from
-      the pass's device. The pixels must fit in the written bytes of [src].
+  (** Replace all pixels in the selected level of [dst]. The level defaults to
+      zero. Pack the pixels in the texture's format, one row after another with
+      no padding. The byte offset defaults to zero. Align it to both four bytes
+      and the pixel size. The pixels must fit the written bytes of [src]. Both
+      resources must belong to the pass's device.
 
-      With [cycle:true], SDL can use separate storage for the new pixels. If you
-      cancel a buffer with a cycling upload, upload again before sampling.
-      Without cycling, the copy updates the existing storage in GPU command
-      order. *)
+      Cycling requires a one-level texture. If [cycle] is true, SDL can use
+      separate storage for the new pixels. If you cancel a cycling upload,
+      initialize the texture again before reading it. *)
+
+  val copy_texture :
+    ?cycle:bool -> copy_pass -> src:texture_region -> dst:texture_region -> unit
+  (** Copy pixels without scaling or conversion. Use two distinct textures on
+      the pass's device. The regions must fit their levels and have the same
+      size and pixel format. Cycling requires a whole one-level destination. If
+      you cancel a cycling copy, initialize the destination again before reading
+      it. *)
 
   val end_copy_pass : copy_pass -> unit
   (** End the copy pass. Calling this again on an ended pass does nothing. *)
 
+  val blit_texture :
+    ?filter:sampler_filter ->
+    ?flip:Surface.flip ->
+    ?cycle:bool ->
+    command_buffer ->
+    src:texture_region ->
+    dst:texture_region ->
+    load:load_op ->
+    unit
+  (** Scale a source region into a destination region. SDL can also convert the
+      pixel format. The filter defaults to [Nearest]. The source must support
+      sampling. The destination must support color targets. Use distinct
+      textures from the command buffer's device. End any pass on the buffer and
+      any render pass on the device before blitting.
+
+      If [load] is [Clear], SDL clears the whole destination level first.
+      Cycling needs [Dont_care] and a whole one-level destination. If you cancel
+      a cycling blit, initialize the destination before reading it. Neither
+      selected level can shift a base dimension down to zero. Use a copy instead
+      for such levels if the rectangles and formats match.
+
+      This call invalidates fragment uniform slot zero. Push the slot data again
+      before drawing with a pipeline that uses it. *)
+
+  val begin_render_pass :
+    ?mip_level:int ->
+    ?store:store_op ->
+    ?cycle:bool ->
+    command_buffer ->
+    target:texture ->
+    load:load_op ->
+    render_pass
+  (** Start drawing to one color target on the command buffer's device. The
+      texture must support color targets. The level defaults to zero and [store]
+      defaults to [Store]. End any pass on the buffer and any render pass on the
+      device first. The pass keeps the target open until you end it. Do not
+      sample the target in the same pass, even at another level.
+
+      Cycling needs a one-level texture and either [Clear] or [Dont_care]. If
+      you cancel a cycling pass, initialize the texture before reading it. SDL
+      cannot render a level if either base dimension shifts to zero at that
+      level. *)
+
   val begin_swapchain_render_pass :
     command_buffer -> swapchain -> clear:Color.t -> render_pass option
-  (** Wait for a window image and start a pass that clears it. End any open pass
-      on the command buffer first. The claim and command buffer must belong to
-      the same device. If this returns [None], no image was available and you
-      can still cancel the buffer.
+  (** Wait for a window image and start a pass that clears it. End any pass on
+      the buffer and any render pass on the device first. The claim and buffer
+      must belong to the same device. If this returns [None], no image was
+      available and you can still cancel the buffer.
 
       If this returns a pass, end the pass before submitting the buffer. The
       claim stays busy until submission. Do not acquire another image in the
       same buffer. If an SDL call fails here, the binding closes the buffer
       before raising [Error]. It cancels the buffer if no image was acquired.
       Otherwise, it submits the buffer to return the image to SDL. *)
+
+  val render_pass_size : render_pass -> int * int
+  (** Return the target width and height in pixels. *)
+
+  val set_viewport : render_pass -> Frect.t option -> unit
+  (** Map drawing coordinates to a rectangle in target pixels. Pass a positive
+      size and finite coordinates inside the target. [None] resets the viewport
+      to the full target. This does not change the scissor. *)
+
+  val set_scissor : render_pass -> Rect.t option -> unit
+  (** Clip draws to a rectangle in target pixels, not relative to the viewport.
+      The rectangle must have positive size and fit the target. [None] removes
+      the extra clip. Neither setting affects the pass's clear operation. *)
 
   val bind_graphics_pipeline : render_pass -> graphics_pipeline -> unit
   (** Bind a live pipeline that matches the pass's device and pixel format. Bind
@@ -1306,7 +1450,8 @@ module Gpu : sig
   (** Bind texture and sampler pairs to consecutive slots of the current
       pipeline's shader. [first_slot] defaults to zero. The range must fit the
       sampler count for that stage. The resources must belong to the pass's
-      device. An empty array does not change any slots. *)
+      device. The textures must support sampling and cannot be the active color
+      target. An empty array does not change any slots. *)
 
   val bind_vertex_buffer : ?offset:int -> render_pass -> vertex buffer -> unit
   (** Select the vertex data for the current pipeline. The pipeline must have a
@@ -1342,8 +1487,9 @@ module Gpu : sig
 
   val clear_and_present : swapchain -> Color.t -> bool
   (** Wait for a window image, clear it to the given color, and submit it for
-      presentation. Return [false] if no image can be acquired, for example if
-      the window is minimized. No commands or image handles escape this call. *)
+      presentation. End any render pass on the device first. Return [false] if
+      no image can be acquired, for example if the window is minimized. No
+      commands or image handles escape this call. *)
 end
 
 module Scancode : sig
