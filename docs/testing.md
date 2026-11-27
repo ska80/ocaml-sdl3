@@ -157,10 +157,11 @@ bindings and compare pixels before and after a uniform change. They also check q
 state change, state destruction, and resource release. The tests use both a window and a windowless
 texture target.
 
-The readback tests use the public `Gpu` API in native code and bytecode. They check partial buffer
-and mip downloads, pitches, byte offsets, cancellation, and waits. They also check that bytes
-outside the copied rows stay unchanged and that the bigarray outlives the download buffer.  The
-transfer tests do not need shaders.
+The transfer tests use the public `Gpu` API in native code and bytecode. They do not need shaders.
+Upload tests cover packed and padded rectangles, partial mip updates, and cancellation. They compare
+pixels outside each update, and test the bounds of the written bytes. Readback tests cover partial
+buffer and mip downloads, pitches, byte offsets, and waits. They also check that bytes outside the
+copied rows stay unchanged and that the bigarray outlives the download buffer.
 
 The repository includes compiled shaders, so the tests do not need a shader compiler. If you edit
 the [test shaders](../test/gpu/shaders), rebuild the compiled files from the repository root:

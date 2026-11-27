@@ -391,8 +391,10 @@ let wrong_transfer_device device other =
       invalid (fun () -> copy_texture pass ~src:here ~dst:there);
       invalid (fun () -> upload_to_buffer pass ~src:other_src ~dst ~size:4);
       invalid (fun () -> upload_to_buffer pass ~src ~dst:other_dst ~size:4);
-      invalid (fun () -> upload_to_texture pass ~src:other_src ~dst:texture);
-      invalid (fun () -> upload_to_texture pass ~src ~dst:other_texture);
+      invalid (fun () ->
+          upload_to_texture ~rect:here.rect pass ~src:other_src ~dst:texture);
+      invalid (fun () ->
+          upload_to_texture ~rect:there.rect pass ~src ~dst:other_texture);
       invalid (fun () ->
           download_from_buffer pass ~src:other_dst ~dst:download ~size:4);
       invalid (fun () ->
@@ -1091,6 +1093,180 @@ let texture_upload_formats device =
   Bytes.set_int32_ne packed 0 0xc8040200l;
   test Rgb10a2_unorm (Bytes.to_string packed) 4
 
+let partial_texture_uploads device =
+  let open Gpu in
+  let@ atlas =
+    using release_texture
+      (create_texture ~mip_levels:2 device ~format:Rgba8_unorm ~usage:Sampled
+         ~w:8 ~h:6)
+  in
+  let@ single =
+    using release_texture (create_sampled_texture device ~w:2 ~h:2)
+  in
+  let@ src =
+    using release_upload_buffer (create_upload_buffer device ~size:1024)
+  in
+  let background = "\010\020\030\255" in
+  let red = "\210\011\031\255"
+  and green = "\019\222\032\255"
+  and blue = "\012\015\248\255" in
+  let pixels color count =
+    String.concat "" (List.init count (fun _ -> color))
+  in
+  let write bytes = write_upload_buffer src (packed_bytes bytes) in
+  let tile ~offset ~pitch rows =
+    let size =
+      offset + ((List.length rows - 1) * pitch) + String.length (List.hd rows)
+    in
+    let packed = Bytes.make size '\127' in
+    List.iteri
+      (fun y row ->
+        Bytes.blit_string row 0 packed
+          (offset + (y * pitch))
+          (String.length row))
+      rows;
+    packed
+  in
+  let base = rect 2 1 2 3 in
+  let mip = rect 1 1 3 2 in
+  submit_gpu device (fun commands ->
+      let ended =
+        with_copy_pass commands (fun pass ->
+            write (Bytes.of_string (pixels background 48));
+            upload_to_texture pass ~src ~dst:atlas;
+            upload_to_texture ~mip_level:1 pass ~src ~dst:atlas;
+            invalid (fun () ->
+                upload_to_texture ~cycle:true pass ~src ~dst:atlas);
+            invalid (fun () ->
+                upload_to_texture ~cycle:true ~rect:(rect 0 0 1 2) pass ~src
+                  ~dst:single);
+            upload_to_texture ~cycle:true ~rect:(rect 0 0 2 2) pass ~src
+              ~dst:single;
+            List.iter
+              (fun rect ->
+                invalid (fun () -> upload_to_texture ~rect pass ~src ~dst:atlas))
+              [
+                rect 0 0 0 1;
+                rect 0 0 1 (-1);
+                rect (-1) 0 2 1;
+                rect 0 (-1) 1 2;
+                rect 7 0 2 2;
+                rect 0 5 2 2;
+                rect max_int 0 1 1;
+              ];
+            invalid (fun () ->
+                upload_to_texture ~mip_level:1 ~rect:base pass ~src ~dst:atlas);
+            invalid (fun () ->
+                upload_to_texture ~mip_level:2 ~rect:mip pass ~src ~dst:atlas);
+            List.iter
+              (fun pitch ->
+                invalid (fun () ->
+                    upload_to_texture ~pitch ~rect:base pass ~src ~dst:atlas))
+              [ -4; 0; 4; 10; max_int ];
+            if Sys.int_size > 32 then
+              invalid (fun () ->
+                  upload_to_texture
+                    ~pitch:(Int64.to_int 0x8000_0000L)
+                    ~rect:base pass ~src ~dst:atlas);
+            invalid (fun () ->
+                upload_to_texture ~src_offset:2 ~rect:base pass ~src ~dst:atlas);
+            let padded =
+              tile ~offset:4 ~pitch:16
+                [ pixels red 2; pixels green 2; pixels blue 2 ]
+            in
+            write (Bytes.sub padded 0 (Bytes.length padded - 1));
+            invalid (fun () ->
+                upload_to_texture ~src_offset:4 ~pitch:16 ~rect:base pass ~src
+                  ~dst:atlas);
+            write padded;
+            Domain.join
+              (Domain.spawn (fun () ->
+                   invalid (fun () ->
+                       upload_to_texture ~rect:base pass ~src ~dst:atlas)));
+            upload_to_texture ~src_offset:4 ~pitch:16 ~rect:base pass ~src
+              ~dst:atlas;
+            write (tile ~offset:12 ~pitch:300 [ pixels blue 3; pixels red 3 ]);
+            upload_to_texture ~mip_level:1 ~src_offset:12 ~pitch:300 ~rect:mip
+              pass ~src ~dst:atlas;
+            write (Bytes.of_string (pixels blue 2));
+            upload_to_texture ~rect:(rect 0 4 2 1) pass ~src ~dst:atlas;
+            write (Bytes.of_string ("skip" ^ green));
+            upload_to_texture ~src_offset:4 ~pitch:512 ~rect:(rect 7 5 1 1) pass
+              ~src ~dst:atlas;
+            let aligned =
+              tile ~offset:512 ~pitch:256 [ pixels green 2; pixels red 2 ]
+            in
+            write (Bytes.extend aligned 0 (1024 - Bytes.length aligned));
+            upload_to_texture ~src_offset:512 ~pitch:256 ~cycle:true pass ~src
+              ~dst:single;
+            pass)
+      in
+      invalid (fun () -> upload_to_texture ~rect:base ended ~src ~dst:atlas);
+      release_upload_buffer src;
+      with_copy_pass commands (fun pass ->
+          invalid (fun () -> upload_to_texture ~rect:base pass ~src ~dst:atlas)));
+  let color bytes =
+    Color.rgb (Char.code bytes.[0]) (Char.code bytes.[1]) (Char.code bytes.[2])
+  in
+  let bg = color background
+  and red = color red
+  and green = color green
+  and blue = color blue in
+  let base_pixels x y =
+    match (x, y) with
+    | (2 | 3), 1 -> red
+    | (2 | 3), 2 -> green
+    | (2 | 3), 3 | (0 | 1), 4 -> blue
+    | 7, 5 -> green
+    | _ -> bg
+  in
+  check
+    (image_matches device atlas base_pixels)
+    "Packed and padded updates leave other atlas pixels unchanged";
+  check
+    (image_matches device ~mip_level:1 atlas (fun x y ->
+         if x = 0 || y = 0 then bg else if y = 1 then blue else red))
+    "Upload to the edge of a smaller mip level with a wide pitch";
+  check
+    (image_matches device single (fun _ y -> if y = 0 then green else red))
+    "Aligned pitched upload replaces a whole cycling texture";
+  release_texture single;
+  using cancel_command_buffer (acquire_command_buffer device) (fun commands ->
+      let@ discarded =
+        using release_upload_buffer (create_upload_buffer device ~size:4)
+      in
+      write_upload_buffer discarded
+        (packed_bytes (Bytes.of_string "\090\091\092\255"));
+      with_copy_pass commands (fun pass ->
+          let rect = rect 2 1 1 1 in
+          invalid (fun () ->
+              upload_to_texture ~rect pass ~src:discarded ~dst:single);
+          upload_to_texture ~rect pass ~src:discarded ~dst:atlas));
+  check (image_matches device atlas base_pixels) "Cancel a partial atlas update"
+
+let partial_r8_uploads device =
+  let open Gpu in
+  if supports_texture_format device ~format:R8_unorm ~usage:Sampled then (
+    let@ texture =
+      using release_texture
+        (create_texture device ~format:R8_unorm ~usage:Sampled ~w:4 ~h:3)
+    in
+    let@ src =
+      using release_upload_buffer (create_upload_buffer device ~size:16)
+    in
+    submit_gpu device (fun commands ->
+        with_copy_pass commands (fun pass ->
+            write_upload_buffer src (packed_bytes (Bytes.make 12 '\000'));
+            upload_to_texture pass ~src ~dst:texture;
+            write_upload_buffer src
+              (packed_bytes (Bytes.of_string "skip\001\002pad\003\004"));
+            upload_to_texture ~src_offset:4 ~pitch:5 ~rect:(rect 1 1 2 2) pass
+              ~src ~dst:texture));
+    check
+      (gpu_texture_matches device (texture_region texture)
+         "\000\000\000\000\000\001\002\000\000\003\004\000" ~tolerance:0)
+      "Single-byte pixels support a pitch that is not a multiple of four")
+
 let texture_downloads device =
   let open Gpu in
   let@ texture =
@@ -1746,6 +1922,8 @@ let () =
           buffer_downloads device;
           sampled_handles device;
           texture_upload_formats device;
+          partial_texture_uploads device;
+          partial_r8_uploads device;
           texture_downloads device;
           texture_copies device;
           if List.mem Gpu.Spirv (Gpu.shader_formats device) then (

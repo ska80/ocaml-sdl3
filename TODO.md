@@ -16,6 +16,10 @@ SDL3_mixer 3.2.4, and SDL3_ttf 3.2.2.
 - [ ] Recheck render passes and blits on the smallest levels of rectangular GPU textures after an
       SDL update. SDL 3.4.20 can calculate a zero width or height instead of one. The binding
       rejects those levels for rendering and blitting but still allows uploads and copies.
+- [ ] Recheck texture upload pitches on Metal and Direct3D 12 after an SDL update. SDL 3.4.20
+      ignores the source pitch on Metal. The Direct3D 12 realignment path can copy a source row into
+      a smaller temporary row or read padding after the last pixel. The binding repacks those
+      layouts.
 - [ ] Recheck vertex buffer binding on Direct3D 12 after an SDL update. SDL 3.4.20 keeps unused
       slots and does not rebuild buffer views when only the stride changes. The binding replaces
       unused slots and forces a new view when it binds vertex data for another pipeline.

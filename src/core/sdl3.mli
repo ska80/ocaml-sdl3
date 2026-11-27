@@ -964,21 +964,30 @@ module Gpu : sig
 
   val upload_to_texture :
     ?src_offset:int ->
+    ?pitch:int ->
     ?cycle:bool ->
     ?mip_level:int ->
+    ?rect:Rect.t ->
     copy_pass ->
     src:upload_buffer ->
     dst:texture ->
     unit
-  (** Replace all pixels in the selected level of [dst]. The level defaults to
-      zero. Pack the pixels in the texture's format, one row after another with
-      no padding. The byte offset defaults to zero. Align it to both four bytes
-      and the pixel size. The pixels must fit the written bytes of [src]. Both
-      resources must belong to the pass's device.
+  (** Replace pixels in [dst] without converting their format. The mip level
+      defaults to zero. [rect] is in pixels relative to that level. It must have
+      positive size and fit inside the level. Omit it to replace the whole
+      level. Pixels outside the rectangle stay unchanged.
 
-      Cycling requires a one-level texture. If [cycle] is true, SDL can use
-      separate storage for the new pixels. If you cancel a cycling upload,
-      initialize the texture again before reading it. *)
+      [src_offset] is a byte offset to the first source pixel. It defaults to
+      zero. Align it to four bytes and to the pixel size. [pitch] is the byte
+      distance between source rows. It defaults to a tightly packed row of the
+      rectangle. It must cover one row, be a multiple of the pixel size, and fit
+      a signed 32-bit integer. All copied pixels must fit in the written bytes
+      of [src]. No padding is needed after the last row. Both resources must
+      belong to the pass's device.
+
+      Cycling requires a whole one-level destination. SDL can use separate
+      storage when [cycle] is true. If you cancel a cycling upload, initialize
+      the texture again before reading it. *)
 
   val copy_texture :
     ?cycle:bool -> copy_pass -> src:texture_region -> dst:texture_region -> unit

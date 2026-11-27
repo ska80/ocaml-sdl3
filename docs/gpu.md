@@ -116,8 +116,8 @@ slot zero again if the next pipeline uses it.
 
 Use `Gpu.create_sampled_texture` to allocate a 2D image that a shader can read. Write four bytes per
 pixel in red, green, blue, alpha order. Use `Gpu.upload_to_texture` in a copy pass to copy the
-packed pixels from an upload buffer. Use `Gpu.create_sampler` to choose nearest or linear filtering
-within one level.
+pixels from an upload buffer. You can also [update a rectangle](#update-part-of-a-texture).  Use
+`Gpu.create_sampler` to choose nearest or linear filtering within one level.
 
 Address modes tell the GPU what to sample outside the texture. The default is `Clamp_to_edge`.  Use
 `~address_u:Repeat` to repeat along the horizontal axis. Use `Mirrored_repeat` to reverse every
@@ -127,6 +127,38 @@ After you bind the pipeline, use `Gpu.bind_samplers` to set the texture and samp
 Before you draw, set all slots that the shaders declare. Release textures with `Gpu.release_texture`
 and samplers with `Gpu.release_sampler` before you destroy the device. For examples of uniforms,
 texture uploads, and indexed drawing, see the [GPU test](../test/gpu/gpu_test.ml).
+
+## Update part of a texture
+
+An atlas stores several images in one texture. Use `Gpu.upload_to_texture ~rect` to replace one
+rectangle without changing the rest of the atlas. The rectangle uses pixels in the selected mip
+level. Initialize any pixels that a draw can sample, including those outside the rectangle.
+
+This function stages tightly packed RGBA pixels and records one upload. Pass a live copy pass and an
+upload buffer large enough for the patch:
+
+```ocaml
+let update_atlas pass ~staging ~atlas ~x ~y ~w ~h pixels =
+  let open Sdl3 in
+  let rect = Rect.make ~x ~y ~w ~h in
+  Gpu.write_upload_buffer staging pixels;
+  Gpu.upload_to_texture ~rect pass ~src:staging ~dst:atlas
+```
+
+If the pixels come from a larger image in the upload buffer, pass `~src_offset` and `~pitch`.  The
+offset points to the first source pixel in bytes. The pitch is the byte distance between source
+rows. For RGBA, a source rectangle at `(sx, sy)` starts at `sy * pitch + sx * 4`. The written bytes
+must cover the last copied pixel, not the padding after it.
+
+Reuse the same upload buffer for later patches. You can also stage several patches at different byte
+offsets and record their uploads in one copy pass. End the pass before drawing. Use cycling only if
+the upload replaces a whole texture with one mip level. A partial update must keep the storage that
+holds the old pixels.
+
+Packed rows use the direct upload path. SDL 3.4.20 ignores source pitch on Metal and cannot use some
+padded layouts safely on Direct3D 12. The binding repacks rows in those cases. On Direct3D 12, a
+512-byte aligned offset and a pitch equal to the row size rounded up to 256 bytes avoid
+realignment. Include the final padding if you use that layout.
 
 ## Draw to a texture
 
@@ -175,11 +207,11 @@ Level zero has the original size. Each next level halves each dimension, down to
 axis. Use `Gpu.texture_size ~mip_level` to get its size. Initialize each level that you use with an
 upload, a copy, or a render pass. SDL does not generate them in this API.
 
-`Gpu.upload_to_texture ~mip_level` uploads the whole level. Pack rows in the selected format with no
-padding. Align the upload offset to both four bytes and the pixel size. Use `Gpu.create_sampler
-~max_mip_level` to let a shader read smaller levels. If you omit the limit, the sampler reads only
-level zero. By default, the sampler selects the nearest mip level. Pass `~mipmap_filter:Linear` to
-blend between adjacent levels.
+`Gpu.upload_to_texture ~mip_level` selects a level to upload. Without `~rect`, it replaces the whole
+level. Align the byte offset to four bytes and to the pixel size. An upload does not change the
+other levels. Use `Gpu.create_sampler ~max_mip_level` to let a shader read smaller levels.  If you
+omit the limit, the sampler reads only level zero. By default, the sampler selects the nearest mip
+level. Pass `~mipmap_filter:Linear` to blend between adjacent levels.
 
 SDL 3.4.20 cannot render or blit a level when halving the base size to that level would give zero on
 either axis. Uploads, copies, downloads, and sampling still work.

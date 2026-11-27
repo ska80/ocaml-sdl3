@@ -660,8 +660,10 @@ module Gpu = struct
 
   external upload_to_texture :
     ?src_offset:int ->
+    ?pitch:int ->
     ?cycle:bool ->
     ?mip_level:int ->
+    ?rect:Rect.t ->
     copy_pass ->
     src:upload_buffer ->
     dst:texture ->

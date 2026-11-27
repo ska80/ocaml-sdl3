@@ -1189,8 +1189,44 @@ CAMLprim value osdl_gpu_upload_to_buffer_byte(value* argv, int argc) {
     return osdl_gpu_upload_to_buffer(argv[0], argv[1], argv[2], argv[3], argv[4], argv[5], argv[6]);
 }
 
-CAMLprim value osdl_gpu_upload_to_texture(value src_offset, value cycle, value level, value pass,
-                                          value src, value dst) {
+static void osdl_gpu_upload_repacked(SDL_GPUDevice* device, SDL_GPUCopyPass* pass,
+                                     const SDL_GPUTextureTransferInfo* from,
+                                     const SDL_GPUTextureRegion* to, Uint32 pixel, Uint32 src_pitch,
+                                     Uint32 dst_pitch, bool cycle) {
+    /* The region is at most 16384 by 16384, with at most eight bytes per pixel.
+     * Rounding a row to 256 bytes still fits the 32-bit transfer size. */
+    Uint32                          size    = (dst_pitch * to->h + 3u) & ~3u;
+    SDL_GPUTransferBufferCreateInfo info    = {.usage = SDL_GPU_TRANSFERBUFFERUSAGE_UPLOAD,
+                                               .size  = size};
+    SDL_GPUTransferBuffer*          scratch = SDL_CreateGPUTransferBuffer(device, &info);
+    if (!scratch) osdl_fail("SDL_CreateGPUTransferBuffer");
+
+    /* Read the existing upload storage without cycling or changing it. */
+    const Uint8* input  = SDL_MapGPUTransferBuffer(device, from->transfer_buffer, false);
+    Uint8*       output = input ? SDL_MapGPUTransferBuffer(device, scratch, false) : NULL;
+    if (!output) {
+        char message[1024];
+        osdl_error_message(message, sizeof(message), "SDL_MapGPUTransferBuffer");
+        if (input) SDL_UnmapGPUTransferBuffer(device, from->transfer_buffer);
+        SDL_ReleaseGPUTransferBuffer(device, scratch);
+        osdl_raise_error(message);
+    }
+
+    size_t row_bytes = (size_t)to->w * pixel;
+    for (Uint32 y = 0; y < to->h; ++y)
+        memcpy(output + (size_t)y * dst_pitch, input + from->offset + (size_t)y * src_pitch,
+               row_bytes);
+    SDL_UnmapGPUTransferBuffer(device, scratch);
+    SDL_UnmapGPUTransferBuffer(device, from->transfer_buffer);
+
+    SDL_GPUTextureTransferInfo packed = {.transfer_buffer = scratch,
+                                         .pixels_per_row  = dst_pitch / pixel};
+    SDL_UploadToGPUTexture(pass, &packed, to, cycle);
+    SDL_ReleaseGPUTransferBuffer(device, scratch);
+}
+
+CAMLprim value osdl_gpu_upload_to_texture(value src_offset, value pitch, value cycle, value level,
+                                          value rect, value pass, value src, value dst) {
     SDL_GPUCopyPass*       p           = osdl_live(pass);
     SDL_GPUTransferBuffer* source      = osdl_live(src);
     SDL_GPUTexture*        destination = osdl_gpu_live_texture(dst);
@@ -1199,29 +1235,72 @@ CAMLprim value osdl_gpu_upload_to_texture(value src_offset, value cycle, value l
     if (osdl_parent(src) != device || osdl_parent(dst) != device)
         caml_invalid_argument("Use an upload buffer and texture from the copy pass's GPU device");
 
-    osdl_gpu_texture_mip mip    = osdl_gpu_mip(dst, osdl_gpu_mip_index(level), false);
-    Uint32               start  = osdl_gpu_offset(src_offset);
-    Uint32               pixel  = SDL_GPUTextureFormatTexelBlockSize(osdl_gpu_image_format(dst));
-    Uint64               end    = (Uint64)start + (Uint64)pixel * mip.w * mip.h;
-    bool                 rotate = osdl_gpu_cycle(cycle);
+    osdl_gpu_texture_mip mip  = osdl_gpu_mip(dst, osdl_gpu_mip_index(level), false);
+    SDL_Rect             area = {0, 0, (int)mip.w, (int)mip.h};
+    if (Is_block(rect))
+        area =
+            osdl_gpu_rect(Some_val(rect), mip.w, mip.h,
+                          "The GPU upload rectangle must have positive size and fit the mip level");
+    Uint32 start     = osdl_gpu_offset(src_offset);
+    Uint32 pixel     = SDL_GPUTextureFormatTexelBlockSize(osdl_gpu_image_format(dst));
+    Uint32 row_bytes = (Uint32)area.w * pixel;
+    Uint32 stride    = Is_long(pitch)
+                         ? row_bytes
+                         : osdl_gpu_uint32(Some_val(pitch), "The GPU upload pitch is out of range");
     if (start % SDL_max(4u, pixel))
         caml_invalid_argument("Align the GPU texture upload offset to four bytes and to a pixel");
-    if (end > (Uint64)Long_val(Field(src, GPU_UPLOAD_WRITTEN)))
+    if (stride < row_bytes || stride % pixel)
+        caml_invalid_argument(
+            "Use a GPU upload pitch that covers a row and is a multiple of the pixel size");
+    if (stride > SDL_MAX_SINT32) caml_invalid_argument("The GPU upload pitch is too large");
+
+    Uint64 written = Long_val(Field(src, GPU_UPLOAD_WRITTEN));
+    if ((Uint64)start + (Uint64)(area.h - 1) * stride + row_bytes > written)
         caml_invalid_argument(
             "The texture copy must fit in the written bytes of the upload buffer");
-    if (rotate && Int_val(Field(dst, GPU_TEXTURE_LEVELS)) != 1)
-        caml_invalid_argument("A cycling GPU upload needs a texture with one mip level");
+    bool rotate = osdl_gpu_cycle(cycle);
+    if (rotate && (Int_val(Field(dst, GPU_TEXTURE_LEVELS)) != 1 || area.x || area.y ||
+                   (Uint32)area.w != mip.w || (Uint32)area.h != mip.h))
+        caml_invalid_argument("A cycling GPU upload must replace the whole one-level texture");
 
-    SDL_GPUTextureTransferInfo from = {.transfer_buffer = source, .offset = start};
-    SDL_GPUTextureRegion       to   = {
-                .texture = destination, .mip_level = mip.level, .w = mip.w, .h = mip.h, .d = 1};
+    if (area.h == 1) stride = row_bytes;
+    SDL_GPUTextureTransferInfo from = {.transfer_buffer = source,
+                                       .offset          = start,
+                                       .pixels_per_row  = stride == row_bytes ? 0 : stride / pixel};
+    SDL_GPUTextureRegion       to   = {.texture   = destination,
+                                       .mip_level = mip.level,
+                                       .x         = (Uint32)area.x,
+                                       .y         = (Uint32)area.y,
+                                       .w         = (Uint32)area.w,
+                                       .h         = (Uint32)area.h,
+                                       .d         = 1};
+    if (stride != row_bytes) {
+        SDL_GPUDevice* d        = osdl_cell_val(device)->ptr;
+        const char*    driver   = SDL_GetGPUDeviceDriver(d);
+        Uint32         repacked = 0;
+        /* Metal ignores pixels_per_row in SDL 3.4.20. The older D3D12 path
+         * copies each full source stride into a row aligned from the width
+         * of the region. It also reads the last row's padding. */
+        if (driver && strcmp(driver, "metal") == 0) {
+            repacked = row_bytes;
+        } else if (driver && strcmp(driver, "direct3d12") == 0) {
+            Uint32 aligned = (row_bytes + 255u) & ~255u;
+            if (stride > aligned || (Uint64)start + (Uint64)stride * to.h > written)
+                repacked = aligned;
+        }
+        if (repacked) {
+            osdl_gpu_upload_repacked(d, p, &from, &to, pixel, stride, repacked, rotate);
+            return Val_unit;
+        }
+    }
     SDL_UploadToGPUTexture(p, &from, &to, rotate);
     return Val_unit;
 }
 
 CAMLprim value osdl_gpu_upload_to_texture_byte(value* argv, int argc) {
     (void)argc;
-    return osdl_gpu_upload_to_texture(argv[0], argv[1], argv[2], argv[3], argv[4], argv[5]);
+    return osdl_gpu_upload_to_texture(argv[0], argv[1], argv[2], argv[3], argv[4], argv[5], argv[6],
+                                      argv[7]);
 }
 
 static SDL_GPUBlitRegion osdl_gpu_region(value region, bool render) {
