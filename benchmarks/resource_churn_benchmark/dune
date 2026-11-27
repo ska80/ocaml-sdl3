@@ -1,0 +1,48 @@
+(library
+ (name resource_churn_scene)
+ (modules churn_scene)
+ (libraries sdl3 benchmark_support))
+
+(executable
+ (name resource_churn_benchmark)
+ (modules resource_churn_benchmark)
+ (libraries sdl3 benchmark_support resource_churn_scene)
+ (modes exe))
+
+(test
+ (name resource_churn_test)
+ (modules resource_churn_test)
+ (package sdl3)
+ (libraries sdl3 benchmark_support resource_churn_scene))
+
+(rule
+ (alias runtest)
+ (package sdl3)
+ (action
+  (setenv
+   SDL_VIDEO_DRIVER
+   dummy
+   (run
+    %{exe:resource_churn_benchmark.exe}
+    --driver
+    software
+    --pairs
+    8
+    --size
+    16
+    --width
+    128
+    --height
+    96
+    --warmup
+    1
+    --frames
+    3))))
+
+(rule
+ (alias runtest-resource-churn-renderers)
+ (package sdl3)
+ (action
+  (progn
+   (run %{exe:resource_churn_test.exe} --driver opengl)
+   (run %{exe:resource_churn_test.exe} --driver gpu))))

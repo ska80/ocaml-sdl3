@@ -1,6 +1,6 @@
-# Benchmark plan
+# Benchmarks
 
-All benchmarks except resource churn are ready to run. Resource churn is planned.
+All eight workloads have runnable benchmarks.
 
 ## Workloads
 
@@ -13,7 +13,7 @@ All benchmarks except resource churn are ready to run. Resource churn is planned
 | [`lighting_benchmark`](#lighting-benchmark) | Multiple dynamic light sources |
 | [`text_benchmark`](#text-benchmark) | Thousands of dynamic text objects |
 | [`asset_streaming_benchmark`](#asset-streaming-benchmark) | Texture uploads during gameplay |
-| `resource_churn_benchmark` | Repeated resource creation and destruction |
+| [`resource_churn_benchmark`](#resource-churn-benchmark) | Repeated resource creation and destruction |
 
 ## Atlas benchmark
 
@@ -357,6 +357,53 @@ measured 300 frames after 60 warm-up frames. The host ran Linux on an Intel i7-1
 
 Scene update and draw recording includes the upload calls. These are CPU times, not GPU upload
 or execution times. The Vulkan run used a software driver.
+
+## Resource churn benchmark
+
+From the repository root, run the native release build:
+
+```sh
+dune exec --profile release ./benchmarks/resource_churn_benchmark/resource_churn_benchmark.exe
+```
+
+The default creates 64 surfaces and 64 textures per frame. Each surface is 64 × 64 pixels. The
+benchmark fills it with a color, makes a texture from it, and releases the surface. It draws the
+textures in a grid. Texture creation receives 1 MiB of source pixels per frame.
+
+The textures stay open through `Renderer.present`. The next frame releases them before it creates
+new ones. Scene update and draw recording includes these releases, creation, and draws. The last
+set of textures closes after the measured frames. If there is no warm-up, the first measured frame
+has no previous textures to release.
+
+Use `--pairs` to set the number of surface and texture pairs. Use `--size` to set their width and
+height in pixels. The grid must fit in the output. The benchmark also accepts `--width`,
+`--height`, `--driver`, `--warmup`, `--frames`, and `--no-gc-events`.
+
+If SDL supports offscreen OpenGL and Vulkan, test drawing and cleanup on both renderers:
+
+```sh
+SDL_VIDEO_DRIVER=offscreen SDL_GPU_DRIVER=vulkan dune build --force @runtest-resource-churn-renderers
+```
+
+### Resource churn results
+
+Both offscreen runs used 64 surface and texture pairs per frame at 1280 × 720. Each run measured
+300 frames after 60 warm-up frames. The host ran Linux on an Intel i7-1165G7 with SDL 3.4.20 and
+OCaml 5.5.2. Both runs used a native release build, and SDL reported VSync off.
+
+| Measurement | SDL `gpu` (Vulkan, llvmpipe) | SDL `opengl` |
+| --- | ---: | ---: |
+| CPU frame time, p50 / p95 / p99 | 4.776 / 6.287 / 8.326 ms | 1.152 / 1.443 / 2.169 ms |
+| Scene update and draw recording, p50 / p95 / p99 | 1.353 / 1.866 / 2.446 ms | 1.103 / 1.383 / 2.064 ms |
+| `Renderer.present` call, p50 / p95 / p99 | 3.370 / 4.488 / 6.108 ms | 0.050 / 0.073 / 0.105 ms |
+| OCaml allocations | 22,016.3 bytes/frame | 22,016.3 bytes/frame |
+| Garbage collection pauses | 3 (0.119 ms total, 0.058 ms longest) | 3 (0.154 ms total, 0.075 ms longest) |
+| Peak resident process memory | 114.8 MiB | 84.5 MiB |
+| Binding draw calls | 64/frame | 64/frame |
+| GPU frame time, GPU memory, backend draw count | Unavailable | Unavailable |
+
+The allocation count covers the OCaml heap, not native surface or texture storage. The Vulkan
+run used a software driver. The table does not compare GPU execution times.
 
 ## Measurements
 
