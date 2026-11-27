@@ -1,7 +1,7 @@
 # Benchmark plan
 
-The atlas, tilemap, isometric, and GPU instancing benchmarks are ready to run. The other workloads
-are planned.
+The atlas, tilemap, isometric, GPU instancing, and lighting benchmarks are ready to run. The other
+workloads are planned.
 
 ## Workloads
 
@@ -11,7 +11,7 @@ are planned.
 | [`tilemap_benchmark`](#tilemap-benchmark) | Large scrolling maps |
 | [`isometric_benchmark`](#isometric-benchmark) | Sorted, overlapping transparent sprites |
 | [`gpu_instancing_benchmark`](#gpu-instancing-benchmark) | 100,000 instanced sprites |
-| `lighting_benchmark` | Multiple dynamic light sources |
+| [`lighting_benchmark`](#lighting-benchmark) | Multiple dynamic light sources |
 | `text_benchmark` | Thousands of dynamic text objects |
 | `asset_streaming_benchmark` | Texture uploads during gameplay |
 | `resource_churn_benchmark` | Repeated resource creation and destruction |
@@ -216,6 +216,53 @@ GPU backend, not the SDL renderer.
 
 The Vulkan run used a software driver. A smaller release run with 1,025 sprites reported the
 same OCaml allocation rate.
+
+## Lighting benchmark
+
+From the repository root, run the native release build:
+
+```sh
+dune exec --profile release ./benchmarks/lighting_benchmark/lighting_benchmark.exe
+```
+
+The default scene has 256 colored lights with a diameter of 128 pixels. Each light moves by a
+fixed step and bounces at the edges. The lights reuse one sprite batch and one texture.
+The texture fades from the center of the light to the edge.
+
+Each frame starts with ambient light, the color present without any moving lights. The renderer
+adds the lights into a light map, a texture the size of the output. It draws a checkerboard
+background and multiplies its colors by the light map. This uses three binding draws per frame.
+The renderer can flush draws at the target switch, so that work counts as draw recording time.
+
+Use `--lights` to set the light count and `--diameter` to set the size in pixels. The diameter must
+be smaller than both output dimensions. The benchmark also accepts `--width`, `--height`,
+`--driver`, `--warmup`, `--frames`, and `--no-gc-events`.
+
+If SDL supports offscreen OpenGL and Vulkan, run the lighting pixel tests on both renderers:
+
+```sh
+SDL_VIDEO_DRIVER=offscreen SDL_GPU_DRIVER=vulkan dune build --force @runtest-lighting-renderers
+```
+
+### Lighting results
+
+Both offscreen runs used 256 lights at 1280 × 720. Each run measured 300 frames after 60 warm-up
+frames. The host ran Linux on an Intel i7-1165G7 with SDL 3.4.20 and OCaml 5.5.2. Both runs used a
+native release build, and SDL reported VSync off.
+
+| Measurement | SDL `gpu` (Vulkan, llvmpipe) | SDL `opengl` |
+| --- | ---: | ---: |
+| CPU frame time, p50 / p95 / p99 | 10.724 / 12.814 / 14.191 ms | 0.026 / 0.272 / 0.387 ms |
+| Scene update and draw recording, p50 / p95 / p99 | 0.038 / 0.052 / 0.075 ms | 0.023 / 0.263 / 0.375 ms |
+| `Renderer.present` call, p50 / p95 / p99 | 10.682 / 12.781 / 14.150 ms | 0.003 / 0.008 / 0.017 ms |
+| OCaml allocations | 112.3 bytes/frame | 112.3 bytes/frame |
+| Garbage collection pauses | 0 | 0 |
+| Peak resident process memory | 109.8 MiB | 84.5 MiB |
+| Binding draw calls | 3/frame | 3/frame |
+| GPU frame time, GPU memory, backend draw count | Unavailable | Unavailable |
+
+These are CPU frame times. The OpenGL run can queue work that finishes after the timed frame.
+The Vulkan run used a software driver. The table does not compare GPU execution times.
 
 ## Measurements
 

@@ -1,0 +1,48 @@
+(library
+ (name lighting_scene)
+ (modules light_scene)
+ (libraries sdl3 benchmark_support))
+
+(executable
+ (name lighting_benchmark)
+ (modules lighting_benchmark)
+ (libraries sdl3 benchmark_support lighting_scene)
+ (modes exe))
+
+(test
+ (name lighting_test)
+ (modules lighting_test)
+ (package sdl3)
+ (libraries sdl3 benchmark_support lighting_scene))
+
+(rule
+ (alias runtest)
+ (package sdl3)
+ (action
+  (setenv
+   SDL_VIDEO_DRIVER
+   dummy
+   (run
+    %{exe:lighting_benchmark.exe}
+    --driver
+    software
+    --lights
+    17
+    --diameter
+    32
+    --width
+    128
+    --height
+    96
+    --warmup
+    1
+    --frames
+    3))))
+
+(rule
+ (alias runtest-lighting-renderers)
+ (package sdl3)
+ (action
+  (progn
+   (run %{exe:lighting_test.exe} --driver opengl)
+   (run %{exe:lighting_test.exe} --driver gpu))))
