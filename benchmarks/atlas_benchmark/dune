@@ -1,0 +1,32 @@
+(executable
+ (name atlas_benchmark)
+ (modules atlas_benchmark build_profile)
+ (libraries sdl3 benchmark_metrics)
+ (modes exe))
+
+(rule
+ (target build_profile.ml)
+ (action
+  (write-file %{target} "let name = \"%{profile}\"\n")))
+
+(rule
+ (alias runtest)
+ (package sdl3)
+ (action
+  (setenv
+   SDL_VIDEO_DRIVER
+   dummy
+   (run
+    %{exe:atlas_benchmark.exe}
+    --driver
+    software
+    --sprites
+    1025
+    --width
+    128
+    --height
+    96
+    --warmup
+    1
+    --frames
+    3))))
