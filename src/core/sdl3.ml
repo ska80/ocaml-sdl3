@@ -699,6 +699,26 @@ module Gpu = struct
 
   type vertex_layout = { stride : int; attributes : vertex_attribute list }
 
+  module Blend = struct
+    type t = { color : Blend_mode.equation; alpha : Blend_mode.equation }
+
+    let sum src dst : Blend_mode.equation = { src; dst; op = Sum }
+    let over_alpha = sum One One_minus_src_alpha
+    let keep_alpha = sum Zero One
+
+    let straight_alpha =
+      { color = sum Src_alpha One_minus_src_alpha; alpha = over_alpha }
+
+    let premultiplied_alpha = { color = over_alpha; alpha = over_alpha }
+    let additive = { color = sum Src_alpha One; alpha = keep_alpha }
+    let modulate = { color = sum Dst_color Zero; alpha = keep_alpha }
+
+    let multiply =
+      { color = sum Dst_color One_minus_src_alpha; alpha = keep_alpha }
+  end
+
+  type color_component = Red | Green | Blue | Alpha
+
   type _ shader_stage =
     | Vertex : vertex shader_stage
     | Fragment : fragment shader_stage
@@ -762,11 +782,15 @@ module Gpu = struct
 
   external create_swapchain_pipeline :
     ?vertex_layout:vertex_layout ->
+    ?blend:Blend.t ->
+    ?color_write_mask:color_component list ->
     swapchain ->
     vertex:vertex shader ->
     fragment:fragment shader ->
     primitive:primitive ->
-    graphics_pipeline = "osdl_gpu_create_swapchain_pipeline"
+    graphics_pipeline
+    = "osdl_gpu_create_swapchain_pipeline_byte"
+      "osdl_gpu_create_swapchain_pipeline"
 
   external release_graphics_pipeline : graphics_pipeline -> unit
     = "osdl_gpu_release_graphics_pipeline"

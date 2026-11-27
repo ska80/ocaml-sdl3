@@ -1005,6 +1005,37 @@ module Gpu : sig
       vertices. It must be a positive multiple of four, up to 2048. Supply at
       least one attribute. Each attribute must fit in the stride. *)
 
+  module Blend : sig
+    type t = { color : Blend_mode.equation; alpha : Blend_mode.equation }
+    (** Combine the fragment shader output (source) with the current target
+        pixel (destination). Apply [color] to RGB and [alpha] to the alpha
+        channel. In the alpha equation, a color factor uses the corresponding
+        alpha. [Minimum] and [Maximum] compare the unscaled values, so the GPU
+        ignores their factors. *)
+
+    val straight_alpha : t
+    (** Multiply source RGB by source alpha before blending. The RGB result adds
+        that product to [destination RGB * (1 - source alpha)]. The alpha result
+        is [source alpha + destination alpha * (1 - source alpha)]. *)
+
+    val premultiplied_alpha : t
+    (** Like [straight_alpha], but the shader must output RGB already multiplied
+        by source alpha. *)
+
+    val additive : t
+    (** Add [source RGB * source alpha] to destination RGB. Preserve destination
+        alpha. *)
+
+    val modulate : t
+    (** Multiply source and destination RGB. Preserve destination alpha. *)
+
+    val multiply : t
+    (** Add [source RGB * destination RGB] to
+        [destination RGB * (1 - source alpha)], as in [Blend_mode.Mul]. Preserve
+        destination alpha. *)
+  end
+
+  type color_component = Red | Green | Blue | Alpha
   type shader_format = Spirv | Dxbc | Dxil | Msl | Metallib
 
   type primitive =
@@ -1089,6 +1120,8 @@ module Gpu : sig
 
   val create_swapchain_pipeline :
     ?vertex_layout:vertex_layout ->
+    ?blend:Blend.t ->
+    ?color_write_mask:color_component list ->
     swapchain ->
     vertex:vertex shader ->
     fragment:fragment shader ->
@@ -1097,8 +1130,13 @@ module Gpu : sig
   (** Create a pipeline for the claim's current pixel format. Both shaders must
       belong to the device that claimed the window. If the vertex shader has
       attributes, pass its layout for one vertex buffer. Otherwise omit
-      [vertex_layout]. The pipeline uses one color target, with no blending,
-      depth test, or face culling.
+      [vertex_layout]. The pipeline uses one color target with no depth test or
+      face culling.
+
+      Without [blend], fragments replace the target values. If
+      [color_write_mask] is present, draws write only the listed channels,
+      whether or not blending is enabled. An empty list writes no channels.
+      Omitting the mask writes all channels. The mask does not affect clears.
 
       The pipeline belongs to the device, not the claim. Use it with any
       swapchain on that device that has the same pixel format. If a change to

@@ -33,6 +33,43 @@ A graphics pipeline pairs the shaders with the drawing state. Create one with
 `Gpu.create_swapchain_pipeline`. You can release the shader handles after you create the pipeline.
 If the window image changes to a different pixel format, create a pipeline for the new format.
 
+## Blend colors in a pipeline
+
+Blending combines the pixel from the fragment shader with the pixel already in the target. If you
+omit `~blend`, each draw replaces the target values. These settings do not control window
+transparency.
+
+Use `Gpu.Blend.straight_alpha` when the shader outputs RGB without scaling it by alpha. If the
+shader already scales RGB by alpha, use `Gpu.Blend.premultiplied_alpha` instead. For other effects,
+use `Gpu.Blend.additive`, `Gpu.Blend.modulate`, or `Gpu.Blend.multiply`. Those three presets keep
+the target alpha unchanged.
+
+A write mask selects the channels a draw can change. This pipeline blends RGB and keeps the alpha
+already in the target:
+
+```ocaml
+let pipeline =
+  let open Sdl3.Gpu in
+  create_swapchain_pipeline ~blend:Blend.straight_alpha
+    ~color_write_mask:[ Red; Green; Blue ] claim ~vertex ~fragment
+    ~primitive:Triangle_list
+```
+
+If you omit `~color_write_mask`, draws can write all four channels. An empty list prevents all color
+writes. The mask works with or without blending. The mask does not affect clears.
+
+For custom blending, pass a `Gpu.Blend.t` record with two `Blend_mode.equation` values. In each
+channel, the equation scales the source and destination by their factors and then applies the
+operation. `Minimum` and `Maximum` compare the unscaled values. In the alpha equation, a color
+factor uses the corresponding alpha. For example, this blend adds RGB without scaling by alpha and
+keeps the destination alpha:
+
+```ocaml
+let blend : Sdl3.Gpu.Blend.t =
+  { color = { src = One; dst = One; op = Sum };
+    alpha = { src = Zero; dst = One; op = Sum } }
+```
+
 ## Upload and draw geometry
 
 A vertex buffer holds the points and other data for a shape. An index buffer holds the order in

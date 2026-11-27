@@ -30,6 +30,7 @@
 - [x] GPU device setup, window claims, and solid-color frames.
 - [x] GPU command buffers, swapchain render passes, and fences that signal completion.
 - [x] Typed GPU shaders and pipelines for window drawing.
+- [x] GPU pipeline blending with separate RGB and alpha equations, and RGBA write masks.
 - [x] GPU vertex and index buffers, upload commands, and indexed drawing.
 - [x] GPU uniform data, sampled 2D textures, and samplers.
 - [x] Aurora Tunnel example with GPU mesh copies, a color texture, and interactive animation.

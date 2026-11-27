@@ -22,10 +22,10 @@ external release_color_target : color_target -> unit
   = "test_gpu_release_color_target"
 
 external begin_color_pass :
-  Gpu.command_buffer -> color_target -> Gpu.render_pass
+  Gpu.command_buffer -> color_target -> clear:Color.t -> Gpu.render_pass
   = "test_gpu_begin_color_pass"
 
-external color_target_matches : color_target -> Color.t -> bool
+external color_target_matches : color_target -> Color.t -> tolerance:int -> bool
   = "test_gpu_color_target_matches"
 
 let packed_bytes bytes =
@@ -343,11 +343,17 @@ let triangle device context claim =
           invalid (fun () -> draw_primitives pass ~vertices:3);
           invalid (fun () -> bind_graphics_pipeline pass pipeline)))
 
-let mesh_pipeline device claim =
+let mesh_position = Gpu.{ location = 0; format = Float32x2; offset = 0 }
+
+let mesh_layout : Gpu.vertex_layout =
+  {
+    stride = 12;
+    attributes =
+      [ mesh_position; { location = 1; format = Unorm8x4; offset = 8 } ];
+  }
+
+let with_mesh_shaders device f =
   let open Gpu in
-  let position = { location = 0; format = Float32x2; offset = 0 } in
-  let color = { location = 1; format = Unorm8x4; offset = 8 } in
-  let layout = { stride = 12; attributes = [ position; color ] } in
   using release_shader
     (create_shader device ~stage:Vertex ~format:Spirv
        (shader_code "mesh.vert.spv"))
@@ -355,31 +361,42 @@ let mesh_pipeline device claim =
       using release_shader
         (create_shader device ~stage:Fragment ~format:Spirv
            (shader_code "mesh.frag.spv"))
-        (fun fragment ->
-          let create vertex_layout =
-            create_swapchain_pipeline ~vertex_layout claim ~vertex ~fragment
-              ~primitive:Triangle_list
-          in
-          List.iter
-            (fun bad -> invalid (fun () -> create bad))
-            [
-              { layout with stride = 10 };
-              { layout with stride = 2052 };
-              { layout with attributes = [] };
-              { layout with attributes = [ position; position ] };
-              { layout with attributes = [ { position with location = 16 } ] };
-              { layout with attributes = [ { position with offset = 2 } ] };
-              { layout with attributes = [ { position with offset = 8 } ] };
-            ];
-          create layout))
+        (f vertex))
 
-let mesh_vertices () =
+let mesh_pipeline device claim =
+  let open Gpu in
+  let layout = mesh_layout and position = mesh_position in
+  with_mesh_shaders device (fun vertex fragment ->
+      let create vertex_layout =
+        create_swapchain_pipeline ~vertex_layout claim ~vertex ~fragment
+          ~primitive:Triangle_list
+      in
+      List.iter
+        (fun bad -> invalid (fun () -> create bad))
+        [
+          { layout with stride = 10 };
+          { layout with stride = 2052 };
+          { layout with attributes = [] };
+          { layout with attributes = [ position; position ] };
+          { layout with attributes = [ { position with location = 16 } ] };
+          { layout with attributes = [ { position with offset = 2 } ] };
+          { layout with attributes = [ { position with offset = 8 } ] };
+        ];
+      create layout)
+
+let mesh_vertices ?color () =
   let vertices = Bytes.make 36 '\255' in
   List.iteri
     (fun i (x, y) ->
       Bytes.set_int32_ne vertices (i * 12) (Int32.bits_of_float x);
       Bytes.set_int32_ne vertices ((i * 12) + 4) (Int32.bits_of_float y);
-      Bytes.set_uint8 vertices ((i * 12) + 8 + i) 32)
+      let offset = (i * 12) + 8 in
+      match color with
+      | None -> Bytes.set_uint8 vertices (offset + i) 32
+      | Some Color.{ r; g; b; a } ->
+          List.iteri
+            (fun j byte -> Bytes.set_uint8 vertices (offset + j) byte)
+            [ r; g; b; a ])
     [ (-0.75, -0.75); (0.75, -0.75); (0., 0.75) ];
   vertices
 
@@ -462,6 +479,78 @@ let mesh device claim =
       mesh_frame device claim pipeline Gpu.Uint16;
       mesh_frame device claim pipeline Gpu.Uint32)
 
+let blending device claim =
+  let open Gpu in
+  let rgba = Color.rgba in
+  let source = rgba 128 48 96 144 in
+  let clear = rgba 40 136 80 112 in
+  let data = packed_bytes (mesh_vertices ~color:source ()) in
+  let size = Bigarray.Array1.dim data in
+  let equation src dst op : Blend_mode.equation = { src; dst; op } in
+  let blend color alpha : Blend.t = { color; alpha } in
+  let submit record =
+    using cancel_command_buffer (acquire_command_buffer device) (fun commands ->
+        record commands;
+        using release_fence (submit_and_acquire_fence commands) wait_fence)
+  in
+  using release_buffer (create_vertex_buffer device ~size) (fun vertices ->
+      submit (fun commands ->
+          using release_upload_buffer (create_upload_buffer device ~size)
+            (fun src ->
+              write_upload_buffer src data;
+              with_copy_pass commands (fun pass ->
+                  upload_to_buffer pass ~src ~dst:vertices ~size)));
+      using release_color_target (create_color_target claim) (fun target ->
+          with_mesh_shaders device (fun vertex fragment ->
+              let expect ?blend ?color_write_mask label color =
+                using release_graphics_pipeline
+                  (create_swapchain_pipeline ~vertex_layout:mesh_layout ?blend
+                     ?color_write_mask claim ~vertex ~fragment
+                     ~primitive:Triangle_list) (fun pipeline ->
+                    submit (fun commands ->
+                        using end_render_pass
+                          (begin_color_pass commands target ~clear) (fun pass ->
+                            bind_graphics_pipeline pass pipeline;
+                            bind_vertex_buffer pass vertices;
+                            draw_primitives pass ~vertices:3)));
+                (* Blending in an 8-bit target can differ by one rounding unit. *)
+                let tolerance = if Option.is_some blend then 1 else 0 in
+                check (color_target_matches target color ~tolerance) label
+              in
+              expect "GPU replace by default" source;
+              expect ~blend:Blend.straight_alpha "GPU straight alpha"
+                (rgba 90 86 89 193);
+              expect ~blend:Blend.premultiplied_alpha "GPU premultiplied alpha"
+                (rgba 145 107 131 193);
+              expect ~blend:Blend.additive "GPU additive" (rgba 112 163 134 112);
+              expect ~blend:Blend.modulate "GPU modulate" (rgba 20 26 30 112);
+              expect ~blend:Blend.multiply "GPU multiply" (rgba 37 85 65 112);
+              expect
+                ~blend:
+                  (blend
+                     (equation One Dst_alpha Subtract)
+                     (equation One_minus_src_color One Reverse_subtract))
+                "GPU separate subtraction equations" (rgba 110 0 61 49);
+              expect
+                ~blend:
+                  (blend
+                     (equation One_minus_dst_color One_minus_src_color Sum)
+                     (equation Dst_color One_minus_dst_alpha Sum))
+                "GPU inverse color and alpha factors" (rgba 128 133 116 126);
+              expect
+                ~blend:
+                  (blend
+                     (equation Zero Zero Minimum)
+                     (equation Zero Zero Maximum))
+                "GPU min and max ignore factors" (rgba 40 48 80 144);
+              expect ~color_write_mask:[ Red; Blue ] "GPU mask without blending"
+                (rgba 128 136 96 112);
+              expect ~blend:Blend.straight_alpha
+                ~color_write_mask:[ Green; Alpha ] "GPU mask with blending"
+                (rgba 40 86 80 193);
+              expect ~color_write_mask:[]
+                "GPU empty mask preserves the clear color" clear)))
+
 let resource_pipeline device claim =
   let open Gpu in
   using release_shader
@@ -535,7 +624,9 @@ let resource_draws device claim pipeline a b nearest linear =
     using release_color_target (create_color_target claim) f
   in
   let with_pass commands target f =
-    using end_render_pass (begin_color_pass commands target) f
+    using end_render_pass
+      (begin_color_pass commands target ~clear:(Color.rgba 0 0 0 0))
+      f
   in
   let vertex = uniform_coordinates 0.75 0.25 0. 0. in
   let initial = uniform_coordinates 0.25 0.25 0.25 0.25 in
@@ -602,10 +693,10 @@ let resource_draws device claim pipeline a b nearest linear =
                     wait_fence;
                   invalid (fun () -> push Vertex 0 vertex));
               check
-                (color_target_matches first (Color.rgb 255 0 255))
+                (color_target_matches first (Color.rgb 255 0 255) ~tolerance:0)
                 "GPU shader resources in the first draw";
               check
-                (color_target_matches second (Color.rgb 255 255 0))
+                (color_target_matches second (Color.rgb 255 255 0) ~tolerance:0)
                 "GPU shader resources after a uniform update")))
 
 let shader_resources device context claim =
@@ -656,6 +747,7 @@ let window device context =
           if List.mem Gpu.Spirv (Gpu.shader_formats device) then (
             triangle device context claim;
             mesh device claim;
+            blending device claim;
             shader_resources device context claim)
           else
             Printf.eprintf

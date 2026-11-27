@@ -478,9 +478,81 @@ static Uint32 osdl_gpu_vertex_attributes(value layout, SDL_GPUVertexBufferDescri
     return count;
 }
 
-CAMLprim value osdl_gpu_create_swapchain_pipeline(value layout, value claim, value vertex,
-                                                  value fragment, value primitive) {
-    CAMLparam5(layout, claim, vertex, fragment, primitive);
+static SDL_GPUBlendFactor osdl_gpu_blend_factor(value factor, bool alpha) {
+    /* Blend_mode.factor order, not the order of the SDL GPU or renderer enum. */
+    static const SDL_GPUBlendFactor factors[] = {
+        SDL_GPU_BLENDFACTOR_ZERO,      SDL_GPU_BLENDFACTOR_ONE,
+        SDL_GPU_BLENDFACTOR_SRC_COLOR, SDL_GPU_BLENDFACTOR_ONE_MINUS_SRC_COLOR,
+        SDL_GPU_BLENDFACTOR_SRC_ALPHA, SDL_GPU_BLENDFACTOR_ONE_MINUS_SRC_ALPHA,
+        SDL_GPU_BLENDFACTOR_DST_COLOR, SDL_GPU_BLENDFACTOR_ONE_MINUS_DST_COLOR,
+        SDL_GPU_BLENDFACTOR_DST_ALPHA, SDL_GPU_BLENDFACTOR_ONE_MINUS_DST_ALPHA,
+    };
+    SDL_GPUBlendFactor native = factors[Int_val(factor)];
+    if (!alpha) return native;
+
+    /* Use the alpha component of color factors on every backend. */
+    switch (native) {
+    case SDL_GPU_BLENDFACTOR_SRC_COLOR:
+        return SDL_GPU_BLENDFACTOR_SRC_ALPHA;
+    case SDL_GPU_BLENDFACTOR_ONE_MINUS_SRC_COLOR:
+        return SDL_GPU_BLENDFACTOR_ONE_MINUS_SRC_ALPHA;
+    case SDL_GPU_BLENDFACTOR_DST_COLOR:
+        return SDL_GPU_BLENDFACTOR_DST_ALPHA;
+    case SDL_GPU_BLENDFACTOR_ONE_MINUS_DST_COLOR:
+        return SDL_GPU_BLENDFACTOR_ONE_MINUS_DST_ALPHA;
+    default:
+        return native;
+    }
+}
+
+static SDL_GPUBlendOp osdl_gpu_blend_channel(value equation, bool alpha, SDL_GPUBlendFactor* src,
+                                             SDL_GPUBlendFactor* dst) {
+    static const SDL_GPUBlendOp operations[] = {
+        SDL_GPU_BLENDOP_ADD, SDL_GPU_BLENDOP_SUBTRACT, SDL_GPU_BLENDOP_REVERSE_SUBTRACT,
+        SDL_GPU_BLENDOP_MIN, SDL_GPU_BLENDOP_MAX,
+    };
+    /* Blend_mode.equation: src, dst, op. GPU min/max compare unscaled values. */
+    SDL_GPUBlendOp op = operations[Int_val(Field(equation, 2))];
+    if (op == SDL_GPU_BLENDOP_MIN || op == SDL_GPU_BLENDOP_MAX) {
+        *src = *dst = SDL_GPU_BLENDFACTOR_ONE;
+    } else {
+        *src = osdl_gpu_blend_factor(Field(equation, 0), alpha);
+        *dst = osdl_gpu_blend_factor(Field(equation, 1), alpha);
+    }
+    return op;
+}
+
+static SDL_GPUColorTargetBlendState osdl_gpu_blend_state(value blend, value write_mask) {
+    SDL_GPUColorTargetBlendState state = {0};
+    if (Is_block(blend)) {
+        /* Gpu.Blend.t: color, alpha. */
+        value equations      = Some_val(blend);
+        state.enable_blend   = true;
+        state.color_blend_op = osdl_gpu_blend_channel(
+            Field(equations, 0), false, &state.src_color_blendfactor, &state.dst_color_blendfactor);
+        state.alpha_blend_op = osdl_gpu_blend_channel(
+            Field(equations, 1), true, &state.src_alpha_blendfactor, &state.dst_alpha_blendfactor);
+    }
+    if (Is_block(write_mask)) {
+        /* Gpu.color_component constructor order. Some [] writes nothing. */
+        static const SDL_GPUColorComponentFlags bits[] = {
+            SDL_GPU_COLORCOMPONENT_R,
+            SDL_GPU_COLORCOMPONENT_G,
+            SDL_GPU_COLORCOMPONENT_B,
+            SDL_GPU_COLORCOMPONENT_A,
+        };
+        state.enable_color_write_mask = true;
+        for (value list = Some_val(write_mask); list != Val_emptylist; list = Field(list, 1))
+            state.color_write_mask |= bits[Int_val(Field(list, 0))];
+    }
+    return state;
+}
+
+CAMLprim value osdl_gpu_create_swapchain_pipeline(value layout, value blend, value write_mask,
+                                                  value claim, value vertex, value fragment,
+                                                  value primitive) {
+    CAMLparam5(layout, blend, write_mask, claim, vertex);
+    CAMLxparam2(fragment, primitive);
     CAMLlocal2(cell, pipeline);
 
     /* Keep the resource counts after the shader handles are released. */
@@ -514,7 +586,8 @@ CAMLprim value osdl_gpu_create_swapchain_pipeline(value layout, value claim, val
     Store_field(pipeline, GPU_PIPELINE_FORMAT, Val_int(format));
     Store_field(pipeline, GPU_PIPELINE_STRIDE, Val_int(vertex_buffer.pitch));
 
-    SDL_GPUColorTargetDescription target = {.format = format};
+    SDL_GPUColorTargetDescription target = {.format      = format,
+                                            .blend_state = osdl_gpu_blend_state(blend, write_mask)};
 
     SDL_GPUGraphicsPipelineCreateInfo info = {
         .vertex_shader      = vs,
@@ -532,6 +605,12 @@ CAMLprim value osdl_gpu_create_swapchain_pipeline(value layout, value claim, val
     };
     SDL_GPUGraphicsPipeline* ptr = SDL_CreateGPUGraphicsPipeline(d, &info);
     CAMLreturn(osdl_publish(pipeline, ptr, "SDL_CreateGPUGraphicsPipeline"));
+}
+
+CAMLprim value osdl_gpu_create_swapchain_pipeline_byte(value* argv, int argc) {
+    (void)argc;
+    return osdl_gpu_create_swapchain_pipeline(argv[0], argv[1], argv[2], argv[3], argv[4], argv[5],
+                                              argv[6]);
 }
 
 CAMLprim value osdl_gpu_release_graphics_pipeline(value pipeline) {
