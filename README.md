@@ -1,14 +1,34 @@
-# OCaml SDL3 bindings
+# OCaml SDL3
 
-These OCaml 5 bindings provide access to SDL3 and its image, mixer, and font add-ons. Use them for
-games and multimedia. See [TODO.md](TODO.md) for the remaining work.
+Build games, graphics tools, and multimedia apps in OCaml 5. Start with SDL's 2D renderer or use its
+GPU API directly. The packages wrap SDL3 and its image, mixer, and font add-ons. Your code controls
+the event loop and decides when to release resources.
+
+## What you can do
+
+- [Draw 2D scenes](docs/rendering.md): Draw many sprites in order with one batch. Render into
+  textures. Use the `gpu` driver to apply [custom shaders](docs/rendering.md#apply-a-fragment-effect).
+- [Build GPU effects](docs/gpu.md): Draw many copies of the same geometry in one call. Use the
+  output of one pass in the next. Copy rendered pixels back to OCaml buffers.
+- [Load assets and draw text](docs/assets.md): Load animations, swap sprite palettes, and decode
+  BMPs off the main thread. Edit reusable text and draw it to a surface or with a renderer. For GPU
+  drawing, use a [glyph atlas](docs/gpu.md#draw-text-from-a-glyph-atlas), a texture that stores
+  character shapes.
+- [Play, record, and mix audio](docs/audio.md): Choose audio devices, position sounds in 3D, and
+  control groups of tracks. Read track stop notices on the main thread.
+- [Handle input](docs/input.md): Use a keyboard, mouse, touch screen, or gamepad. Accept file drops,
+  native text input, and clipboard text.
+
+## Packages
+
+Use the core by itself or add the packages you need. The core does not link to the add-ons.
 
 | Dune library and opam package | OCaml API | What it covers |
 | --- | --- | --- |
 | `sdl3` | [`Sdl3`](src/core/sdl3.mli) | Windows, input, 2D and GPU drawing, audio streams, and timers |
-| `sdl3-image` | [`Sdl3_image`](src/image/sdl3_image.mli) | Images, textures, animations, and PNG and JPEG output |
-| `sdl3-mixer` | [`Sdl3_mixer`](src/mixer/sdl3_mixer.mli) | Sound files, playback tracks, and mixing to a device or memory |
-| `sdl3-ttf` | [`Sdl3_ttf`](src/ttf/sdl3_ttf.mli) | Font loading, text measurement, and reusable text drawing |
+| `sdl3-image` | [`Sdl3_image`](src/image/sdl3_image.mli) | Image and animation loading, and PNG and JPEG output |
+| `sdl3-mixer` | [`Sdl3_mixer`](src/mixer/sdl3_mixer.mli) | Playback tracks and mixing to a device or memory |
+| `sdl3-ttf` | [`Sdl3_ttf`](src/ttf/sdl3_ttf.mli) | Fonts, text layout, and drawing to surfaces, renderers, or the GPU |
 
 ## Install from source
 
@@ -79,9 +99,16 @@ Use `Sdl3.with_init` to start and stop SDL. Pass `[Sdl3.Video]` for a window or 
 core audio stream. Pass `[]` if you do not need a subsystem. SDL3_image needs no separate setup.
 Use `Sdl3_mixer.with_init` and `Sdl3_ttf.with_init` inside the SDL context.
 
-Try [Bunnymark](examples/bunnymark/README.md) for sprite batches,
-[Aurora Tunnel](examples/aurora_tunnel/README.md) for GPU drawing, or the
-[Music Player](examples/music_player/README.md) for playlists and a live spectrum.
+## Examples
+
+Each example page has run instructions and a preview:
+
+- [Bunnymark](examples/bunnymark/README.md) moves and draws thousands of sprites in one reusable
+  batch.
+- [Aurora Tunnel](examples/aurora_tunnel/README.md) draws an interactive tunnel from copies of one
+  ring.
+- [Music Player](examples/music_player/README.md) plays dropped files and shows the strength of
+  the sound from bass to treble.
 
 ## Resource rules
 
@@ -100,15 +127,7 @@ thread. Do not change a buffer from another domain while SDL uses it.
 Using a closed handle or closing a parent with live children raises `Invalid_argument`. When an SDL
 call reports a failure, the binding raises `Sdl3.Error` with the function name and message.
 
-## Usage guides
-
-- [Displays and input](docs/input.md): Query displays, touch devices, and gamepads.
-- [2D rendering](docs/rendering.md): Update textures, draw to textures, and batch sprites.
-- [GPU drawing](docs/gpu.md): Submit frames, upload data, and bind shaders and textures.
-- [Audio](docs/audio.md): Select devices, play or record samples, and control mixer tracks.
-- [Streams, images, and text](docs/assets.md): Read files and buffers, load animations, and draw
-  text.
-- [Testing](docs/testing.md): Run the test suite and the separate GPU tests.
+See [Testing](docs/testing.md) for test commands and [TODO.md](TODO.md) for remaining work.
 
 ## License
 
