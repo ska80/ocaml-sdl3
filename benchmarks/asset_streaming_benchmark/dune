@@ -1,0 +1,48 @@
+(library
+ (name asset_streaming_scene)
+ (modules page_stream)
+ (libraries sdl3 benchmark_support))
+
+(executable
+ (name asset_streaming_benchmark)
+ (modules asset_streaming_benchmark)
+ (libraries sdl3 benchmark_support asset_streaming_scene)
+ (modes exe))
+
+(test
+ (name asset_streaming_test)
+ (modules asset_streaming_test)
+ (package sdl3)
+ (libraries sdl3 benchmark_support asset_streaming_scene))
+
+(rule
+ (alias runtest)
+ (package sdl3)
+ (action
+  (setenv
+   SDL_VIDEO_DRIVER
+   dummy
+   (run
+    %{exe:asset_streaming_benchmark.exe}
+    --driver
+    software
+    --sprites
+    1025
+    --uploads-per-frame
+    4
+    --width
+    128
+    --height
+    96
+    --warmup
+    1
+    --frames
+    3))))
+
+(rule
+ (alias runtest-asset-streaming-renderers)
+ (package sdl3)
+ (action
+  (progn
+   (run %{exe:asset_streaming_test.exe} --driver opengl)
+   (run %{exe:asset_streaming_test.exe} --driver gpu))))

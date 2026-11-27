@@ -1,7 +1,6 @@
 # Benchmark plan
 
-The atlas, tilemap, isometric, GPU instancing, lighting, and text benchmarks are ready to run.
-The other workloads are planned.
+All benchmarks except resource churn are ready to run. Resource churn is planned.
 
 ## Workloads
 
@@ -13,7 +12,7 @@ The other workloads are planned.
 | [`gpu_instancing_benchmark`](#gpu-instancing-benchmark) | 100,000 instanced sprites |
 | [`lighting_benchmark`](#lighting-benchmark) | Multiple dynamic light sources |
 | [`text_benchmark`](#text-benchmark) | Thousands of dynamic text objects |
-| `asset_streaming_benchmark` | Texture uploads during gameplay |
+| [`asset_streaming_benchmark`](#asset-streaming-benchmark) | Texture uploads during gameplay |
 | `resource_churn_benchmark` | Repeated resource creation and destruction |
 
 ## Atlas benchmark
@@ -312,6 +311,52 @@ warm-up frames. The host ran Linux on an Intel i7-1165G7 with SDL 3.4.20, SDL_tt
 The allocation count covers the OCaml heap, not the native work in SDL_ttf. A smaller release
 run with 128 labels reported the same OCaml allocation rate. The Vulkan run used a
 software driver. The table does not compare GPU execution times.
+
+## Asset streaming benchmark
+
+From the repository root, run the native release build:
+
+```sh
+dune exec --profile release ./benchmarks/asset_streaming_benchmark/asset_streaming_benchmark.exe
+```
+
+The default scene moves 16,384 sprites from one 1024 × 1024 texture atlas. The benchmark divides
+it into 64 pages of 128 × 128 pixels. Each frame, it replaces four pages with `Texture.update`
+and draws one batch. This uploads 256 KiB of pixel data per frame without replacing the texture.
+
+The benchmark prepares the source images before the run. It replaces the pages in order and
+changes the source images on each pass through the atlas. The timed work includes uploads and
+rendering, not file reads or image decoding.
+
+Use `--uploads-per-frame` to change the upload count from 0 to 64. Set it to zero to run the same
+moving scene without uploads. Use `--sprites` to change the number of sprites. The benchmark also
+accepts `--width`, `--height`, `--driver`, `--warmup`, `--frames`, and `--no-gc-events`.
+
+If SDL supports offscreen OpenGL and Vulkan, test the page uploads on both renderers:
+
+```sh
+SDL_VIDEO_DRIVER=offscreen SDL_GPU_DRIVER=vulkan dune build --force @runtest-asset-streaming-renderers
+```
+
+### Asset streaming results
+
+Both offscreen runs drew 16,384 sprites and uploaded 256 KiB per frame at 1280 × 720. Each run
+measured 300 frames after 60 warm-up frames. The host ran Linux on an Intel i7-1165G7 with SDL
+3.4.20 and OCaml 5.5.2. Both runs used a native release build, and SDL reported VSync off.
+
+| Measurement | SDL `gpu` (Vulkan, llvmpipe) | SDL `opengl` |
+| --- | ---: | ---: |
+| CPU frame time, p50 / p95 / p99 | 12.431 / 16.022 / 17.707 ms | 1.029 / 2.183 / 2.795 ms |
+| Scene update and draw recording, p50 / p95 / p99 | 0.843 / 1.169 / 1.387 ms | 0.638 / 1.153 / 1.607 ms |
+| `Renderer.present` call, p50 / p95 / p99 | 11.546 / 14.823 / 16.462 ms | 0.396 / 0.965 / 1.753 ms |
+| OCaml allocations | 64.3 bytes/frame | 64.3 bytes/frame |
+| Garbage collection pauses | 0 | 0 |
+| Peak resident process memory | 146.7 MiB | 93.1 MiB |
+| Binding draw calls | 1/frame | 1/frame |
+| GPU frame time, GPU memory, backend draw count | Unavailable | Unavailable |
+
+Scene update and draw recording includes the upload calls. These are CPU times, not GPU upload
+or execution times. The Vulkan run used a software driver.
 
 ## Measurements
 
