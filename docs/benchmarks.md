@@ -1,7 +1,7 @@
 # Benchmark plan
 
-The atlas, tilemap, isometric, GPU instancing, and lighting benchmarks are ready to run. The other
-workloads are planned.
+The atlas, tilemap, isometric, GPU instancing, lighting, and text benchmarks are ready to run.
+The other workloads are planned.
 
 ## Workloads
 
@@ -12,7 +12,7 @@ workloads are planned.
 | [`isometric_benchmark`](#isometric-benchmark) | Sorted, overlapping transparent sprites |
 | [`gpu_instancing_benchmark`](#gpu-instancing-benchmark) | 100,000 instanced sprites |
 | [`lighting_benchmark`](#lighting-benchmark) | Multiple dynamic light sources |
-| `text_benchmark` | Thousands of dynamic text objects |
+| [`text_benchmark`](#text-benchmark) | Thousands of dynamic text objects |
 | `asset_streaming_benchmark` | Texture uploads during gameplay |
 | `resource_churn_benchmark` | Repeated resource creation and destruction |
 
@@ -263,6 +263,55 @@ native release build, and SDL reported VSync off.
 
 These are CPU frame times. The OpenGL run can queue work that finishes after the timed frame.
 The Vulkan run used a software driver. The table does not compare GPU execution times.
+
+## Text benchmark
+
+With SDL_ttf installed, run the native release build from the repository root:
+
+```sh
+dune exec --profile release ./benchmarks/text_benchmark/text_benchmark.exe
+```
+
+The default draws 2,048 labels at 1280 × 720. It uses the same
+[DejaVu Sans font](../examples/music_player/assets/LICENSE.md) as the Music Player, at 10 points.
+The benchmark measures the labels at startup to lay them out in a grid without overlap.
+
+Each label is a three-digit counter. The benchmark makes the strings for `000` through `999`
+before the run. Each frame, it advances every counter and draws it with one binding call. It
+reuses the text objects and one SDL_ttf renderer text engine. The engine stores glyph images
+in shared textures. The benchmark does not create a new surface or texture for each label.
+
+Use `--labels` to set the number of labels. Use `--font` to select another font file and
+`--font-size` to set its size in points. If the labels do not fit, use fewer labels, a smaller
+font, or a larger output. The benchmark also accepts `--width`, `--height`, `--driver`,
+`--warmup`, `--frames`, and `--no-gc-events`.
+
+If SDL supports offscreen OpenGL and Vulkan, run the text pixel tests on both renderers:
+
+```sh
+SDL_VIDEO_DRIVER=offscreen SDL_GPU_DRIVER=vulkan dune build --force @runtest-text-renderers
+```
+
+### Text results
+
+Both offscreen runs updated and drew 2,048 labels per frame. Each run measured 300 frames after 60
+warm-up frames. The host ran Linux on an Intel i7-1165G7 with SDL 3.4.20, SDL_ttf 3.2.2, and OCaml
+5.5.2. SDL_ttf used HarfBuzz. Both runs used a native release build, and SDL reported VSync off.
+
+| Measurement | SDL `gpu` (Vulkan, llvmpipe) | SDL `opengl` |
+| --- | ---: | ---: |
+| CPU frame time, p50 / p95 / p99 | 7.143 / 8.450 / 9.331 ms | 2.704 / 3.550 / 4.323 ms |
+| Scene update and draw recording, p50 / p95 / p99 | 2.724 / 3.015 / 3.732 ms | 2.474 / 2.694 / 2.822 ms |
+| `Renderer.present` call, p50 / p95 / p99 | 4.416 / 5.346 / 6.436 ms | 0.191 / 1.056 / 1.579 ms |
+| OCaml allocations | 0.3 bytes/frame | 0.3 bytes/frame |
+| Garbage collection pauses | 0 | 0 |
+| Peak resident process memory | 122.3 MiB | 90.6 MiB |
+| Binding draw calls | 2,048/frame | 2,048/frame |
+| GPU frame time, GPU memory, backend draw count | Unavailable | Unavailable |
+
+The allocation count covers the OCaml heap, not the native work in SDL_ttf. A smaller release
+run with 128 labels reported the same OCaml allocation rate. The Vulkan run used a
+software driver. The table does not compare GPU execution times.
 
 ## Measurements
 

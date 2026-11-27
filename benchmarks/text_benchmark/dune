@@ -1,0 +1,54 @@
+(copy_files ../../examples/music_player/assets/DejaVuSans.ttf)
+
+(library
+ (name text_bench_scene)
+ (modules text_scene)
+ (optional)
+ (libraries sdl3 sdl3-ttf benchmark_support))
+
+(executable
+ (name text_benchmark)
+ (modules text_benchmark)
+ (enabled_if %{lib-available:sdl3-ttf})
+ (libraries sdl3 sdl3-ttf benchmark_support text_bench_scene)
+ (modes exe)
+ (link_deps DejaVuSans.ttf))
+
+(test
+ (name text_test)
+ (modules text_test)
+ (package sdl3-ttf)
+ (libraries sdl3 sdl3-ttf benchmark_support text_bench_scene)
+ (deps DejaVuSans.ttf))
+
+(rule
+ (alias runtest)
+ (package sdl3-ttf)
+ (deps DejaVuSans.ttf)
+ (action
+  (setenv
+   SDL_VIDEO_DRIVER
+   dummy
+   (run
+    %{exe:text_benchmark.exe}
+    --driver
+    software
+    --labels
+    128
+    --width
+    320
+    --height
+    180
+    --warmup
+    1
+    --frames
+    3))))
+
+(rule
+ (alias runtest-text-renderers)
+ (package sdl3-ttf)
+ (deps DejaVuSans.ttf)
+ (action
+  (progn
+   (run %{exe:text_test.exe} --driver opengl)
+   (run %{exe:text_test.exe} --driver gpu))))
