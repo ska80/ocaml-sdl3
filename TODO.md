@@ -3,9 +3,17 @@
 The Linux suite passed with the libraries installed in `/usr/local`: SDL 3.4.20, SDL3_image 3.4.8,
 SDL3_mixer 3.2.4, and SDL3_ttf 3.2.2.
 
-## Next
+## Roadmap
 
-- [ ] Add macOS and Windows builds.
+| Priority | Improvement | Reason |
+| ---: | --- | --- |
+| 1 | Windows and macOS testing | Platform compatibility |
+| 2 | Comprehensive performance benchmarks | Establish practical rendering limits |
+| 3 | Extended worker-domain image decoding | Background asset loading |
+| 4 | Multisample anti-aliasing | Smooth vector geometry |
+| 5 | Optional depth and stencil buffers | Masking and specialized isometric rendering |
+| 6 | Multiple color attachments | Advanced lighting techniques |
+| 7 | Compute shaders and storage buffers | GPU particle simulation and other advanced workloads |
 
 ## SDL core compatibility follow-ups
 
