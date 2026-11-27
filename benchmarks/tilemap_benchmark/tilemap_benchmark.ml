@@ -90,7 +90,7 @@ let benchmark config sdl renderer ~map_width ~map_height ~tile_size =
     "Camera start: %d, %d pixels\nCamera step: %d, %d pixels/frame\n" x.position
     y.position x.step y.step;
   print_setup config renderer ~width ~height;
-  measure config sdl renderer ~record
+  measure_renderer config sdl renderer ~record
 
 let () =
   let name = "tilemap_benchmark" in
@@ -109,6 +109,6 @@ let () =
           "Tile width and height in pixels (default 16)" );
       ]
   in
-  with_window config ~name ~title:"Tilemap benchmark" (fun sdl renderer ->
+  with_renderer config ~name ~title:"Tilemap benchmark" (fun sdl renderer ->
       benchmark config sdl renderer ~map_width:!map_width
         ~map_height:!map_height ~tile_size:!tile_size)

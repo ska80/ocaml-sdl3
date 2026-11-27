@@ -22,7 +22,7 @@ let count name low high target =
         raise (Arg.Bad (Printf.sprintf "Use %s from %d to %d" name low high));
       target := value)
 
-let parse ~name ~min_axis extra =
+let parse ?(driver_help = "SDL renderer name") ~name ~min_axis extra =
   let frames = ref 300 and warmup = ref 60 in
   let width = ref 1280 and height = ref 720 in
   let driver = ref None and trace_gc = ref true in
@@ -40,9 +40,7 @@ let parse ~name ~min_axis extra =
       ( "--height",
         count "a window height" min_axis 8192 height,
         "Window height (default 720)" );
-      ( "--driver",
-        Arg.String (fun name -> driver := Some name),
-        "SDL renderer name" );
+      ("--driver", Arg.String (fun name -> driver := Some name), driver_help);
       ("--no-gc-events", Arg.Clear trace_gc, "Do not trace OCaml GC pauses");
     ]
   in
@@ -65,13 +63,17 @@ let with_window config ~name ~title f =
           using Window.destroy
             (Window.create sdl ~title ~w:config.width ~h:config.height)
         in
-        let@ renderer =
-          using Renderer.destroy (Renderer.create ?driver:config.driver window)
-        in
-        f sdl renderer)
+        f sdl window)
   with Error message | Invalid_argument message ->
     Printf.eprintf "%s: %s\n%!" name message;
     exit 1
+
+let with_renderer config ~name ~title f =
+  with_window config ~name ~title (fun sdl window ->
+      let@ renderer =
+        using Renderer.destroy (Renderer.create ?driver:config.driver window)
+      in
+      f sdl renderer)
 
 let rec poll_events sdl remaining =
   remaining = 0
@@ -84,20 +86,11 @@ let rec poll_events sdl remaining =
       false
   | Some _ -> poll_events sdl (remaining - 1)
 
-let print_setup config renderer ~width ~height =
+let video_hint () =
+  Option.value (Sys.getenv_opt "SDL_VIDEO_DRIVER") ~default:"SDL default"
+
+let print_runtime config =
   let { major; minor; patch } = version () in
-  let video_hint =
-    Option.value (Sys.getenv_opt "SDL_VIDEO_DRIVER") ~default:"SDL default"
-  in
-  Printf.printf
-    "Output: %d x %d pixels\n\
-     Renderer: %s\n\
-     Video driver request: %s\n\
-     VSync interval reported by SDL: %d\n"
-    width height (Renderer.name renderer) video_hint (Renderer.vsync renderer);
-  Option.iter
-    (fun device -> Printf.printf "GPU driver: %s\n" (Gpu.driver device))
-    (Renderer.gpu_device renderer);
   Printf.printf "SDL: %d.%d.%d\nOCaml: %s\nBuild profile: %s\nOS: %s\nCPU: %s\n"
     major minor patch Sys.ocaml_version Build_profile.name
     (Metrics.system_name ())
@@ -105,10 +98,22 @@ let print_setup config renderer ~width ~height =
   Printf.printf "Warm-up frames: %d\nRequested measured frames: %d\n"
     config.warmup config.frames
 
-let measure config sdl renderer ~record =
+let print_setup config renderer ~width ~height =
+  Printf.printf
+    "Output: %d x %d pixels\n\
+     Renderer: %s\n\
+     Video driver request: %s\n\
+     VSync interval reported by SDL: %d\n"
+    width height (Renderer.name renderer) (video_hint ())
+    (Renderer.vsync renderer);
+  Option.iter
+    (fun device -> Printf.printf "GPU driver: %s\n" (Gpu.driver device))
+    (Renderer.gpu_device renderer);
+  print_runtime config
+
+let measure config sdl ~record ~present =
   flush stdout;
   let poll () = poll_events sdl 256 in
-  let present () = Renderer.present renderer in
   let rec warm frames =
     if frames = 0 then true
     else if not (poll ()) then false
@@ -125,3 +130,6 @@ let measure config sdl renderer ~record =
     Printf.printf "Measured frames: %d\n" result.frames;
     if result.frames > 0 then Metrics.print result)
   else print_endline "Stopped during warm-up. No frames were measured."
+
+let measure_renderer config sdl renderer ~record =
+  measure config sdl ~record ~present:(fun () -> Renderer.present renderer)

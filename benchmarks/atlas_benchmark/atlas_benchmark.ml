@@ -55,7 +55,7 @@ let benchmark config sdl renderer sprites =
     sprites atlas.width atlas.height sprites tile_size tile_size;
   print_setup config renderer ~width ~height;
   Printf.printf "Position seed: %d\n" seed;
-  measure config sdl renderer ~record
+  measure_renderer config sdl renderer ~record
 
 let () =
   let name = "atlas_benchmark" and sprites = ref 100_000 in
@@ -67,5 +67,5 @@ let () =
           "Number of sprites (default 100000)" );
       ]
   in
-  with_window config ~name ~title:"Atlas benchmark" (fun sdl renderer ->
+  with_renderer config ~name ~title:"Atlas benchmark" (fun sdl renderer ->
       benchmark config sdl renderer !sprites)

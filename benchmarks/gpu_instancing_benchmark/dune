@@ -1,0 +1,38 @@
+(library
+ (name gpu_instancing_scene)
+ (modules sprite_scene)
+ (libraries sdl3 benchmark_support))
+
+(executable
+ (name gpu_instancing_benchmark)
+ (modules gpu_instancing_benchmark)
+ (libraries sdl3 benchmark_support gpu_instancing_scene)
+ (modes exe)
+ (link_deps shaders/sprites.vert.spv shaders/sprites.frag.spv))
+
+(executable
+ (name instancing_test)
+ (modules instancing_test)
+ (libraries sdl3 benchmark_support gpu_instancing_scene)
+ (modes exe)
+ (link_deps shaders/sprites.vert.spv shaders/sprites.frag.spv))
+
+(rule
+ (alias runtest-gpu-instancing)
+ (package sdl3)
+ (deps shaders/sprites.vert.spv shaders/sprites.frag.spv)
+ (action
+  (progn
+   (run %{exe:instancing_test.exe})
+   (run
+    %{exe:gpu_instancing_benchmark.exe}
+    --sprites
+    1025
+    --width
+    128
+    --height
+    96
+    --warmup
+    1
+    --frames
+    3))))

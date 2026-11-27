@@ -1,6 +1,7 @@
 # Benchmark plan
 
-The atlas, tilemap, and isometric benchmarks are ready to run. The other workloads are planned.
+The atlas, tilemap, isometric, and GPU instancing benchmarks are ready to run. The other workloads
+are planned.
 
 ## Workloads
 
@@ -9,7 +10,7 @@ The atlas, tilemap, and isometric benchmarks are ready to run. The other workloa
 | [`atlas_benchmark`](#atlas-benchmark) | 100,000 sprites with different atlas regions |
 | [`tilemap_benchmark`](#tilemap-benchmark) | Large scrolling maps |
 | [`isometric_benchmark`](#isometric-benchmark) | Sorted, overlapping transparent sprites |
-| `gpu_instancing_benchmark` | 100,000 instanced sprites |
+| [`gpu_instancing_benchmark`](#gpu-instancing-benchmark) | 100,000 instanced sprites |
 | `lighting_benchmark` | Multiple dynamic light sources |
 | `text_benchmark` | Thousands of dynamic text objects |
 | `asset_streaming_benchmark` | Texture uploads during gameplay |
@@ -161,6 +162,60 @@ Both runs used a native release build, and SDL reported VSync off.
 Scene update and draw recording includes the sort and batch rebuild. The allocation rate was the
 same in a smaller release run with 1,025 sprites. The runs do not measure GPU time, and the Vulkan
 run used a software driver.
+
+## GPU instancing benchmark
+
+An instance is one copy of shared geometry. This benchmark uses SDL's GPU API directly. It needs
+SDL's Vulkan backend. The compiled shaders come with the benchmark.
+
+From the repository root, run the native release build:
+
+```sh
+dune exec --profile release ./benchmarks/gpu_instancing_benchmark/gpu_instancing_benchmark.exe
+```
+
+The default draws 100,000 sprites at 1280 × 720. Each sprite uses its own 8 × 8 region of the
+same generated atlas pattern as the atlas benchmark. The program uploads the atlas, a quad mesh,
+and the starting positions and atlas offsets once.
+
+Each frame, the CPU sends the viewport scales and current offset. The vertex shader moves and
+wraps the sprites. The benchmark records one indexed draw for all instances. It does
+not rebuild or upload the instance buffer during the run.
+
+Use `--sprites` to change the sprite count. Use `--driver vulkan` to select the GPU backend.
+The benchmark also accepts `--width`, `--height`, `--warmup`, `--frames`, and `--no-gc-events`.
+It chooses immediate presentation if available, then mailbox, then VSync. It reports the selected
+mode. Keep the window visible during a windowed run so SDL can supply an image.
+
+The draw recording time includes acquisition of the window image. The present call measures
+submission, which can include driver waits. Neither time measures GPU execution.
+
+If SDL supports offscreen Vulkan, test sprite sampling and motion without a display:
+
+```sh
+SDL_VIDEO_DRIVER=offscreen SDL_GPU_DRIVER=vulkan dune build --force @runtest-gpu-instancing
+```
+
+### GPU instancing results
+
+The offscreen run drew 100,000 sprites at 1280 × 720. It measured 30 frames after five warm-up
+frames. The host ran Linux on an Intel i7-1165G7 with SDL 3.4.20 and OCaml 5.5.2. The native release
+build used mailbox presentation. There is no OpenGL result because the benchmark uses SDL's Vulkan
+GPU backend, not the SDL renderer.
+
+| Measurement | SDL GPU (Vulkan, llvmpipe) |
+| --- | ---: |
+| CPU frame time, p50 / p95 / p99 | 43.899 / 46.034 / 46.619 ms |
+| Scene update and draw recording, p50 / p95 / p99 | 0.035 / 0.046 / 0.051 ms |
+| `Gpu.submit_command_buffer` call, p50 / p95 / p99 | 43.863 / 45.999 / 46.583 ms |
+| OCaml allocations | 787.2 bytes/frame |
+| Garbage collection pauses | 0 |
+| Peak resident process memory | 188.6 MiB |
+| Binding draw calls | 1/frame |
+| GPU frame time, GPU memory, backend draw count | Unavailable |
+
+The Vulkan run used a software driver. A smaller release run with 1,025 sprites reported the
+same OCaml allocation rate.
 
 ## Measurements
 

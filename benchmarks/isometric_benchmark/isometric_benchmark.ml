@@ -112,7 +112,7 @@ let benchmark config sdl renderer count =
   Printf.printf
     "Depth order: back to front, then sprite ID\nPosition seed: %d\n" seed;
   print_setup config renderer ~width ~height;
-  measure config sdl renderer ~record
+  measure_renderer config sdl renderer ~record
 
 let () =
   let name = "isometric_benchmark" and sprites = ref 20_000 in
@@ -124,5 +124,5 @@ let () =
           "Number of sprites (default 20000)" );
       ]
   in
-  with_window config ~name ~title:"Isometric benchmark" (fun sdl renderer ->
+  with_renderer config ~name ~title:"Isometric benchmark" (fun sdl renderer ->
       benchmark config sdl renderer !sprites)

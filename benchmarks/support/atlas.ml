@@ -14,7 +14,7 @@ let region atlas index =
     ~y:(index / atlas.columns * size)
     ~w:size ~h:size
 
-let fill ?alpha atlas texture =
+let pixels ?alpha atlas =
   let pitch = 4 * atlas.width in
   let pixels =
     Bigarray.Array1.create Bigarray.int8_unsigned Bigarray.c_layout
@@ -39,7 +39,7 @@ let fill ?alpha atlas texture =
         | Some f -> f u v)
     done
   done;
-  Texture.update texture pixels ~pitch
+  pixels
 
 let with_texture ?alpha ?(blend = Blend_mode.None) renderer atlas f =
   (match Renderer.max_texture_size renderer with
@@ -53,7 +53,7 @@ let with_texture ?alpha ?(blend = Blend_mode.None) renderer atlas f =
   Run.using Texture.destroy
     (Texture.create_streaming renderer ~w:atlas.width ~h:atlas.height)
     (fun texture ->
-      fill ?alpha atlas texture;
+      Texture.update texture (pixels ?alpha atlas) ~pitch:(4 * atlas.width);
       Texture.set_scale_mode texture Nearest;
       Texture.set_blend_mode texture blend;
       f texture)
