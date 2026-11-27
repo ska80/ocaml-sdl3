@@ -1,6 +1,6 @@
 # Benchmark plan
 
-The atlas and tilemap benchmarks are ready to run. The other workloads are planned.
+The atlas, tilemap, and isometric benchmarks are ready to run. The other workloads are planned.
 
 ## Workloads
 
@@ -8,7 +8,7 @@ The atlas and tilemap benchmarks are ready to run. The other workloads are plann
 | --- | --- |
 | [`atlas_benchmark`](#atlas-benchmark) | 100,000 sprites with different atlas regions |
 | [`tilemap_benchmark`](#tilemap-benchmark) | Large scrolling maps |
-| `isometric_benchmark` | Sorted, overlapping transparent sprites |
+| [`isometric_benchmark`](#isometric-benchmark) | Sorted, overlapping transparent sprites |
 | `gpu_instancing_benchmark` | 100,000 instanced sprites |
 | `lighting_benchmark` | Multiple dynamic light sources |
 | `text_benchmark` | Thousands of dynamic text objects |
@@ -120,6 +120,47 @@ Both runs used a native release build, and SDL reported VSync off.
 The allocation rate stayed the same in a smaller release run with a batch capacity of 70 tiles.
 Most of the frame time difference was in `Renderer.present`. The runs do not measure GPU time, and
 the Vulkan run used a software driver.
+
+## Isometric benchmark
+
+From the repository root, run the native release build:
+
+```sh
+dune exec --profile release ./benchmarks/isometric_benchmark/isometric_benchmark.exe
+```
+
+The default scene has 20,000 moving sprites. Each sprite draws a translucent diamond from a shared
+atlas of 24 × 24 pixel images. The atlas has 64 regions and uploads once. The layout projects one
+world axis down and to the right, and the other down and to the left.
+
+The sprites move by fixed steps and bounce at the edges of the scene. Each frame, the benchmark
+sorts the sprites back to front by their projected vertical position. If two sprites have the same
+depth, the lower sprite ID draws first. The sort groups sprites by integer depth in reusable
+arrays. The benchmark rebuilds one batch in this order so overlapping sprites blend correctly.
+
+Use `--sprites` to change the sprite count. The benchmark also accepts `--width`, `--height`,
+`--driver`, `--warmup`, `--frames`, and `--no-gc-events`. The default output is 1280 × 720.
+
+### Isometric results
+
+Both offscreen runs used the default 20,000 sprites and output size. Each run measured 30 frames
+after five warm-up frames. The host ran Linux on an Intel i7-1165G7 with SDL 3.4.20 and OCaml 5.5.2.
+Both runs used a native release build, and SDL reported VSync off.
+
+| Measurement | SDL `gpu` (Vulkan, llvmpipe) | SDL `opengl` |
+| --- | ---: | ---: |
+| CPU frame time, p50 / p95 / p99 | 33.700 / 36.655 / 38.413 ms | 4.053 / 5.232 / 5.540 ms |
+| Scene update and draw recording, p50 / p95 / p99 | 1.953 / 2.219 / 3.036 ms | 1.682 / 2.236 / 2.797 ms |
+| `Renderer.present` call, p50 / p95 / p99 | 31.745 / 34.783 / 35.377 ms | 2.335 / 2.893 / 3.065 ms |
+| OCaml allocations | 3.2 bytes/frame | 3.2 bytes/frame |
+| Garbage collection pauses | 0 | 0 |
+| Peak resident process memory | 147.9 MiB | 90.5 MiB |
+| Binding draw calls | 1/frame | 1/frame |
+| GPU frame time, GPU memory, backend draw count | Unavailable | Unavailable |
+
+Scene update and draw recording includes the sort and batch rebuild. The allocation rate was the
+same in a smaller release run with 1,025 sprites. The runs do not measure GPU time, and the Vulkan
+run used a software driver.
 
 ## Measurements
 

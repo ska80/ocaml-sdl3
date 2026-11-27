@@ -11,7 +11,7 @@
 
 (library
  (name benchmark_support)
- (modules atlas build_profile run tile_grid)
+ (modules atlas build_profile depth_order run tile_grid)
  (libraries sdl3 benchmark_metrics))
 
 (rule
@@ -24,3 +24,9 @@
  (modules tile_grid_test)
  (package sdl3)
  (libraries benchmark_support))
+
+(test
+ (name depth_order_test)
+ (modules depth_order_test)
+ (package sdl3)
+ (libraries sdl3 benchmark_support))

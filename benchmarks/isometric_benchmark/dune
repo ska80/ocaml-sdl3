@@ -1,0 +1,27 @@
+(executable
+ (name isometric_benchmark)
+ (modules isometric_benchmark)
+ (libraries sdl3 benchmark_support)
+ (modes exe))
+
+(rule
+ (alias runtest)
+ (package sdl3)
+ (action
+  (setenv
+   SDL_VIDEO_DRIVER
+   dummy
+   (run
+    %{exe:isometric_benchmark.exe}
+    --driver
+    software
+    --sprites
+    1025
+    --width
+    128
+    --height
+    96
+    --warmup
+    1
+    --frames
+    3))))
