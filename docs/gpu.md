@@ -204,8 +204,8 @@ one open render pass per device.
 
 A mip level is a smaller image in the same texture. Use `~mip_levels` when you create the texture.
 Level zero has the original size. Each next level halves each dimension, down to one pixel per
-axis. Use `Gpu.texture_size ~mip_level` to get its size. Initialize each level that you use with an
-upload, a copy, or a render pass. SDL does not generate them in this API.
+axis. Use `Gpu.texture_size ~mip_level` to get its size. Before sampling levels, initialize them
+with uploads, copies, render passes, or mipmap generation.
 
 `Gpu.upload_to_texture ~mip_level` selects a level to upload. Without `~rect`, it replaces the whole
 level. Align the byte offset to four bytes and to the pixel size. An upload does not change the
@@ -215,6 +215,45 @@ level. Pass `~mipmap_filter:Linear` to blend between adjacent levels.
 
 SDL 3.4.20 cannot render or blit a level when halving the base size to that level would give zero on
 either axis. Uploads, copies, downloads, and sampling still work.
+
+### Generate mipmaps for zooming
+
+Smaller levels reduce flicker and jagged edges when a texture shrinks on screen. Allocate a texture
+with `~usage:Sampled_color_target` and at least two levels. For example, a 256 × 256 texture can
+have nine levels, from 256 × 256 down to 1 × 1.
+
+Initialize all of level zero. If a render pass draws it, use `Store` and end the pass. Call
+`Gpu.generate_mipmaps` outside a pass to filter level zero into all smaller levels. Each smaller
+level replaces any pixels that were there before.
+
+This example records a packed upload and generates the smaller levels in the same command buffer:
+
+```ocaml
+let record_mipmapped_upload commands ~upload ~texture =
+  let open Sdl3.Gpu in
+  let pass = begin_copy_pass commands in
+  Fun.protect ~finally:(fun () -> end_copy_pass pass) (fun () ->
+      upload_to_texture pass ~src:upload ~dst:texture);
+  generate_mipmaps commands texture
+
+let zoom_sampler device texture =
+  let open Sdl3.Gpu in
+  create_sampler ~max_mip_level:(texture_mip_levels texture - 1)
+    ~mipmap_filter:Linear device ~filter:Linear
+```
+
+Bind a sampler that can read the smaller levels. You can draw later in the same command buffer
+without waiting. If the shader uses ordinary texture sampling, the GPU chooses levels based on how
+much the texture shrinks on screen. Regenerate the levels when level zero changes, not when the
+camera moves. If you pushed fragment uniform slot zero before generation, push it again before a
+draw that uses it.
+
+On Vulkan and Direct3D 12, SDL 3.4.20 can calculate a zero-sized axis for the smallest levels of a
+rectangular texture. Limit the allocated levels so that halving the shorter axis never reaches
+zero. For example, use nine levels for a 512 × 256 texture and stop at 2 × 1.
+
+Generation filters the whole image. If you use an atlas, leave padding between tiles and limit
+sampling to levels where their colors do not mix.
 
 ## Copy or scale a texture region
 

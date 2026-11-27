@@ -78,15 +78,7 @@ let create_color_target device claim =
     create_texture device ~format:(swapchain_format claim) ~usage:Color_target
       ~w:1 ~h:1)
 
-let image_matches device ?(tolerance = 0) ?mip_level target pixel =
-  let region = Gpu.texture_region ?mip_level target in
-  let { Rect.w; h; _ } = region.rect in
-  let bgra =
-    match Gpu.texture_format target with
-    | Bgra8_unorm | Bgra8_srgb -> true
-    | Rgba8_unorm | Rgba8_srgb -> false
-    | _ -> failwith "Expected an 8-bit RGBA or BGRA target"
-  in
+let image_bytes ?(bgra = false) ~w ~h pixel =
   let expected = Bytes.create (w * h * 4) in
   for y = 0 to h - 1 do
     for x = 0 to w - 1 do
@@ -98,6 +90,18 @@ let image_matches device ?(tolerance = 0) ?mip_level target pixel =
       Bytes.set_uint8 expected (offset + 3) a
     done
   done;
+  expected
+
+let image_matches device ?(tolerance = 0) ?mip_level target pixel =
+  let region = Gpu.texture_region ?mip_level target in
+  let { Rect.w; h; _ } = region.rect in
+  let bgra =
+    match Gpu.texture_format target with
+    | Bgra8_unorm | Bgra8_srgb -> true
+    | Rgba8_unorm | Rgba8_srgb -> false
+    | _ -> failwith "Expected an 8-bit RGBA or BGRA target"
+  in
+  let expected = image_bytes ~bgra ~w ~h pixel in
   gpu_texture_matches device region (Bytes.to_string expected) ~tolerance
 
 let color_target_matches device target color ~tolerance =
@@ -382,6 +386,12 @@ let wrong_transfer_device device other =
   in
   let@ commands = using cancel_command_buffer (acquire_command_buffer device) in
   let here = texture_region texture and there = texture_region other_texture in
+  let@ foreign_atlas =
+    using release_texture
+      (create_texture ~mip_levels:2 other ~format:Rgba8_unorm
+         ~usage:Sampled_color_target ~w:2 ~h:2)
+  in
+  invalid (fun () -> generate_mipmaps commands foreign_atlas);
   invalid (fun () ->
       begin_render_pass commands ~target:other_texture ~load:Dont_care);
   invalid (fun () -> blit_texture commands ~src:there ~dst:here ~load:Dont_care);
@@ -1349,6 +1359,123 @@ let texture_downloads device =
   with_copy_pass next (fun pass ->
       invalid (fun () -> download_from_texture pass ~src:crop ~dst))
 
+let texture_mipmaps device =
+  let open Gpu in
+  let make ~mip_levels usage w h =
+    using release_texture
+      (create_texture ~mip_levels device ~format:Rgba8_unorm ~usage ~w ~h)
+  in
+  let@ texture = make ~mip_levels:3 Sampled_color_target 8 4 in
+  let@ single = make ~mip_levels:1 Sampled_color_target 2 2 in
+  let@ sampled = make ~mip_levels:2 Sampled 2 2 in
+  let@ target_only = make ~mip_levels:2 Color_target 2 2 in
+  let@ thin = make ~mip_levels:3 Sampled_color_target 4 1 in
+  let@ dead = make ~mip_levels:2 Sampled_color_target 2 2 in
+  release_texture dead;
+  let original x y =
+    Color.rgb
+      (8 + (32 * (x / 2)) + (16 * (x mod 2)))
+      (16 + (64 * (y / 2)) + (32 * (y mod 2)))
+      (8 + (80 * ((x + y) mod 2)))
+  in
+  let solid = Color.rgb 20 100 200 in
+  let@ spare = using cancel_command_buffer (acquire_command_buffer device) in
+  submit_gpu device (fun commands ->
+      List.iter
+        (fun tex -> invalid (fun () -> generate_mipmaps commands tex))
+        [ single; sampled; target_only; dead ];
+      if driver device <> "metal" then
+        invalid (fun () -> generate_mipmaps commands thin)
+      else (
+        with_color_pass commands ~target:thin ~load:(Clear solid) ignore;
+        generate_mipmaps commands thin);
+      Domain.join
+        (Domain.spawn (fun () ->
+             invalid (fun () -> generate_mipmaps commands texture)));
+      with_color_pass commands ~target:texture ~load:(Clear solid) (fun _ ->
+          invalid (fun () -> generate_mipmaps commands texture);
+          invalid (fun () -> generate_mipmaps spare texture));
+      let@ upload =
+        using release_upload_buffer (create_upload_buffer device ~size:128)
+      in
+      write_upload_buffer upload (packed_bytes (image_bytes ~w:8 ~h:4 original));
+      with_copy_pass commands (fun pass ->
+          invalid (fun () -> generate_mipmaps commands texture);
+          upload_to_texture pass ~src:upload ~dst:texture);
+      generate_mipmaps commands texture);
+  check
+    (image_matches device texture original)
+    "Mipmap generation preserves level zero";
+  let mip1 x y = Color.rgb (16 + (32 * x)) (32 + (64 * y)) 48 in
+  let mip2 x _ = Color.rgb (32 + (64 * x)) 64 48 in
+  check
+    (image_matches device ~mip_level:1 ~tolerance:1 texture mip1)
+    "First mip filters each block";
+  check
+    (image_matches device ~mip_level:2 ~tolerance:1 texture mip2)
+    "Second mip uses the first";
+  if driver device = "metal" then
+    check
+      (image_matches device ~mip_level:2 ~tolerance:1 thin (fun _ _ -> solid))
+      "Generate the smallest mip of a thin texture";
+
+  let replacement = Color.rgb 80 96 48 in
+  submit_gpu device (fun commands ->
+      let@ upload =
+        using release_upload_buffer (create_upload_buffer device ~size:16)
+      in
+      write_upload_buffer upload
+        (packed_bytes (image_bytes ~w:2 ~h:2 (fun _ _ -> replacement)));
+      with_copy_pass commands (fun pass ->
+          upload_to_texture ~rect:(rect 0 0 2 2) pass ~src:upload ~dst:texture));
+  using cancel_command_buffer (acquire_command_buffer device) (fun commands ->
+      generate_mipmaps commands texture);
+  check
+    (image_matches device ~mip_level:1 ~tolerance:1 texture mip1)
+    "Canceling generation preserves earlier mip levels";
+  submit_gpu device (fun commands -> generate_mipmaps commands texture);
+  check
+    (image_matches device ~mip_level:1 ~tolerance:1 texture (fun x y ->
+         if x = 0 && y = 0 then replacement else mip1 x y))
+    "Regenerate after a partial upload";
+  check
+    (image_matches device ~mip_level:2 ~tolerance:1 texture (fun x y ->
+         if x = 0 then Color.rgb 48 80 48 else mip2 x y))
+    "Regenerate through the end of the chain";
+  submit_gpu device (fun commands ->
+      with_color_pass commands ~target:texture ~load:(Clear solid) ignore;
+      generate_mipmaps commands texture);
+  check
+    (image_matches device ~mip_level:2 ~tolerance:1 texture (fun _ _ -> solid))
+    "Generate mipmaps from a stored render target";
+  cancel_command_buffer spare;
+  invalid (fun () -> generate_mipmaps spare texture)
+
+let srgb_mipmaps device =
+  let open Gpu in
+  let format = Rgba8_srgb and usage = Sampled_color_target in
+  if supports_texture_format device ~format ~usage then (
+    let@ texture =
+      using release_texture
+        (create_texture ~mip_levels:2 device ~format ~usage ~w:2 ~h:2)
+    in
+    let pattern x _ =
+      if x = 0 then Color.rgb 0 0 0 else Color.rgb 255 255 255
+    in
+    submit_gpu device (fun commands ->
+        let@ upload =
+          using release_upload_buffer (create_upload_buffer device ~size:16)
+        in
+        write_upload_buffer upload
+          (packed_bytes (image_bytes ~w:2 ~h:2 pattern));
+        with_copy_pass commands (fun pass ->
+            upload_to_texture pass ~src:upload ~dst:texture);
+        generate_mipmaps commands texture);
+    check
+      (image_matches device ~mip_level:1 ~tolerance:1 texture (fun _ _ ->
+           Color.rgb 188 188 188))
+      "sRGB mip generation filters RGB in linear space")
+
 let texture_copies device =
   let open Gpu in
   let make ?mip_levels ~w ~h format usage =
@@ -1564,6 +1691,58 @@ let offscreen_sampling device =
   check
     (color_target_matches device target red ~tolerance:0)
     "A later pass samples the mip rendered by an earlier pass"
+
+let sample_generated_mips device =
+  let open Gpu in
+  let@ source =
+    using release_texture
+      (create_texture ~mip_levels:3 device ~format:Rgba8_unorm
+         ~usage:Sampled_color_target ~w:4 ~h:4)
+  in
+  let@ target =
+    using release_texture
+      (create_texture device ~format:Rgba8_unorm ~usage:Color_target ~w:1 ~h:1)
+  in
+  let@ pipeline =
+    using release_graphics_pipeline
+      (resource_pipeline device ~format:Rgba8_unorm)
+  in
+  let@ zoom =
+    using release_sampler
+      (create_sampler ~max_mip_level:2 ~mipmap_filter:Linear device
+         ~filter:Nearest)
+  in
+  let@ base = using release_sampler (create_sampler device ~filter:Nearest) in
+  let pattern x y =
+    let r = if x < 2 && y < 2 && (x + y) mod 2 = 0 then 0 else 128 in
+    Color.rgb r 0 0
+  in
+  submit_gpu device (fun commands ->
+      let@ upload =
+        using release_upload_buffer (create_upload_buffer device ~size:64)
+      in
+      write_upload_buffer upload (packed_bytes (image_bytes ~w:4 ~h:4 pattern));
+      with_copy_pass commands (fun pass ->
+          upload_to_texture pass ~src:upload ~dst:source);
+      let vertex = uniform_coordinates 0.125 0.125 1.5 0. in
+      let fragment = uniform_coordinates 0.125 0.125 0.875 0.875 in
+      push_uniform_data commands ~stage:Vertex ~slot:0 vertex;
+      push_uniform_data commands ~stage:Fragment ~slot:0 fragment;
+      generate_mipmaps commands source;
+      with_color_pass commands ~target ~load:Dont_care (fun pass ->
+          bind_graphics_pipeline pass pipeline;
+          bind_samplers pass ~stage:Vertex [| (source, zoom) |];
+          bind_samplers pass ~stage:Fragment
+            [| (source, base); (source, base) |];
+          invalid (fun () -> draw_primitives pass ~vertices:3);
+          push_uniform_data commands ~stage:Fragment ~slot:0 fragment;
+          draw_primitives pass ~vertices:3);
+      release_texture source);
+  (* The top-left pixel of level 1 is 64. Level 2 averages that with three
+     pixels of 128 and gives 112. At LOD 1.5 the shader samples their mix. *)
+  check
+    (color_target_matches device target (Color.rgb 88 0 128) ~tolerance:1)
+    "Sample and blend generated mips during zoom-out"
 
 let sampler_modes device =
   let open Gpu in
@@ -1925,11 +2104,14 @@ let () =
           partial_texture_uploads device;
           partial_r8_uploads device;
           texture_downloads device;
+          texture_mipmaps device;
+          srgb_mipmaps device;
           texture_copies device;
           if List.mem Gpu.Spirv (Gpu.shader_formats device) then (
             shader_checks device;
             offscreen_rendering device;
             offscreen_sampling device;
+            sample_generated_mips device;
             sampler_modes device;
             renderer_states device context);
           renderer_devices device context;

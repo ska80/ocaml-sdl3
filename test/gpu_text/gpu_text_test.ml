@@ -169,6 +169,7 @@ let lifetimes device context =
   let@ commands = using cancel_command_buffer (acquire_command_buffer device) in
   let@ discard = using cancel_command_buffer (acquire_command_buffer device) in
   invalid (fun () -> begin_render_pass commands ~target:texture ~load:Dont_care);
+  invalid (fun () -> generate_mipmaps commands texture);
   let region = texture_region texture
   and target_region = texture_region target in
   invalid (fun () ->

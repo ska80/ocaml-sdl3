@@ -850,9 +850,9 @@ module Gpu : sig
   (** Allocate a 2D texture. Width and height must be in [1, 16384]. The mip
       level count defaults to one. It must fit the dimensions, including level
       zero. Each successive level halves each dimension, rounds down, and stops
-      at one pixel per axis. Initialize each level before reading it. This
-      function does not generate the smaller images. Raise [Error] if the device
-      does not support the format and use. *)
+      at one pixel per axis. Initialize each level before reading it. For
+      smaller levels based on level zero, use [generate_mipmaps]. Raise [Error]
+      if the device does not support the format and use. *)
 
   val create_sampled_texture : device -> w:int -> h:int -> texture
   (** Allocate a one-level [Rgba8_unorm] texture with [Sampled] usage. *)
@@ -911,8 +911,8 @@ module Gpu : sig
 
       Call this before or during a render pass. The data applies to subsequent
       draws in this command buffer until you replace it in the same slot and
-      stage. [blit_texture] invalidates fragment slot zero. You can reuse the
-      bigarray as soon as this call returns. *)
+      stage. [blit_texture] and [generate_mipmaps] invalidate fragment slot
+      zero. You can reuse the bigarray as soon as this call returns. *)
 
   val submit_command_buffer : command_buffer -> unit
   (** Queue the recorded work and present any acquired window image. End any
@@ -1038,6 +1038,23 @@ module Gpu : sig
 
   val end_copy_pass : copy_pass -> unit
   (** End the copy pass. Calling this again on an ended pass does nothing. *)
+
+  val generate_mipmaps : command_buffer -> texture -> unit
+  (** Record generation of all smaller levels from level zero. The texture must
+      have [Sampled_color_target] usage and at least two levels. It must belong
+      to the command buffer's device and cannot be borrowed.
+
+      Initialize all pixels of level zero before this operation. Generation
+      keeps level zero unchanged and replaces every smaller level with a
+      filtered image. End any pass on the buffer and any render pass on the
+      device first. You can draw with the new levels later in the same buffer.
+
+      On Vulkan and Direct3D 12, SDL 3.4.20 cannot generate a chain if either
+      base dimension shifts to zero at the last level. Use fewer levels for such
+      a texture. The binding rejects this case before recording work.
+
+      This call invalidates fragment uniform slot zero. Push the slot data again
+      before drawing with a pipeline that uses it. *)
 
   val blit_texture :
     ?filter:sampler_filter ->

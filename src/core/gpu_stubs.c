@@ -412,7 +412,8 @@ CAMLprim value osdl_gpu_read_download_buffer(value dst_offset, value pitch, valu
 
 /* Textures and samplers. */
 
-/* Gpu.texture_format constructor order. Only uncompressed color formats. */
+/* Gpu.texture_format constructor order. These uncompressed color formats
+ * support linear blits on Vulkan, as required by mipmap generation. */
 static const SDL_GPUTextureFormat osdl_gpu_texture_formats[] = {
     SDL_GPU_TEXTUREFORMAT_R8_UNORM,
     SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM,
@@ -1402,7 +1403,45 @@ CAMLprim value osdl_gpu_copy_texture(value cycle, value pass, value src, value d
 
 OSDL_DESTROY(osdl_gpu_end_copy_pass, SDL_GPUCopyPass, SDL_EndGPUCopyPass)
 
-/* Blitting and render passes. */
+/* Blitting, mipmap generation, and render passes. */
+
+static void osdl_gpu_forget_fragment_slot_zero(value buffer) {
+    /* SDL can use this slot for its internal blit shader. */
+    int mask = Int_val(Field(buffer, GPU_COMMAND_UNIFORMS));
+    Store_field(buffer, GPU_COMMAND_UNIFORMS, Val_int(mask & ~(1 << GPU_MAX_UNIFORMS)));
+}
+
+CAMLprim value osdl_gpu_generate_mipmaps(value buffer, value texture) {
+    SDL_GPUCommandBuffer* commands = osdl_gpu_commands_without_pass(buffer);
+    value                 device   = osdl_parent(buffer);
+    osdl_gpu_require_no_render_pass(device);
+    SDL_GPUTexture* ptr = osdl_gpu_live_texture(texture);
+    osdl_gpu_require_owned_texture(texture);
+    if (osdl_parent(texture) != device)
+        caml_invalid_argument("Use a texture from the command buffer's GPU device");
+
+    int levels = Int_val(Field(texture, GPU_TEXTURE_LEVELS));
+    if (levels < 2) caml_invalid_argument("Mipmap generation needs at least two texture levels");
+    SDL_GPUTextureUsageFlags required =
+        SDL_GPU_TEXTUREUSAGE_SAMPLER | SDL_GPU_TEXTUREUSAGE_COLOR_TARGET;
+    if ((osdl_gpu_image_usage(texture) & required) != required)
+        caml_invalid_argument("Mipmap generation needs a sampled color target");
+
+    /* SDL 3.4.20 can blit or render zero extents on Vulkan and D3D12.
+     * Metal generates mips directly and keeps each axis at least one pixel. */
+    int shortest = SDL_min(Int_val(Field(texture, GPU_TEXTURE_WIDTH)),
+                           Int_val(Field(texture, GPU_TEXTURE_HEIGHT)));
+    if (!(shortest >> (levels - 1))) {
+        const char* driver = SDL_GetGPUDeviceDriver(osdl_cell_val(device)->ptr);
+        if (!driver || strcmp(driver, "metal") != 0)
+            caml_invalid_argument(
+                "Use fewer mip levels to generate mipmaps for this rectangular texture");
+    }
+
+    SDL_GenerateMipmapsForGPUTexture(commands, ptr);
+    osdl_gpu_forget_fragment_slot_zero(buffer);
+    return Val_unit;
+}
 
 static SDL_FColor osdl_gpu_clear_color(value color) {
     SDL_Color rgba = osdl_color(color);
@@ -1446,9 +1485,7 @@ CAMLprim value osdl_gpu_blit_texture(value filter, value flip, value cycle, valu
 
     SDL_BlitGPUTexture(commands, &info);
     osdl_gpu_record_texture_read(buffer, source);
-    /* SDL uses fragment uniform slot zero for blits on Metal and Direct3D 12. */
-    int mask = Int_val(Field(buffer, GPU_COMMAND_UNIFORMS));
-    Store_field(buffer, GPU_COMMAND_UNIFORMS, Val_int(mask & ~(1 << GPU_MAX_UNIFORMS)));
+    osdl_gpu_forget_fragment_slot_zero(buffer);
     return Val_unit;
 }
 

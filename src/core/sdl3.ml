@@ -692,6 +692,9 @@ module Gpu = struct
 
   external end_copy_pass : copy_pass -> unit = "osdl_gpu_end_copy_pass"
 
+  external generate_mipmaps : command_buffer -> texture -> unit
+    = "osdl_gpu_generate_mipmaps"
+
   external blit_texture :
     ?filter:sampler_filter ->
     ?flip:Surface.flip ->

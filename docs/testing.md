@@ -148,9 +148,13 @@ display.
 The drawing tests use SPIR-V, a shader format that Vulkan accepts. They skip drawing on devices that
 do not accept SPIR-V. The tests read pixels to check blending, write masks, viewports, and clips.
 They also check mip uploads, copies, scaled blits, and sampling a texture in a later pass. They
-reject attempts to sample the current target or to use a pipeline with a different format. They also
-check separate vertex and instance buffers, per-axis sampler addressing, and blending between mip
-levels.
+reject attempts to sample the current target or to use a pipeline with a different format. They
+check separate vertex and instance buffers and per-axis sampler addressing. They sample between
+generated mip levels to check filtering during zoom-out.
+
+Mipmap tests also read back generated levels without shaders. They check that generation keeps level
+zero unchanged, filters sRGB colors, and replaces the smaller levels after a partial upload.  They
+reject unsupported texture shapes and generation during a pass.
 
 The GPU renderer tests use supplied and renderer-owned devices. They draw with extra texture
 bindings and compare pixels before and after a uniform change. They also check queued draws after a
