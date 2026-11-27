@@ -11,22 +11,74 @@ let using destroy handle f =
   Fun.protect ~finally:(fun () -> destroy handle) (fun () -> f handle)
 
 let ( let@ ) scope f = scope f
-
-external gpu_buffer_matches : 'kind Gpu.buffer -> string -> bool
-  = "test_gpu_buffer_matches"
-
-external gpu_texture_matches :
-  Gpu.texture_region -> string -> tolerance:int -> bool
-  = "test_gpu_texture_matches"
-
 let rect x y w h = Rect.make ~x ~y ~w ~h
+
+let byte_buffer size =
+  Bigarray.Array1.create Bigarray.int8_unsigned Bigarray.c_layout size
+
+let packed_bytes bytes =
+  Bigarray.Array1.init Bigarray.int8_unsigned Bigarray.c_layout
+    (Bytes.length bytes) (Bytes.get_uint8 bytes)
+
+let with_copy_pass commands f =
+  using Gpu.end_copy_pass (Gpu.begin_copy_pass commands) f
+
+let with_color_pass ?mip_level ?store ?cycle commands ~target ~load f =
+  using Gpu.end_render_pass
+    (Gpu.begin_render_pass ?mip_level ?store ?cycle commands ~target ~load)
+    f
+
+let submit_gpu device record =
+  let open Gpu in
+  using cancel_command_buffer (acquire_command_buffer device) (fun commands ->
+      record commands;
+      using release_fence (submit_and_acquire_fence commands) wait_fence)
+
+let bytes_match ?(tolerance = 0) actual expected =
+  let size = String.length expected in
+  let rec matches i =
+    i = size
+    ||
+    let got = actual.{i} and want = Char.code expected.[i] in
+    if abs (got - want) <= tolerance then matches (i + 1)
+    else (
+      Printf.eprintf "GPU byte %d: got %d, expected %d\n%!" i got want;
+      false)
+  in
+  Bigarray.Array1.dim actual = size && matches 0
+
+let gpu_buffer_matches device src expected =
+  let open Gpu in
+  let size = String.length expected in
+  let@ dst =
+    using release_download_buffer (create_download_buffer device ~size)
+  in
+  submit_gpu device (fun commands ->
+      with_copy_pass commands (fun pass ->
+          download_from_buffer pass ~src ~dst ~size));
+  let actual = byte_buffer size in
+  read_download_buffer dst actual;
+  bytes_match actual expected
+
+let gpu_texture_matches device src expected ~tolerance =
+  let open Gpu in
+  let size = String.length expected in
+  let@ dst =
+    using release_download_buffer
+      (create_download_buffer device ~size:((size + 3) land lnot 3))
+  in
+  submit_gpu device (fun commands ->
+      with_copy_pass commands (fun pass -> download_from_texture pass ~src ~dst));
+  let actual = byte_buffer size in
+  read_download_buffer dst actual;
+  bytes_match ~tolerance actual expected
 
 let create_color_target device claim =
   Gpu.(
     create_texture device ~format:(swapchain_format claim) ~usage:Color_target
       ~w:1 ~h:1)
 
-let image_matches ?(tolerance = 0) ?mip_level target pixel =
+let image_matches device ?(tolerance = 0) ?mip_level target pixel =
   let region = Gpu.texture_region ?mip_level target in
   let { Rect.w; h; _ } = region.rect in
   let bgra =
@@ -46,28 +98,10 @@ let image_matches ?(tolerance = 0) ?mip_level target pixel =
       Bytes.set_uint8 expected (offset + 3) a
     done
   done;
-  gpu_texture_matches region (Bytes.to_string expected) ~tolerance
+  gpu_texture_matches device region (Bytes.to_string expected) ~tolerance
 
-let color_target_matches target color ~tolerance =
-  image_matches ~tolerance target (fun _ _ -> color)
-
-let packed_bytes bytes =
-  Bigarray.Array1.init Bigarray.int8_unsigned Bigarray.c_layout
-    (Bytes.length bytes) (Bytes.get_uint8 bytes)
-
-let with_copy_pass commands f =
-  using Gpu.end_copy_pass (Gpu.begin_copy_pass commands) f
-
-let with_color_pass ?mip_level ?store ?cycle commands ~target ~load f =
-  using Gpu.end_render_pass
-    (Gpu.begin_render_pass ?mip_level ?store ?cycle commands ~target ~load)
-    f
-
-let submit_gpu device record =
-  let open Gpu in
-  using cancel_command_buffer (acquire_command_buffer device) (fun commands ->
-      record commands;
-      using release_fence (submit_and_acquire_fence commands) wait_fence)
+let color_target_matches device target color ~tolerance =
+  image_matches device ~tolerance target (fun _ _ -> color)
 
 let command_buffers device =
   let open Gpu in
@@ -144,7 +178,9 @@ let buffer_uploads device =
               invalid (fun () -> write_upload_buffer src old_data);
               using release_fence (submit_and_acquire_fence commands) wait_fence;
               invalid (fun () -> begin_copy_pass commands)));
-      check (gpu_buffer_matches dst "456789abcdefwxyz") "GPU upload bytes";
+      check
+        (gpu_buffer_matches device dst "456789abcdefwxyz")
+        "GPU upload bytes";
       using release_upload_buffer (create_upload_buffer device ~size:4)
         (fun src ->
           write_upload_buffer src new_data;
@@ -154,10 +190,105 @@ let buffer_uploads device =
                   upload_to_buffer pass ~src ~dst ~size:4);
               cancel_command_buffer commands));
       check
-        (gpu_buffer_matches dst "456789abcdefwxyz")
+        (gpu_buffer_matches device dst "456789abcdefwxyz")
         "Canceled upload changed bytes");
   using release_upload_buffer (create_upload_buffer device ~size:4) (fun _ ->
       invalid (fun () -> destroy_device device))
+
+let buffer_downloads device =
+  let open Gpu in
+  let make size = create_download_buffer device ~size in
+  invalid (fun () -> make 0);
+  invalid (fun () -> make 7);
+  if Sys.int_size > 32 then
+    invalid (fun () -> make (Int64.to_int 4_294_967_296L));
+  let@ dst = using release_download_buffer (make 16) in
+  invalid (fun () -> destroy_device device);
+  let@ second = using release_download_buffer (make 4) in
+  let@ src =
+    using release_buffer (create_index_buffer device ~format:Uint16 ~size:16)
+  in
+  let data = packed_bytes (Bytes.make 14 '!') in
+  let read () = read_download_buffer ~dst_offset:3 dst data in
+  invalid read;
+  wait_idle device;
+  invalid read;
+  let@ commands = using cancel_command_buffer (acquire_command_buffer device) in
+  let pass =
+    with_copy_pass commands (fun pass ->
+        let@ upload =
+          using release_upload_buffer (create_upload_buffer device ~size:16)
+        in
+        write_upload_buffer upload
+          (packed_bytes (Bytes.of_string "0123456789abcdef"));
+        upload_to_buffer pass ~src:upload ~dst:src ~size:16;
+        invalid (fun () ->
+            download_from_buffer ~src_offset:2 pass ~src ~dst ~size:4);
+        invalid (fun () ->
+            download_from_buffer ~dst_offset:2 pass ~src ~dst ~size:4);
+        invalid (fun () ->
+            download_from_buffer ~src_offset:16 pass ~src ~dst ~size:4);
+        invalid (fun () ->
+            download_from_buffer ~dst_offset:12 pass ~src ~dst ~size:8);
+        invalid (fun () -> download_from_buffer pass ~src ~dst ~size:0);
+        invalid (fun () -> download_from_buffer pass ~src ~dst ~size:2);
+        download_from_buffer ~src_offset:4 ~dst_offset:8 pass ~src ~dst ~size:8;
+        invalid (fun () -> download_from_buffer pass ~src ~dst ~size:4);
+        download_from_buffer ~src_offset:12 pass ~src ~dst:second ~size:4;
+        invalid read;
+        pass)
+  in
+  invalid (fun () -> download_from_buffer pass ~src ~dst:second ~size:4);
+  wait_idle device;
+  invalid read;
+  let@ fence = using release_fence (submit_and_acquire_fence commands) in
+  let@ next = using cancel_command_buffer (acquire_command_buffer device) in
+  with_copy_pass next (fun pass ->
+      invalid (fun () -> download_from_buffer pass ~src ~dst ~size:4));
+  (* Another fence's wait and a query do not make this batch ready. *)
+  submit_gpu device ignore;
+  ignore (fence_signaled fence);
+  invalid read;
+  Gc.compact ();
+  wait_fence fence;
+  check (fence_signaled fence) "Download fence after wait";
+  let data2 = byte_buffer 4 in
+  read_download_buffer second data2;
+  check (bytes_match data2 "cdef") "Two downloads in one submission";
+  release_download_buffer second;
+  invalid (fun () -> read_download_buffer dst (byte_buffer 7));
+  invalid (fun () -> read_download_buffer ~dst_offset:(-1) dst data);
+  invalid (fun () -> read_download_buffer ~dst_offset:max_int dst data);
+  invalid (fun () -> read_download_buffer ~pitch:7 dst data);
+  Domain.join
+    (Domain.spawn (fun () ->
+         invalid read;
+         invalid (fun () -> release_download_buffer dst)));
+  read ();
+  check (bytes_match data "!!!456789ab!!!") "Buffer download with offsets";
+  let@ canceled = using cancel_command_buffer (acquire_command_buffer device) in
+  with_copy_pass canceled (fun pass ->
+      download_from_buffer pass ~src ~dst ~size:4);
+  wait_fence fence;
+  invalid read;
+  cancel_command_buffer canceled;
+  invalid read;
+  release_fence fence;
+  with_copy_pass next (fun pass ->
+      invalid (fun () -> download_from_buffer pass ~src ~dst:second ~size:4);
+      Domain.join
+        (Domain.spawn (fun () ->
+             invalid (fun () -> download_from_buffer pass ~src ~dst ~size:4)));
+      download_from_buffer ~src_offset:8 pass ~src ~dst ~size:4);
+  release_buffer src;
+  submit_command_buffer next;
+  invalid read;
+  wait_idle device;
+  read_download_buffer dst data2;
+  check (bytes_match data2 "89ab") "Download after cancel and wait_idle";
+  release_download_buffer dst;
+  invalid read;
+  check (bytes_match data2 "89ab") "Bigarray outlives the download buffer"
 
 let sampled_handles device =
   let open Gpu in
@@ -228,49 +359,54 @@ let render_pass device claim =
       invalid (fun () -> begin_swapchain_render_pass commands claim ~clear);
       check (clear_and_present claim clear) "Claim reusable after submission")
 
-let wrong_upload_device device other =
+let wrong_transfer_device device other =
   let open Gpu in
   let data = packed_bytes (Bytes.of_string "data") in
   let with_resources d f =
-    using release_upload_buffer (create_upload_buffer d ~size:4) (fun src ->
-        write_upload_buffer src data;
-        using release_buffer (create_vertex_buffer d ~size:4) (fun dst ->
-            using release_texture
-              (create_texture d ~format:Rgba8_unorm ~usage:Sampled_color_target
-                 ~w:1 ~h:1)
-              (f src dst)))
+    let@ src = using release_upload_buffer (create_upload_buffer d ~size:4) in
+    write_upload_buffer src data;
+    let@ dst = using release_buffer (create_vertex_buffer d ~size:4) in
+    let@ texture =
+      using release_texture
+        (create_texture d ~format:Rgba8_unorm ~usage:Sampled_color_target ~w:1
+           ~h:1)
+    in
+    let@ download =
+      using release_download_buffer (create_download_buffer d ~size:4)
+    in
+    f (src, dst, texture, download)
   in
-  with_resources device (fun src dst texture ->
-      with_resources other (fun other_src other_dst other_texture ->
-          using cancel_command_buffer (acquire_command_buffer device)
-            (fun commands ->
-              let here = texture_region texture
-              and there = texture_region other_texture in
-              invalid (fun () ->
-                  begin_render_pass commands ~target:other_texture
-                    ~load:Dont_care);
-              invalid (fun () ->
-                  blit_texture commands ~src:there ~dst:here ~load:Dont_care);
-              invalid (fun () ->
-                  blit_texture commands ~src:here ~dst:there ~load:Dont_care);
-              with_copy_pass commands (fun pass ->
-                  invalid (fun () -> copy_texture pass ~src:there ~dst:here);
-                  invalid (fun () -> copy_texture pass ~src:here ~dst:there);
-                  invalid (fun () ->
-                      upload_to_buffer pass ~src:other_src ~dst ~size:4);
-                  invalid (fun () ->
-                      upload_to_buffer pass ~src ~dst:other_dst ~size:4);
-                  invalid (fun () ->
-                      upload_to_texture pass ~src:other_src ~dst:texture);
-                  invalid (fun () ->
-                      upload_to_texture pass ~src ~dst:other_texture)))))
+  let@ src, dst, texture, download = with_resources device in
+  let@ other_src, other_dst, other_texture, other_download =
+    with_resources other
+  in
+  let@ commands = using cancel_command_buffer (acquire_command_buffer device) in
+  let here = texture_region texture and there = texture_region other_texture in
+  invalid (fun () ->
+      begin_render_pass commands ~target:other_texture ~load:Dont_care);
+  invalid (fun () -> blit_texture commands ~src:there ~dst:here ~load:Dont_care);
+  invalid (fun () -> blit_texture commands ~src:here ~dst:there ~load:Dont_care);
+  with_copy_pass commands (fun pass ->
+      invalid (fun () -> copy_texture pass ~src:there ~dst:here);
+      invalid (fun () -> copy_texture pass ~src:here ~dst:there);
+      invalid (fun () -> upload_to_buffer pass ~src:other_src ~dst ~size:4);
+      invalid (fun () -> upload_to_buffer pass ~src ~dst:other_dst ~size:4);
+      invalid (fun () -> upload_to_texture pass ~src:other_src ~dst:texture);
+      invalid (fun () -> upload_to_texture pass ~src ~dst:other_texture);
+      invalid (fun () ->
+          download_from_buffer pass ~src:other_dst ~dst:download ~size:4);
+      invalid (fun () ->
+          download_from_buffer pass ~src:dst ~dst:other_download ~size:4);
+      invalid (fun () -> download_from_texture pass ~src:there ~dst:download);
+      invalid (fun () ->
+          download_from_texture pass ~src:here ~dst:other_download))
 
 let wrong_device device context claim =
   let open Gpu in
   using destroy_device
     (create_device ~driver:(driver device) context (shader_formats device))
     (fun other ->
-      wrong_upload_device device other;
+      wrong_transfer_device device other;
       using cancel_command_buffer (acquire_command_buffer other)
         (fun commands ->
           invalid (fun () ->
@@ -565,7 +701,9 @@ let blending device claim =
                             draw_primitives pass ~vertices:3)));
                 (* Blending in an 8-bit target can differ by one rounding unit. *)
                 let tolerance = if Option.is_some blend then 1 else 0 in
-                check (color_target_matches target color ~tolerance) label
+                check
+                  (color_target_matches device target color ~tolerance)
+                  label
               in
               expect "GPU replace by default" source;
               expect ~blend:Blend.straight_alpha "GPU straight alpha"
@@ -744,10 +882,12 @@ let resource_draws device claim pipeline a b nearest linear =
                     wait_fence;
                   invalid (fun () -> push Vertex 0 vertex));
               check
-                (color_target_matches first (Color.rgb 255 0 255) ~tolerance:0)
+                (color_target_matches device first (Color.rgb 255 0 255)
+                   ~tolerance:0)
                 "GPU shader resources in the first draw";
               check
-                (color_target_matches second (Color.rgb 255 255 0) ~tolerance:0)
+                (color_target_matches device second (Color.rgb 255 255 0)
+                   ~tolerance:0)
                 "GPU shader resources after a uniform update")))
 
 let shader_resources device context claim =
@@ -795,7 +935,7 @@ let texture_upload_formats device =
                       upload_to_texture ~src_offset:alignment pass ~src
                         ~dst:target)));
           check
-            (gpu_texture_matches region bytes ~tolerance:0)
+            (gpu_texture_matches device region bytes ~tolerance:0)
             "Packed mip upload bytes";
           release_texture target;
           invalid (fun () -> texture_size target))
@@ -809,6 +949,88 @@ let texture_upload_formats device =
   let packed = Bytes.create 4 in
   Bytes.set_int32_ne packed 0 0xc8040200l;
   test Rgb10a2_unorm (Bytes.to_string packed) 4
+
+let texture_downloads device =
+  let open Gpu in
+  let@ texture =
+    using release_texture
+      (create_texture ~mip_levels:2 device ~format:Rgba8_unorm
+         ~usage:Sampled_color_target ~w:8 ~h:8)
+  in
+  let@ dst =
+    using release_download_buffer (create_download_buffer device ~size:44)
+  in
+  let@ too_small =
+    using release_download_buffer (create_download_buffer device ~size:40)
+  in
+  let@ aligned =
+    using release_download_buffer (create_download_buffer device ~size:1024)
+  in
+  let@ discarded =
+    using release_download_buffer (create_download_buffer device ~size:16)
+  in
+  let@ commands = using cancel_command_buffer (acquire_command_buffer device) in
+  let source_bytes = Bytes.init 64 (fun i -> Char.chr ((i * 3) + 1)) in
+  let crop = texture_region ~mip_level:1 ~rect:(rect 1 1 2 2) texture in
+  let cleared = texture_region ~rect:(rect 3 2 1 2) texture in
+  with_color_pass commands ~target:texture
+    ~load:(Clear (Color.rgb 17 34 51))
+    ignore;
+  with_copy_pass commands (fun pass ->
+      let@ upload =
+        using release_upload_buffer (create_upload_buffer device ~size:64)
+      in
+      write_upload_buffer upload (packed_bytes source_bytes);
+      upload_to_texture ~mip_level:1 pass ~src:upload ~dst:texture;
+      invalid (fun () ->
+          download_from_texture pass ~src:{ crop with mip_level = 2 } ~dst);
+      invalid (fun () ->
+          download_from_texture pass ~src:{ crop with rect = rect 3 1 2 2 } ~dst);
+      invalid (fun () ->
+          download_from_texture pass ~src:{ crop with rect = rect 0 0 0 1 } ~dst);
+      invalid (fun () -> download_from_texture ~pitch:4 pass ~src:crop ~dst);
+      invalid (fun () -> download_from_texture ~pitch:10 pass ~src:crop ~dst);
+      invalid (fun () ->
+          download_from_texture ~pitch:max_int pass ~src:crop ~dst);
+      invalid (fun () ->
+          download_from_texture ~dst_offset:2 pass ~src:crop ~dst);
+      invalid (fun () ->
+          download_from_texture ~dst_offset:12 ~pitch:16 pass ~src:crop
+            ~dst:too_small);
+      download_from_texture ~dst_offset:12 ~pitch:16 pass ~src:crop ~dst;
+      download_from_texture ~dst_offset:512 ~pitch:256 pass ~src:cleared
+        ~dst:aligned;
+      download_from_texture pass ~src:crop ~dst:discarded;
+      release_download_buffer discarded;
+      invalid (fun () -> download_from_texture pass ~src:crop ~dst:discarded));
+  release_texture texture;
+  let@ fence = using release_fence (submit_and_acquire_fence commands) in
+  release_fence fence;
+  let packed = byte_buffer 16 in
+  invalid (fun () -> read_download_buffer dst packed);
+  wait_idle device;
+  let actual = byte_buffer 8 in
+  read_download_buffer aligned actual;
+  check
+    (bytes_match actual "\017\034\051\255\017\034\051\255")
+    "Aligned download after rendering in the same command buffer";
+  let row1 = Bytes.sub_string source_bytes 20 8
+  and row2 = Bytes.sub_string source_bytes 36 8 in
+  read_download_buffer dst packed;
+  check
+    (bytes_match packed (row1 ^ row2))
+    "Tight bigarray from a padded mip download";
+  let padded = packed_bytes (Bytes.make 24 '!') in
+  let slice = Bigarray.Array1.sub padded 2 20 in
+  invalid (fun () -> read_download_buffer ~dst_offset:2 ~pitch:11 dst slice);
+  invalid (fun () -> read_download_buffer ~pitch:max_int dst slice);
+  read_download_buffer ~dst_offset:1 ~pitch:11 dst slice;
+  check
+    (bytes_match padded ("!!!" ^ row1 ^ "!!!" ^ row2 ^ "!!"))
+    "Mip download preserves padding and bytes outside the slice";
+  let@ next = using cancel_command_buffer (acquire_command_buffer device) in
+  with_copy_pass next (fun pass ->
+      invalid (fun () -> download_from_texture pass ~src:crop ~dst))
 
 let texture_copies device =
   let open Gpu in
@@ -882,7 +1104,7 @@ let texture_copies device =
       blit_texture ~filter:Linear commands ~src:mip ~dst:(crop scaled 4 3 1 1)
         ~load:Load);
   check
-    (image_matches copied (fun x y ->
+    (image_matches device copied (fun x y ->
          match (x, y) with
          | 1, 0 -> red
          | 2, 0 -> green
@@ -890,7 +1112,7 @@ let texture_copies device =
          | _ -> bg))
     "GPU rectangular copy from two mip levels";
   check
-    (image_matches ~tolerance:1 scaled (fun x y ->
+    (image_matches device ~tolerance:1 scaled (fun x y ->
          if y = 3 && x = 4 then Color.rgb 128 128 0
          else if y >= 1 && y <= 2 && x >= 1 && x <= 4 then
            if x <= 2 then green else red
@@ -907,9 +1129,11 @@ let texture_copies device =
           blit_texture ~cycle:true commands ~src:mip ~dst:enlarged
             ~load:Dont_care);
       blit_texture ~cycle:true commands ~src:mip ~dst ~load:Dont_care);
-  check (color_target_matches copied blue ~tolerance:0) "Whole cycling GPU copy";
   check
-    (image_matches scaled (fun x _ -> if x < 3 then red else green))
+    (color_target_matches device copied blue ~tolerance:0)
+    "Whole cycling GPU copy";
+  check
+    (image_matches device scaled (fun x _ -> if x < 3 then red else green))
     "Whole cycling GPU blit"
 
 let offscreen_rendering device =
@@ -969,7 +1193,7 @@ let offscreen_rendering device =
   with_color_pass ~mip_level:1 spare ~target ~load:(Clear draw_color) ignore;
   cancel_command_buffer spare;
   check
-    (image_matches ~tolerance:1 ~mip_level:1 target (fun x y ->
+    (image_matches device ~tolerance:1 ~mip_level:1 target (fun x y ->
          if x = 2 && y = 2 then draw_color else clear))
     "GPU load preserves the clear outside the viewport and scissor"
 
@@ -1021,7 +1245,7 @@ let offscreen_sampling device =
           draw_primitives pass ~vertices:3);
       release_texture source);
   check
-    (color_target_matches target red ~tolerance:0)
+    (color_target_matches device target red ~tolerance:0)
     "A later pass samples the mip rendered by an earlier pass"
 
 let hidden_window device claim =
@@ -1086,8 +1310,10 @@ let () =
           check (Gpu.shader_formats device <> []) "Device shader formats";
           command_buffers device;
           buffer_uploads device;
+          buffer_downloads device;
           sampled_handles device;
           texture_upload_formats device;
+          texture_downloads device;
           texture_copies device;
           if List.mem Gpu.Spirv (Gpu.shader_formats device) then (
             shader_checks device;

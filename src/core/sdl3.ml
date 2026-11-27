@@ -685,6 +685,7 @@ module Gpu = struct
   type index
   type 'kind buffer
   type upload_buffer
+  type download_buffer
   type texture
 
   type texture_format =
@@ -843,6 +844,16 @@ module Gpu = struct
   external release_upload_buffer : upload_buffer -> unit
     = "osdl_gpu_release_upload_buffer"
 
+  external create_download_buffer : device -> size:int -> download_buffer
+    = "osdl_gpu_create_download_buffer"
+
+  external read_download_buffer :
+    ?dst_offset:int -> ?pitch:int -> download_buffer -> byte_buffer -> unit
+    = "osdl_gpu_read_download_buffer"
+
+  external release_download_buffer : download_buffer -> unit
+    = "osdl_gpu_release_download_buffer"
+
   external supports_texture_format :
     device -> format:texture_format -> usage:texture_usage -> bool
     = "osdl_gpu_supports_texture_format"
@@ -933,6 +944,23 @@ module Gpu = struct
   external copy_texture :
     ?cycle:bool -> copy_pass -> src:texture_region -> dst:texture_region -> unit
     = "osdl_gpu_copy_texture"
+
+  external download_from_buffer :
+    ?src_offset:int ->
+    ?dst_offset:int ->
+    copy_pass ->
+    src:'kind buffer ->
+    dst:download_buffer ->
+    size:int ->
+    unit = "osdl_gpu_download_from_buffer_byte" "osdl_gpu_download_from_buffer"
+
+  external download_from_texture :
+    ?dst_offset:int ->
+    ?pitch:int ->
+    copy_pass ->
+    src:texture_region ->
+    dst:download_buffer ->
+    unit = "osdl_gpu_download_from_texture"
 
   external end_copy_pass : copy_pass -> unit = "osdl_gpu_end_copy_pass"
 

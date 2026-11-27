@@ -153,7 +153,7 @@ upload, a copy, or a render pass. SDL does not generate them in this API.
 padding. Align the upload offset to both four bytes and the pixel size. Use `Gpu.create_sampler
 ~max_mip_level` to let a shader read smaller levels. If you omit the limit, the sampler reads only
 level zero. SDL 3.4.20 cannot render or blit a level when halving the base size to that level would
-give zero on either axis. Uploads, copies, and sampling still work.
+give zero on either axis. Uploads, copies, downloads, and sampling still work.
 
 ## Copy or scale a texture region
 
@@ -172,6 +172,64 @@ Cycling lets SDL use separate storage when recorded work still uses a texture. E
 whole one-level destination. For a render pass, use `Clear` or `Dont_care` with cycling. For a blit,
 use `Dont_care` and cover the whole destination. If you cancel cycling work, initialize the texture
 again before reading it.
+
+## Read back GPU data
+
+A download buffer holds data copied from the GPU. Create one with `Gpu.create_download_buffer`.
+Record `Gpu.download_from_texture` or `Gpu.download_from_buffer` in a copy pass. Use
+`Gpu.texture_region` to select a rectangle and a mip level. If you draw to the texture first, keep
+the pixels with `Store` and end the render pass before the copy pass.
+
+For a texture download, the pitch is the byte distance from one row to the next. It defaults to a
+tightly packed row. If you pass `~pitch`, use a multiple of the pixel size. Allocate `dst_offset +
+pitch * height` bytes, rounded up to a multiple of four. Align the offset to both four bytes and the
+pixel size. On Direct3D 12, a 256-byte pitch alignment and a 512-byte offset alignment avoid an
+extra copy. Buffer downloads take a size and two offsets, all in bytes and in multiples of four.
+
+End the copy pass and submit the command buffer. Use `Gpu.wait_fence` on that submission's fence or
+`Gpu.wait_idle` on the device. If you poll with `Gpu.fence_signaled`, still call `Gpu.wait_fence`
+before reading. Some drivers finish the transfer during the wait. If submission or a wait fails,
+discard the result.
+
+`Gpu.read_download_buffer` copies the downloaded bytes into your bigarray without exposing driver
+memory. It skips padding in the download buffer. Pass a separate `~pitch` or `~dst_offset` to lay
+out the rows in the bigarray. Only the copied bytes change. Reuse a download buffer after a wait or
+cancellation. Use a different buffer for each pending download. Recording a new download replaces
+the previous result even if you cancel the new commands.
+
+### Save a texture region
+
+This function reads an initialized region of an `Rgba8_unorm` texture. It copies the pixels to a
+surface and calls `save` before it destroys the surface.
+
+```ocaml
+let using release handle f =
+  Fun.protect ~finally:(fun () -> release handle) (fun () -> f handle)
+
+let save_region context device (src : Sdl3.Gpu.texture_region) save =
+  let open Sdl3 in
+  let open Gpu in
+  if texture_format src.texture <> Rgba8_unorm then
+    invalid_arg "Use an Rgba8_unorm texture";
+  let { Rect.w; h; _ } = src.rect in
+  let pitch = w * 4 in
+  let size = pitch * h in
+  let pixels = Bigarray.Array1.create Bigarray.int8_unsigned Bigarray.c_layout size in
+  using release_download_buffer (create_download_buffer device ~size) (fun dst ->
+      using cancel_command_buffer (acquire_command_buffer device) (fun commands ->
+          using end_copy_pass (begin_copy_pass commands) (fun pass ->
+              download_from_texture pass ~src ~dst);
+          using release_fence (submit_and_acquire_fence commands) wait_fence);
+      read_download_buffer dst pixels);
+  using Surface.destroy (Surface.create ~format:Rgba32 context ~w ~h) (fun surface ->
+      Surface.with_lock surface (fun view -> Surface.Locked.copy_from view pixels ~pitch);
+      save surface)
+```
+
+Pass a function that calls `Surface.save_bmp`, `Sdl3_image.save_png`, or `Sdl3_image.save_jpg` with
+the surface and a file path. If the texture stores BGRA bytes, use a `Bgra32` surface.  For other
+formats, draw or blit into an 8-bit RGBA color target before capture. The download itself does not
+convert pixels. It reads owned textures, not window images.
 
 ## Aurora Tunnel
 

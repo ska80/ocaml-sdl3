@@ -35,6 +35,7 @@
 - [x] GPU uniform data, sampled 2D textures, and samplers.
 - [x] GPU offscreen render passes, pipelines for a selected format, mip levels, viewports, scissors,
       and texture copies and blits.
+- [x] GPU buffer and texture readback into bigarrays, with region, pitch, and offset selection.
 - [x] Aurora Tunnel example with GPU mesh copies, a color texture, and interactive animation.
 - [x] Music Player example with file drops, mixer titles, GPU text, and an FFTW spectrum.
 - [x] Image loading from a file or memory, texture loading, and PNG and JPEG output.

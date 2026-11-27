@@ -150,6 +150,11 @@ do not accept SPIR-V. The tests read pixels to check blending, write masks, view
 They also check mip uploads, copies, scaled blits, and sampling a texture in a later pass. They
 reject attempts to sample the current target or to use a pipeline with a different format.
 
+The readback tests use the public `Gpu` API in native code and bytecode. They check partial buffer
+and mip downloads, pitches, byte offsets, cancellation, and waits. They also check that bytes
+outside the copied rows stay unchanged and that the bigarray outlives the download buffer.  The
+transfer tests do not need shaders.
+
 The repository includes compiled shaders, so the tests do not need a shader compiler. If you edit
 the [test shaders](../test/gpu/shaders), rebuild the compiled files from the repository root:
 

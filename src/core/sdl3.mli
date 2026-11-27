@@ -970,6 +970,9 @@ module Gpu : sig
   type upload_buffer
   (** Temporary memory that holds bytes to copy to the GPU. *)
 
+  type download_buffer
+  (** Temporary memory that receives bytes from the GPU. *)
+
   type texture
   (** An owned 2D GPU image. Its use depends on how you allocate it. *)
 
@@ -1106,7 +1109,9 @@ module Gpu : sig
   val shader_formats : device -> shader_format list
 
   val wait_idle : device -> unit
-  (** Wait for the device to finish its submitted work. *)
+  (** Wait for the device to finish its submitted work. This makes successful
+      downloads in those submissions ready to read. It does not submit any work
+      that is still recorded. *)
 
   val claim_window : device -> Window.t -> swapchain
   (** Claim a window that has no renderer or GPU claim. SDL starts with [Sdr]
@@ -1223,6 +1228,34 @@ module Gpu : sig
   (** Release the upload buffer. SDL keeps already recorded copies valid.
       Calling this again on a released buffer does nothing. *)
 
+  val create_download_buffer : device -> size:int -> download_buffer
+  (** Allocate space for downloads. Pass a positive byte size that is a multiple
+      of four and fits in an unsigned 32-bit integer. Record at most one pending
+      download at a time into this buffer. *)
+
+  val read_download_buffer :
+    ?dst_offset:int -> ?pitch:int -> download_buffer -> byte_buffer -> unit
+  (** Copy the result of the last download into the bigarray. First call
+      [wait_fence] on the fence for that submission or [wait_idle] on the device
+      after submission. [fence_signaled] alone is not enough. Raise
+      [Invalid_argument] if the download is not ready or if it was canceled. If
+      submission or a wait fails, discard the result.
+
+      The bigarray's byte offset defaults to zero. Its pitch is the byte
+      distance between rows and defaults to the number of bytes in a row. For a
+      buffer download, there is one row. Only the downloaded bytes are copied.
+      Padding and other bytes in the bigarray stay unchanged. The last row does
+      not need padding in the bigarray.
+
+      This call does not wait for the GPU. Keep the bigarray free of concurrent
+      access during the copy. It does not share memory with the download buffer
+      and stays valid after you release that buffer. *)
+
+  val release_download_buffer : download_buffer -> unit
+  (** Release the buffer and discard its result. SDL keeps already recorded
+      copies valid. Release this buffer before closing the device. Calling this
+      again on a released buffer does nothing. *)
+
   val supports_texture_format :
     device -> format:texture_format -> usage:texture_usage -> bool
   (** Ask SDL if the device supports this combination of format and use for a 2D
@@ -1255,8 +1288,8 @@ module Gpu : sig
   val texture_region :
     ?mip_level:int -> ?rect:Rect.t -> texture -> texture_region
   (** Describe a rectangle in a texture level. The index defaults to zero. If
-      you omit [rect], select the whole level. Copy and blit calls check the
-      region before recording GPU work. *)
+      you omit [rect], select the whole level. Copy, blit, and download calls
+      check the region before recording GPU work. *)
 
   val release_texture : texture -> unit
   (** Release the texture. End any render pass that uses it as its target first.
@@ -1308,17 +1341,20 @@ module Gpu : sig
       nothing. *)
 
   val fence_signaled : fence -> bool
-  (** Return [true] if the GPU finished the work for this fence. *)
+  (** Return [true] if the GPU finished the work for this fence. Call
+      [wait_fence] before reading downloads from that work. Some drivers finish
+      the copy into the download buffer during the wait. *)
 
   val wait_fence : fence -> unit
-  (** Wait for the GPU to finish the work for this fence. *)
+  (** Wait for the GPU to finish the work for this fence. This makes the
+      downloads in its submission ready to read, even after fence release. *)
 
   val release_fence : fence -> unit
   (** Release the fence. Calling this again on a released fence does nothing. *)
 
   val begin_copy_pass : command_buffer -> copy_pass
-  (** Start a pass for uploads and copies. End any open pass on the command
-      buffer first. *)
+  (** Start a pass for uploads, downloads, and copies. End any open pass on the
+      command buffer first. *)
 
   val upload_to_buffer :
     ?src_offset:int ->
@@ -1363,6 +1399,45 @@ module Gpu : sig
       size and pixel format. Cycling requires a whole one-level destination. If
       you cancel a cycling copy, initialize the destination again before reading
       it. *)
+
+  val download_from_buffer :
+    ?src_offset:int ->
+    ?dst_offset:int ->
+    copy_pass ->
+    src:'kind buffer ->
+    dst:download_buffer ->
+    size:int ->
+    unit
+  (** Record a copy from a vertex or index buffer into [dst]. Both buffers must
+      belong to the pass's device. Use initialized source bytes. The offsets
+      default to zero. The offsets and the positive byte size must be multiples
+      of four. The copy must fit both buffers.
+
+      You can reuse [dst] after a successful wait or cancellation. Recording a
+      new download replaces the previous result, even if you cancel the new
+      commands. Use separate download buffers for concurrent downloads. *)
+
+  val download_from_texture :
+    ?dst_offset:int ->
+    ?pitch:int ->
+    copy_pass ->
+    src:texture_region ->
+    dst:download_buffer ->
+    unit
+  (** Record a copy of an initialized texture region into [dst]. Both resources
+      must belong to the pass's device. The copy keeps the source pixel format.
+      The byte offset defaults to zero. Align it to both four bytes and the
+      pixel size.
+
+      The pitch is in bytes and defaults to the number of bytes in a row. It
+      must cover one row and be a multiple of the pixel size. Leave room in
+      [dst] for [offset + pitch * height] bytes, including any final padding.
+      Very large pitches that exceed the native row or footprint limits raise
+      [Invalid_argument]. A pitch aligned to 256 bytes and an offset aligned to
+      512 bytes avoid a temporary copy on Direct3D 12.
+
+      The same wait, cancellation, and reuse rules apply as for
+      [download_from_buffer]. *)
 
   val end_copy_pass : copy_pass -> unit
   (** End the copy pass. Calling this again on an ended pass does nothing. *)

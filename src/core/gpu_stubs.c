@@ -4,7 +4,7 @@
 
 /* GPU device selection. */
 
-enum { GPU_DEVICE_RENDERING = 2 };
+enum { GPU_DEVICE_RENDERING = 2, GPU_DEVICE_IDLE_MARK };
 
 /* Sdl3.Gpu.shader_format constructor order. */
 static const SDL_GPUShaderFormat osdl_gpu_format_bits[] = {
@@ -56,9 +56,10 @@ CAMLprim value osdl_gpu_supports_shader_formats(value driver, value context, val
 
 CAMLprim value osdl_gpu_create_device(value driver, value debug, value context, value formats) {
     CAMLparam4(driver, debug, context, formats);
-    CAMLlocal1(handle);
+    CAMLlocal2(cell, handle);
 
-    handle = osdl_new_attached_handle(context, Val_false);
+    cell   = osdl_new_cell(context, &osdl_handle_ops);
+    handle = caml_alloc_4(0, cell, context, Val_false, Val_unit);
 
     osdl_gpu_require_video(context);
     SDL_GPUShaderFormat flags      = osdl_gpu_format_flags(formats);
@@ -90,6 +91,11 @@ CAMLprim value osdl_gpu_shader_formats(value device) {
 
 CAMLprim value osdl_gpu_wait_idle(value device) {
     CAMLparam1(device);
+    CAMLlocal1(mark);
+
+    /* A fresh identity proves completion of earlier submissions without a
+     * device-wide list of download buffers or a counter that can wrap. */
+    mark = caml_alloc_1(0, Val_unit);
 
     SDL_GPUDevice* ptr = osdl_live(device);
 
@@ -99,6 +105,7 @@ CAMLprim value osdl_gpu_wait_idle(value device) {
     caml_leave_blocking_section();
 
     osdl_check(ok, "SDL_WaitForGPUIdle");
+    Store_field(device, GPU_DEVICE_IDLE_MARK, mark);
     CAMLreturn(Val_unit);
 }
 
@@ -227,7 +234,7 @@ static bool osdl_gpu_cycle(value cycle) {
     return Is_block(cycle) && Bool_val(Some_val(cycle));
 }
 
-/* Vertex, index, and upload buffers. */
+/* Vertex, index, and transfer buffers. */
 
 enum {
     GPU_BUFFER_CAPACITY = 2,
@@ -305,6 +312,99 @@ CAMLprim value osdl_gpu_write_upload_buffer(value upload, value data) {
 CAMLprim value osdl_gpu_release_upload_buffer(value upload) {
     SDL_GPUTransferBuffer* ptr = osdl_take(upload);
     if (ptr) SDL_ReleaseGPUTransferBuffer(osdl_gpu_parent_device(upload), ptr);
+    return Val_unit;
+}
+
+/* A command buffer and its downloads share one batch. A fence can complete
+ * that batch but does not own the downloads. No SDL pointer lives in a batch. */
+typedef enum {
+    GPU_DOWNLOAD_RECORDING,
+    GPU_DOWNLOAD_SUBMITTED,
+    GPU_DOWNLOAD_READY,
+    GPU_DOWNLOAD_CANCELED,
+    GPU_DOWNLOAD_FAILED,
+} osdl_gpu_download_state;
+
+enum { GPU_DOWNLOAD_STATE, GPU_DOWNLOAD_IDLE_MARK };
+
+enum {
+    GPU_DOWNLOAD_BATCH = 3,
+    GPU_DOWNLOAD_OFFSET,
+    GPU_DOWNLOAD_ROW_BYTES,
+    GPU_DOWNLOAD_PITCH,
+    GPU_DOWNLOAD_ROWS,
+};
+
+static bool osdl_gpu_waited_since_submit(value batch, value device) {
+    return Field(batch, GPU_DOWNLOAD_IDLE_MARK) != Field(device, GPU_DEVICE_IDLE_MARK);
+}
+
+static osdl_gpu_download_state osdl_gpu_download_status(value download) {
+    value batch = Field(download, GPU_DOWNLOAD_BATCH);
+    if (batch == Val_unit) return GPU_DOWNLOAD_CANCELED;
+
+    osdl_gpu_download_state state = Int_val(Field(batch, GPU_DOWNLOAD_STATE));
+    if ((state == GPU_DOWNLOAD_SUBMITTED || state == GPU_DOWNLOAD_FAILED) &&
+        osdl_gpu_waited_since_submit(batch, osdl_parent(download)))
+        return state == GPU_DOWNLOAD_SUBMITTED ? GPU_DOWNLOAD_READY : GPU_DOWNLOAD_CANCELED;
+    return state;
+}
+
+CAMLprim value osdl_gpu_create_download_buffer(value device, value size) {
+    CAMLparam2(device, size);
+    CAMLlocal2(cell, handle);
+
+    cell   = osdl_new_cell(device, &osdl_handle_ops);
+    handle = caml_alloc_8(0, cell, device, size, Val_unit, Val_int(0), Val_int(0), Val_int(0),
+                          Val_int(0));
+
+    SDL_GPUDevice*                  d    = osdl_live(device);
+    SDL_GPUTransferBufferCreateInfo info = {.usage = SDL_GPU_TRANSFERBUFFERUSAGE_DOWNLOAD,
+                                            .size  = osdl_gpu_aligned_size(size)};
+
+    SDL_GPUTransferBuffer* buffer = SDL_CreateGPUTransferBuffer(d, &info);
+    CAMLreturn(osdl_publish(handle, buffer, "SDL_CreateGPUTransferBuffer"));
+}
+
+CAMLprim value osdl_gpu_release_download_buffer(value download) {
+    SDL_GPUTransferBuffer* ptr = osdl_take(download);
+    if (ptr) {
+        SDL_ReleaseGPUTransferBuffer(osdl_gpu_parent_device(download), ptr);
+        Store_field(download, GPU_DOWNLOAD_BATCH, Val_unit);
+    }
+    return Val_unit;
+}
+
+CAMLprim value osdl_gpu_read_download_buffer(value dst_offset, value pitch, value download,
+                                             value data) {
+    SDL_GPUTransferBuffer* ptr = osdl_live(download);
+    SDL_GPUDevice*         d   = osdl_gpu_parent_device(download);
+    if (osdl_gpu_download_status(download) != GPU_DOWNLOAD_READY)
+        caml_invalid_argument("Complete a GPU download before reading the buffer");
+
+    size_t row_bytes = Long_val(Field(download, GPU_DOWNLOAD_ROW_BYTES));
+    size_t rows      = Long_val(Field(download, GPU_DOWNLOAD_ROWS));
+    size_t src_pitch = Long_val(Field(download, GPU_DOWNLOAD_PITCH));
+    intnat offset    = Is_long(dst_offset) ? 0 : Long_val(Some_val(dst_offset));
+    intnat stride    = Is_long(pitch) ? (intnat)row_bytes : Long_val(Some_val(pitch));
+    size_t length    = Caml_ba_array_val(data)->dim[0];
+    if (stride < 0 || (size_t)stride < row_bytes)
+        caml_invalid_argument("The bigarray pitch must cover a row of downloaded bytes");
+    if (offset < 0 || (size_t)offset > length || length - offset < row_bytes ||
+        rows - 1 > (length - offset - row_bytes) / (size_t)stride)
+        caml_invalid_argument("The GPU download must fit in the destination bigarray");
+
+    /* Nothing can allocate or raise between mapping and unmapping. */
+    const Uint8* mapped = SDL_MapGPUTransferBuffer(d, ptr, false);
+    if (!mapped) osdl_fail("SDL_MapGPUTransferBuffer");
+    const Uint8* src = mapped + Long_val(Field(download, GPU_DOWNLOAD_OFFSET));
+    Uint8*       dst = (Uint8*)Caml_ba_data_val(data) + offset;
+    if (src_pitch == row_bytes && (size_t)stride == row_bytes)
+        memcpy(dst, src, rows * row_bytes);
+    else
+        for (size_t y = 0; y < rows; ++y)
+            memcpy(dst + y * (size_t)stride, src + y * src_pitch, row_bytes);
+    SDL_UnmapGPUTransferBuffer(d, ptr);
     return Val_unit;
 }
 
@@ -760,6 +860,7 @@ CAMLprim value osdl_gpu_release_graphics_pipeline(value pipeline) {
 enum {
     GPU_COMMAND_CLAIM = 2,
     GPU_COMMAND_UNIFORMS,
+    GPU_COMMAND_DOWNLOADS,
 };
 
 CAMLprim value osdl_gpu_acquire_command_buffer(value device) {
@@ -768,7 +869,7 @@ CAMLprim value osdl_gpu_acquire_command_buffer(value device) {
 
     /* The third field keeps the window claim live after image acquisition. */
     cell   = osdl_new_cell(device, &osdl_handle_ops);
-    buffer = caml_alloc_4(0, cell, device, Val_unit, Val_int(0));
+    buffer = caml_alloc_5(0, cell, device, Val_unit, Val_int(0), Val_unit);
 
     SDL_GPUCommandBuffer* commands = SDL_AcquireGPUCommandBuffer(osdl_live(device));
     CAMLreturn(osdl_publish(buffer, commands, "SDL_AcquireGPUCommandBuffer"));
@@ -827,9 +928,21 @@ static SDL_GPUCommandBuffer* osdl_gpu_take_live_commands(value buffer) {
     return commands;
 }
 
+static void osdl_gpu_finish_downloads(value buffer, osdl_gpu_download_state state) {
+    value batch = Field(buffer, GPU_COMMAND_DOWNLOADS);
+    if (batch != Val_unit) {
+        Store_field(batch, GPU_DOWNLOAD_STATE, Val_int(state));
+        Store_field(batch, GPU_DOWNLOAD_IDLE_MARK,
+                    Field(osdl_parent(buffer), GPU_DEVICE_IDLE_MARK));
+        Store_field(buffer, GPU_COMMAND_DOWNLOADS, Val_unit);
+    }
+}
+
 CAMLprim value osdl_gpu_submit_command_buffer(value buffer) {
     SDL_GPUCommandBuffer* commands = osdl_gpu_take_live_commands(buffer);
-    osdl_check(SDL_SubmitGPUCommandBuffer(commands), "SDL_SubmitGPUCommandBuffer");
+    bool                  ok       = SDL_SubmitGPUCommandBuffer(commands);
+    osdl_gpu_finish_downloads(buffer, ok ? GPU_DOWNLOAD_SUBMITTED : GPU_DOWNLOAD_FAILED);
+    osdl_check(ok, "SDL_SubmitGPUCommandBuffer");
     return Val_unit;
 }
 
@@ -837,10 +950,12 @@ CAMLprim value osdl_gpu_submit_and_acquire_fence(value buffer) {
     CAMLparam1(buffer);
     CAMLlocal1(fence);
 
-    fence = osdl_new_handle(osdl_parent(buffer));
+    fence = osdl_new_attached_handle(osdl_parent(buffer), Val_unit);
 
     SDL_GPUCommandBuffer* commands = osdl_gpu_take_live_commands(buffer);
     SDL_GPUFence*         ptr      = SDL_SubmitGPUCommandBufferAndAcquireFence(commands);
+    Store_field(fence, 2, Field(buffer, GPU_COMMAND_DOWNLOADS));
+    osdl_gpu_finish_downloads(buffer, ptr ? GPU_DOWNLOAD_SUBMITTED : GPU_DOWNLOAD_FAILED);
     CAMLreturn(osdl_publish(fence, ptr, "SDL_SubmitGPUCommandBufferAndAcquireFence"));
 }
 
@@ -850,7 +965,11 @@ CAMLprim value osdl_gpu_cancel_command_buffer(value buffer) {
         caml_invalid_argument("Submit the GPU command buffer after acquiring a window image");
 
     SDL_GPUCommandBuffer* commands = osdl_take(buffer);
-    if (commands) osdl_check(SDL_CancelGPUCommandBuffer(commands), "SDL_CancelGPUCommandBuffer");
+    if (commands) {
+        bool ok = SDL_CancelGPUCommandBuffer(commands);
+        osdl_gpu_finish_downloads(buffer, ok ? GPU_DOWNLOAD_CANCELED : GPU_DOWNLOAD_FAILED);
+        osdl_check(ok, "SDL_CancelGPUCommandBuffer");
+    }
     return Val_unit;
 }
 
@@ -869,13 +988,22 @@ CAMLprim value osdl_gpu_wait_fence(value fence) {
     bool ok = SDL_WaitForGPUFences(d, true, &ptr, 1);
     caml_leave_blocking_section();
 
+    /* A fence query alone does not run D3D12's deferred texture copies. */
+    value batch = osdl_attachment(fence);
+    if (batch != Val_unit && Int_val(Field(batch, GPU_DOWNLOAD_STATE)) == GPU_DOWNLOAD_SUBMITTED &&
+        !osdl_gpu_waited_since_submit(batch, osdl_parent(fence)))
+        Store_field(batch, GPU_DOWNLOAD_STATE,
+                    Val_int(ok ? GPU_DOWNLOAD_READY : GPU_DOWNLOAD_FAILED));
     osdl_check(ok, "SDL_WaitForGPUFences");
     CAMLreturn(Val_unit);
 }
 
 CAMLprim value osdl_gpu_release_fence(value fence) {
     SDL_GPUFence* ptr = osdl_take(fence);
-    if (ptr) SDL_ReleaseGPUFence(osdl_gpu_parent_device(fence), ptr);
+    if (ptr) {
+        SDL_ReleaseGPUFence(osdl_gpu_parent_device(fence), ptr);
+        osdl_forget_attachment(fence);
+    }
     return Val_unit;
 }
 
@@ -891,6 +1019,77 @@ CAMLprim value osdl_gpu_begin_copy_pass(value buffer) {
 
     SDL_GPUCopyPass* ptr = SDL_BeginGPUCopyPass(commands);
     CAMLreturn(osdl_publish(pass, ptr, "SDL_BeginGPUCopyPass"));
+}
+
+static SDL_GPUCopyPass* osdl_gpu_prepare_download(value pass, value* batch) {
+    CAMLparam1(pass);
+
+    SDL_GPUCopyPass* ptr = osdl_live(pass);
+    *batch               = Field(osdl_parent(pass), GPU_COMMAND_DOWNLOADS);
+    if (*batch == Val_unit) {
+        /* The caller roots the candidate batch. Recheck liveness after allocation. */
+        *batch = caml_alloc_2(0, Val_int(GPU_DOWNLOAD_RECORDING), Val_unit);
+        ptr    = osdl_live(pass);
+    }
+    CAMLreturnT(SDL_GPUCopyPass*, ptr);
+}
+
+static SDL_GPUTransferBuffer* osdl_gpu_download_destination(value pass, value src, value dst) {
+    SDL_GPUTransferBuffer* ptr    = osdl_live(dst);
+    value                  device = osdl_gpu_pass_device(pass);
+    if (osdl_parent(src) != device || osdl_parent(dst) != device)
+        caml_invalid_argument("Use download resources from the copy pass's GPU device");
+    osdl_gpu_download_state state = osdl_gpu_download_status(dst);
+    if (state != GPU_DOWNLOAD_READY && state != GPU_DOWNLOAD_CANCELED)
+        caml_invalid_argument("Finish the pending GPU download before reusing the buffer");
+    return ptr;
+}
+
+static void osdl_gpu_record_download(value pass, value dst, value batch, Uint32 offset,
+                                     Uint32 row_bytes, Uint32 pitch, Uint32 rows) {
+    value commands = osdl_parent(pass);
+    value attached = Field(commands, GPU_COMMAND_DOWNLOADS);
+    if (attached == Val_unit)
+        Store_field(commands, GPU_COMMAND_DOWNLOADS, batch);
+    else
+        batch = attached;
+
+    Store_field(dst, GPU_DOWNLOAD_BATCH, batch);
+    Store_field(dst, GPU_DOWNLOAD_OFFSET, Val_long(offset));
+    Store_field(dst, GPU_DOWNLOAD_ROW_BYTES, Val_long(row_bytes));
+    Store_field(dst, GPU_DOWNLOAD_PITCH, Val_long(pitch));
+    Store_field(dst, GPU_DOWNLOAD_ROWS, Val_long(rows));
+}
+
+CAMLprim value osdl_gpu_download_from_buffer(value src_offset, value dst_offset, value pass,
+                                             value src, value dst, value size) {
+    CAMLparam5(src_offset, dst_offset, pass, src, dst);
+    CAMLxparam1(size);
+    CAMLlocal1(batch);
+
+    SDL_GPUCopyPass*       p           = osdl_gpu_prepare_download(pass, &batch);
+    SDL_GPUBuffer*         source      = osdl_live(src);
+    SDL_GPUTransferBuffer* destination = osdl_gpu_download_destination(pass, src, dst);
+    Uint32                 start       = osdl_gpu_offset(src_offset);
+    Uint32                 offset      = osdl_gpu_offset(dst_offset);
+    Uint32                 length      = osdl_gpu_aligned_size(size);
+    if (start % 4 || offset % 4)
+        caml_invalid_argument("GPU buffer download offsets must be multiples of four bytes");
+    if (!osdl_gpu_range_fits(start, length, osdl_gpu_capacity(src)))
+        caml_invalid_argument("The download must fit in the source GPU buffer");
+    if (!osdl_gpu_range_fits(offset, length, osdl_gpu_capacity(dst)))
+        caml_invalid_argument("The download must fit in the GPU download buffer");
+
+    SDL_GPUBufferRegion           from = {.buffer = source, .offset = start, .size = length};
+    SDL_GPUTransferBufferLocation to   = {.transfer_buffer = destination, .offset = offset};
+    SDL_DownloadFromGPUBuffer(p, &from, &to);
+    osdl_gpu_record_download(pass, dst, batch, offset, length, length, 1);
+    CAMLreturn(Val_unit);
+}
+
+CAMLprim value osdl_gpu_download_from_buffer_byte(value* argv, int argc) {
+    (void)argc;
+    return osdl_gpu_download_from_buffer(argv[0], argv[1], argv[2], argv[3], argv[4], argv[5]);
 }
 
 CAMLprim value osdl_gpu_upload_to_buffer(value src_offset, value dst_offset, value cycle,
@@ -973,6 +1172,51 @@ static SDL_GPUBlitRegion osdl_gpu_region(value region, bool render) {
                                .y         = (Uint32)rect.y,
                                .w         = (Uint32)rect.w,
                                .h         = (Uint32)rect.h};
+}
+
+CAMLprim value osdl_gpu_download_from_texture(value dst_offset, value pitch, value pass, value src,
+                                              value dst) {
+    CAMLparam5(dst_offset, pitch, pass, src, dst);
+    CAMLlocal1(batch);
+
+    SDL_GPUCopyPass*       p           = osdl_gpu_prepare_download(pass, &batch);
+    value                  texture     = Field(src, 0);
+    SDL_GPUBlitRegion      region      = osdl_gpu_region(src, false);
+    SDL_GPUTransferBuffer* destination = osdl_gpu_download_destination(pass, texture, dst);
+    Uint32 pixel     = SDL_GPUTextureFormatTexelBlockSize(osdl_gpu_image_format(texture));
+    Uint32 offset    = osdl_gpu_offset(dst_offset);
+    Uint32 row_bytes = region.w * pixel;
+    Uint32 stride    = Is_long(pitch)
+                         ? row_bytes
+                         : osdl_gpu_uint32(Some_val(pitch), "The GPU download pitch is out of range");
+    if (offset % SDL_max(4u, pixel))
+        caml_invalid_argument("Align the GPU texture download offset to four bytes and to a pixel");
+    if (stride < row_bytes || stride % pixel)
+        caml_invalid_argument(
+            "Use a GPU download pitch that covers a row and is a multiple of the pixel size");
+
+    /* Vulkan limits row bytes to INT32_MAX. D3D12 can round the pitch up to
+     * 256 bytes in a temporary buffer, and it can copy the last row's padding. */
+    Uint64 aligned = ((Uint64)stride + 255) & ~(Uint64)255;
+    if (stride > SDL_MAX_SINT32 || aligned * region.h > SDL_MAX_UINT32)
+        caml_invalid_argument("The GPU download pitch is too large for this texture region");
+    if ((Uint64)offset + (Uint64)stride * region.h > osdl_gpu_capacity(dst))
+        caml_invalid_argument("The texture download must fit in the GPU download buffer");
+
+    SDL_GPUTextureRegion       from = {.texture   = region.texture,
+                                       .mip_level = region.mip_level,
+                                       .x         = region.x,
+                                       .y         = region.y,
+                                       .w         = region.w,
+                                       .h         = region.h,
+                                       .d         = 1};
+    SDL_GPUTextureTransferInfo to   = {.transfer_buffer = destination,
+                                       .offset          = offset,
+                                       .pixels_per_row  = stride / pixel,
+                                       .rows_per_layer  = region.h};
+    SDL_DownloadFromGPUTexture(p, &from, &to);
+    osdl_gpu_record_download(pass, dst, batch, offset, row_bytes, stride, region.h);
+    CAMLreturn(Val_unit);
 }
 
 static void osdl_gpu_require_region_devices(value device, value src, value dst) {
@@ -1140,16 +1384,21 @@ static SDL_GPURenderPass* osdl_gpu_begin_clear_pass(SDL_GPUCommandBuffer* comman
     return SDL_BeginGPURenderPass(commands, &target, 1, NULL);
 }
 
-CAMLnoret static void osdl_gpu_fail_frame(SDL_GPUCommandBuffer* commands, bool has_image,
-                                          const char* fn) {
+CAMLnoret static void osdl_gpu_fail_frame(value buffer, SDL_GPUCommandBuffer* commands,
+                                          bool has_image, const char* fn) {
     char message[1024];
     osdl_error_message(message, sizeof(message), fn);
 
-    /* SDL forbids cancellation once a swapchain image is acquired. */
+    if (buffer != Val_unit) commands = osdl_gpu_take_live_commands(buffer);
+    /* SDL forbids cancellation once a swapchain image is acquired. Discard
+     * any results but do not allow reuse until submitted work finishes. */
+    bool canceled = false;
     if (has_image)
         SDL_SubmitGPUCommandBuffer(commands);
     else
-        SDL_CancelGPUCommandBuffer(commands);
+        canceled = SDL_CancelGPUCommandBuffer(commands);
+    if (buffer != Val_unit)
+        osdl_gpu_finish_downloads(buffer, canceled ? GPU_DOWNLOAD_CANCELED : GPU_DOWNLOAD_FAILED);
     osdl_raise_error(message);
 }
 
@@ -1172,25 +1421,22 @@ CAMLprim value osdl_gpu_begin_swapchain_render_pass(value buffer, value claim, v
     SDL_GPUTexture* image = NULL;
     Uint32          width = 0, height = 0;
     if (!osdl_gpu_wait_for_image(commands, w, &image, &width, &height))
-        osdl_gpu_fail_frame(osdl_gpu_take_live_commands(buffer), image != NULL,
+        osdl_gpu_fail_frame(buffer, commands, image != NULL,
                             "SDL_WaitAndAcquireGPUSwapchainTexture");
     if (!image) CAMLreturn(Val_none);
 
     SDL_GPUTextureFormat format =
         SDL_GetGPUSwapchainTextureFormat(osdl_gpu_parent_device(claim), w);
     if (format == SDL_GPU_TEXTUREFORMAT_INVALID)
-        osdl_gpu_fail_frame(osdl_gpu_take_live_commands(buffer), true,
-                            "SDL_GetGPUSwapchainTextureFormat");
+        osdl_gpu_fail_frame(buffer, commands, true, "SDL_GetGPUSwapchainTextureFormat");
     if (!width || !height || width > SDL_min(INT_MAX, Max_long) ||
         height > SDL_min(INT_MAX, Max_long)) {
         SDL_SetError("Invalid GPU swapchain image size");
-        osdl_gpu_fail_frame(osdl_gpu_take_live_commands(buffer), true,
-                            "SDL_WaitAndAcquireGPUSwapchainTexture");
+        osdl_gpu_fail_frame(buffer, commands, true, "SDL_WaitAndAcquireGPUSwapchainTexture");
     }
 
     SDL_GPURenderPass* ptr = osdl_gpu_begin_clear_pass(commands, image, color);
-    if (!ptr)
-        osdl_gpu_fail_frame(osdl_gpu_take_live_commands(buffer), true, "SDL_BeginGPURenderPass");
+    if (!ptr) osdl_gpu_fail_frame(buffer, commands, true, "SDL_BeginGPURenderPass");
 
     Store_field(buffer, GPU_COMMAND_CLAIM, claim);
     ++osdl_cell_val(claim)->children;
@@ -1453,14 +1699,15 @@ CAMLprim value osdl_gpu_clear_and_present(value claim, value color) {
 
     SDL_GPUTexture* image = NULL;
     if (!osdl_gpu_wait_for_image(commands, w, &image, NULL, NULL))
-        osdl_gpu_fail_frame(commands, image != NULL, "SDL_WaitAndAcquireGPUSwapchainTexture");
+        osdl_gpu_fail_frame(Val_unit, commands, image != NULL,
+                            "SDL_WaitAndAcquireGPUSwapchainTexture");
     if (!image) {
         osdl_check(SDL_CancelGPUCommandBuffer(commands), "SDL_CancelGPUCommandBuffer");
         CAMLreturn(Val_false);
     }
 
     SDL_GPURenderPass* pass = osdl_gpu_begin_clear_pass(commands, image, color);
-    if (!pass) osdl_gpu_fail_frame(commands, true, "SDL_BeginGPURenderPass");
+    if (!pass) osdl_gpu_fail_frame(Val_unit, commands, true, "SDL_BeginGPURenderPass");
     SDL_EndGPURenderPass(pass);
     osdl_check(SDL_SubmitGPUCommandBuffer(commands), "SDL_SubmitGPUCommandBuffer");
     CAMLreturn(Val_true);

@@ -3,7 +3,7 @@
 
 #include "sdl3_stubs.h"
 
-/* Internal GPU texture layout, also used by the GPU readback tests. */
+/* Internal GPU texture layout. */
 enum {
     GPU_TEXTURE_WIDTH = 2,
     GPU_TEXTURE_HEIGHT,
