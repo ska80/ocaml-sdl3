@@ -57,7 +57,7 @@ memory, and backend draw counts require a separate profiler and are not in this 
 Run `dune runtest benchmarks` for short software-renderer runs and tests of the measurement code.
 These tests do not enforce any timing limits.
 
-### Current results
+### Atlas results
 
 Both offscreen runs drew 100,000 sprites at 1280 × 720. Each run measured 30 frames after five
 warm-up frames. The host ran Linux on an Intel i7-1165G7 with SDL 3.4.20 and OCaml 5.5.2. Both runs
@@ -173,17 +173,17 @@ From the repository root, run the native release build:
 dune exec --profile release ./benchmarks/gpu_instancing_benchmark/gpu_instancing_benchmark.exe
 ```
 
-The default draws 100,000 sprites at 1280 × 720. Each sprite uses its own 8 × 8 region of the
-same generated atlas pattern as the atlas benchmark. The program uploads the atlas, a quad mesh,
-and the starting positions and atlas offsets once.
+The default draws 100,000 sprites at 1280 × 720. Each sprite uses its own 8 × 8 region of the same
+generated atlas pattern as the atlas benchmark. The program uploads the atlas, a quad mesh, and the
+starting positions and atlas offsets once.
 
-Each frame, the CPU sends the viewport scales and current offset. The vertex shader moves and
-wraps the sprites. The benchmark records one indexed draw for all instances. It does
-not rebuild or upload the instance buffer during the run.
+Each frame, the CPU sends the viewport scales and current offset. The vertex shader moves and wraps
+the sprites. The benchmark records one indexed draw for all instances. It does not rebuild or upload
+the instance buffer during the run.
 
-Use `--sprites` to change the sprite count. Use `--driver vulkan` to select the GPU backend.
-The benchmark also accepts `--width`, `--height`, `--warmup`, `--frames`, and `--no-gc-events`.
-It chooses immediate presentation if available, then mailbox, then VSync. It reports the selected
+Use `--sprites` to change the sprite count. Use `--driver vulkan` to select the GPU backend.  The
+benchmark also accepts `--width`, `--height`, `--warmup`, `--frames`, and `--no-gc-events`.  It
+chooses immediate presentation if available, then mailbox, then VSync. It reports the selected
 mode. Keep the window visible during a windowed run so SDL can supply an image.
 
 The draw recording time includes acquisition of the window image. The present call measures
@@ -224,14 +224,14 @@ From the repository root, run the native release build:
 dune exec --profile release ./benchmarks/lighting_benchmark/lighting_benchmark.exe
 ```
 
-The default scene has 256 colored lights with a diameter of 128 pixels. Each light moves by a
-fixed step and bounces at the edges. The lights reuse one sprite batch and one texture.
-The texture fades from the center of the light to the edge.
+The default scene has 256 colored lights with a diameter of 128 pixels. Each light moves by a fixed
+step and bounces at the edges. The lights reuse one sprite batch and one texture.  The texture fades
+from the center of the light to the edge.
 
-Each frame starts with ambient light, the color present without any moving lights. The renderer
-adds the lights into a light map, a texture the size of the output. It draws a checkerboard
-background and multiplies its colors by the light map. This uses three binding draws per frame.
-The renderer can flush draws at the target switch, so that work counts as draw recording time.
+Each frame starts with ambient light, the color present without any moving lights. The renderer adds
+the lights into a light map, a texture the size of the output. It draws a checkerboard background
+and multiplies its colors by the light map. This uses three binding draws per frame.  The renderer
+can flush draws at the target switch, so that work counts as draw recording time.
 
 Use `--lights` to set the light count and `--diameter` to set the size in pixels. The diameter must
 be smaller than both output dimensions. The benchmark also accepts `--width`, `--height`,
@@ -260,8 +260,8 @@ native release build, and SDL reported VSync off.
 | Binding draw calls | 3/frame | 3/frame |
 | GPU frame time, GPU memory, backend draw count | Unavailable | Unavailable |
 
-These are CPU frame times. The OpenGL run can queue work that finishes after the timed frame.
-The Vulkan run used a software driver. The table does not compare GPU execution times.
+These are CPU frame times. The OpenGL run can queue work that finishes after the timed frame.  The
+Vulkan run used a software driver. The table does not compare GPU execution times.
 
 ## Text benchmark
 
@@ -275,15 +275,15 @@ The default draws 2,048 labels at 1280 × 720. It uses the same
 [DejaVu Sans font](../examples/music_player/assets/LICENSE.md) as the Music Player, at 10 points.
 The benchmark measures the labels at startup to lay them out in a grid without overlap.
 
-Each label is a three-digit counter. The benchmark makes the strings for `000` through `999`
-before the run. Each frame, it advances every counter and draws it with one binding call. It
-reuses the text objects and one SDL_ttf renderer text engine. The engine stores glyph images
-in shared textures. The benchmark does not create a new surface or texture for each label.
+Each label is a three-digit counter. The benchmark makes the strings for `000` through `999` before
+the run. Each frame, it advances every counter and draws it with one binding call. It reuses the
+text objects and one SDL_ttf renderer text engine. The engine stores glyph images in shared
+textures. The benchmark does not create a new surface or texture for each label.
 
 Use `--labels` to set the number of labels. Use `--font` to select another font file and
-`--font-size` to set its size in points. If the labels do not fit, use fewer labels, a smaller
-font, or a larger output. The benchmark also accepts `--width`, `--height`, `--driver`,
-`--warmup`, `--frames`, and `--no-gc-events`.
+`--font-size` to set its size in points. If the labels do not fit, use fewer labels, a smaller font,
+or a larger output. The benchmark also accepts `--width`, `--height`, `--driver`, `--warmup`,
+`--frames`, and `--no-gc-events`.
 
 If SDL supports offscreen OpenGL and Vulkan, run the text pixel tests on both renderers:
 
@@ -308,9 +308,9 @@ warm-up frames. The host ran Linux on an Intel i7-1165G7 with SDL 3.4.20, SDL_tt
 | Binding draw calls | 2,048/frame | 2,048/frame |
 | GPU frame time, GPU memory, backend draw count | Unavailable | Unavailable |
 
-The allocation count covers the OCaml heap, not the native work in SDL_ttf. A smaller release
-run with 128 labels reported the same OCaml allocation rate. The Vulkan run used a
-software driver. The table does not compare GPU execution times.
+The allocation count covers the OCaml heap, not the native work in SDL_ttf. A smaller release run
+with 128 labels reported the same OCaml allocation rate. The Vulkan run used a software driver. The
+table does not compare GPU execution times.
 
 ## Asset streaming benchmark
 
@@ -320,13 +320,13 @@ From the repository root, run the native release build:
 dune exec --profile release ./benchmarks/asset_streaming_benchmark/asset_streaming_benchmark.exe
 ```
 
-The default scene moves 16,384 sprites from one 1024 × 1024 texture atlas. The benchmark divides
-it into 64 pages of 128 × 128 pixels. Each frame, it replaces four pages with `Texture.update`
-and draws one batch. This uploads 256 KiB of pixel data per frame without replacing the texture.
+The default scene moves 16,384 sprites from one 1024 × 1024 texture atlas. The benchmark divides it
+into 64 pages of 128 × 128 pixels. Each frame, it replaces four pages with `Texture.update` and
+draws one batch. This uploads 256 KiB of pixel data per frame without replacing the texture.
 
-The benchmark prepares the source images before the run. It replaces the pages in order and
-changes the source images on each pass through the atlas. The timed work includes uploads and
-rendering, not file reads or image decoding.
+The benchmark prepares the source images before the run. It replaces the pages in order and changes
+the source images on each pass through the atlas. The timed work includes uploads and rendering, not
+file reads or image decoding.
 
 Use `--uploads-per-frame` to change the upload count from 0 to 64. Set it to zero to run the same
 moving scene without uploads. Use `--sprites` to change the number of sprites. The benchmark also
@@ -355,8 +355,8 @@ measured 300 frames after 60 warm-up frames. The host ran Linux on an Intel i7-1
 | Binding draw calls | 1/frame | 1/frame |
 | GPU frame time, GPU memory, backend draw count | Unavailable | Unavailable |
 
-Scene update and draw recording includes the upload calls. These are CPU times, not GPU upload
-or execution times. The Vulkan run used a software driver.
+Scene update and draw recording includes the upload calls. These are CPU times, not GPU upload or
+execution times. The Vulkan run used a software driver.
 
 ## Resource churn benchmark
 
@@ -371,13 +371,13 @@ benchmark fills it with a color, makes a texture from it, and releases the surfa
 textures in a grid. Texture creation receives 1 MiB of source pixels per frame.
 
 The textures stay open through `Renderer.present`. The next frame releases them before it creates
-new ones. Scene update and draw recording includes these releases, creation, and draws. The last
-set of textures closes after the measured frames. If there is no warm-up, the first measured frame
-has no previous textures to release.
+new ones. Scene update and draw recording includes these releases, creation, and draws. The last set
+of textures closes after the measured frames. If there is no warm-up, the first measured frame has
+no previous textures to release.
 
 Use `--pairs` to set the number of surface and texture pairs. Use `--size` to set their width and
-height in pixels. The grid must fit in the output. The benchmark also accepts `--width`,
-`--height`, `--driver`, `--warmup`, `--frames`, and `--no-gc-events`.
+height in pixels. The grid must fit in the output. The benchmark also accepts `--width`, `--height`,
+`--driver`, `--warmup`, `--frames`, and `--no-gc-events`.
 
 If SDL supports offscreen OpenGL and Vulkan, test drawing and cleanup on both renderers:
 
@@ -387,9 +387,9 @@ SDL_VIDEO_DRIVER=offscreen SDL_GPU_DRIVER=vulkan dune build --force @runtest-res
 
 ### Resource churn results
 
-Both offscreen runs used 64 surface and texture pairs per frame at 1280 × 720. Each run measured
-300 frames after 60 warm-up frames. The host ran Linux on an Intel i7-1165G7 with SDL 3.4.20 and
-OCaml 5.5.2. Both runs used a native release build, and SDL reported VSync off.
+Both offscreen runs used 64 surface and texture pairs per frame at 1280 × 720. Each run measured 300
+frames after 60 warm-up frames. The host ran Linux on an Intel i7-1165G7 with SDL 3.4.20 and OCaml
+5.5.2. Both runs used a native release build, and SDL reported VSync off.
 
 | Measurement | SDL `gpu` (Vulkan, llvmpipe) | SDL `opengl` |
 | --- | ---: | ---: |
@@ -402,8 +402,8 @@ OCaml 5.5.2. Both runs used a native release build, and SDL reported VSync off.
 | Binding draw calls | 64/frame | 64/frame |
 | GPU frame time, GPU memory, backend draw count | Unavailable | Unavailable |
 
-The allocation count covers the OCaml heap, not native surface or texture storage. The Vulkan
-run used a software driver. The table does not compare GPU execution times.
+The allocation count covers the OCaml heap, not native surface or texture storage. The Vulkan run
+used a software driver. The table does not compare GPU execution times.
 
 ## Measurements
 
