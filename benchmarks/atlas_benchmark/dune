@@ -1,13 +1,8 @@
 (executable
  (name atlas_benchmark)
- (modules atlas_benchmark build_profile)
- (libraries sdl3 benchmark_metrics)
+ (modules atlas_benchmark)
+ (libraries sdl3 benchmark_support)
  (modes exe))
-
-(rule
- (target build_profile.ml)
- (action
-  (write-file %{target} "let name = \"%{profile}\"\n")))
 
 (rule
  (alias runtest)

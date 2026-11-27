@@ -1,13 +1,13 @@
 # Benchmark plan
 
-The atlas benchmark is ready to run. The other workloads are planned.
+The atlas and tilemap benchmarks are ready to run. The other workloads are planned.
 
 ## Workloads
 
 | Benchmark | Workload |
 | --- | --- |
 | [`atlas_benchmark`](#atlas-benchmark) | 100,000 sprites with different atlas regions |
-| `tilemap_benchmark` | Large scrolling maps |
+| [`tilemap_benchmark`](#tilemap-benchmark) | Large scrolling maps |
 | `isometric_benchmark` | Sorted, overlapping transparent sprites |
 | `gpu_instancing_benchmark` | 100,000 instanced sprites |
 | `lighting_benchmark` | Multiple dynamic light sources |
@@ -54,7 +54,7 @@ On Linux, peak resident process memory includes setup and warm-up. The report co
 draw per frame. SDL can split or combine draws before they reach the GPU. GPU frame time, GPU
 memory, and backend draw counts require a separate profiler and are not in this report.
 
-Run `dune runtest benchmarks` for a short software-renderer run and tests of the measurement code.
+Run `dune runtest benchmarks` for short software-renderer runs and tests of the measurement code.
 These tests do not enforce any timing limits.
 
 ### Current results
@@ -77,6 +77,49 @@ used a native release build, and SDL reported VSync off.
 Scene update and draw recording took about the same time in both runs. Most of the difference was in
 `Renderer.present`, which includes driver work and waits. It does not measure GPU time.  The Vulkan
 run used a software driver. These short runs do not rank the two backends in general.
+
+## Tilemap benchmark
+
+From the repository root, run the native release build:
+
+```sh
+dune exec --profile release ./benchmarks/tilemap_benchmark/tilemap_benchmark.exe
+```
+
+The benchmark generates a map with 4,096 × 4,096 tiles by default. Each tile is 16 × 16 pixels and
+stores one byte that selects an image from a shared atlas. The map data takes 16 MiB. The camera
+moves by a fixed step of seven pixels horizontally and five pixels vertically per frame. It reverses
+direction at the map edges.
+
+Each frame, the benchmark finds the tiles that intersect the viewport, including partial tiles at
+the edges. It puts them into one reusable batch in row order. It does not scan the whole map or
+upload the atlas again. At the default output size of 1280 × 720, the batch holds at most 3,726
+visible tiles.
+
+Use `--map-width` and `--map-height` to change the number of tiles. Use `--tile-size` to change both
+pixel dimensions of a tile. The benchmark also accepts `--width`, `--height`, `--driver`,
+`--warmup`, `--frames`, and `--no-gc-events`, like the atlas benchmark.
+
+### Tilemap results
+
+Both offscreen runs used the default map, tile size, and output size. Each run measured 30 frames
+after five warm-up frames. The host ran Linux on an Intel i7-1165G7 with SDL 3.4.20 and OCaml 5.5.2.
+Both runs used a native release build, and SDL reported VSync off.
+
+| Measurement | SDL `gpu` (Vulkan, llvmpipe) | SDL `opengl` |
+| --- | ---: | ---: |
+| CPU frame time, p50 / p95 / p99 | 5.496 / 6.173 / 6.583 ms | 0.813 / 1.151 / 1.212 ms |
+| Scene update and draw recording, p50 / p95 / p99 | 0.306 / 0.324 / 0.333 ms | 0.251 / 0.415 / 0.439 ms |
+| `Renderer.present` call, p50 / p95 / p99 | 5.187 / 5.849 / 6.278 ms | 0.563 / 0.804 / 0.816 ms |
+| OCaml allocations | 51.2 bytes/frame | 51.2 bytes/frame |
+| Garbage collection pauses | 0 | 0 |
+| Peak resident process memory | 128.1 MiB | 101.2 MiB |
+| Binding draw calls | 1/frame | 1/frame |
+| GPU frame time, GPU memory, backend draw count | Unavailable | Unavailable |
+
+The allocation rate stayed the same in a smaller release run with a batch capacity of 70 tiles.
+Most of the frame time difference was in `Renderer.present`. The runs do not measure GPU time, and
+the Vulkan run used a software driver.
 
 ## Measurements
 

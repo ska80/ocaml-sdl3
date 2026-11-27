@@ -8,3 +8,19 @@
  (modules metrics_test)
  (package sdl3)
  (libraries benchmark_metrics))
+
+(library
+ (name benchmark_support)
+ (modules atlas build_profile run tile_grid)
+ (libraries sdl3 benchmark_metrics))
+
+(rule
+ (target build_profile.ml)
+ (action
+  (write-file %{target} "let name = \"%{profile}\"\n")))
+
+(test
+ (name tile_grid_test)
+ (modules tile_grid_test)
+ (package sdl3)
+ (libraries benchmark_support))
