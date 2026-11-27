@@ -11,6 +11,9 @@
   shaders/triangle.frag.spv
   shaders/mesh.vert.spv
   shaders/mesh.frag.spv
+  shaders/instanced.vert.spv
+  shaders/renderer_effect.frag.spv
+  shaders/renderer_fill.frag.spv
   shaders/resources.vert.spv
   shaders/resources.frag.spv)
  (action

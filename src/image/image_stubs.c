@@ -57,7 +57,7 @@ CAMLprim value osdl_image_load_texture(value renderer, value path) {
 
     handle = osdl_new_handle(renderer);
 
-    SDL_Texture* texture = IMG_LoadTexture(osdl_live(renderer), osdl_cstring(path));
+    SDL_Texture* texture = IMG_LoadTexture(osdl_renderer_ready(renderer), osdl_cstring(path));
     CAMLreturn(osdl_publish(handle, texture, "IMG_LoadTexture"));
 }
 
@@ -65,9 +65,9 @@ CAMLprim value osdl_image_load_texture_io(value renderer, value stream) {
     CAMLparam2(renderer, stream);
     CAMLlocal1(handle);
 
-    SDL_Renderer* r  = osdl_live(renderer);
-    SDL_IOStream* io = osdl_unborrowed_io(stream);
     handle           = osdl_new_handle(renderer);
+    SDL_Renderer* r  = osdl_renderer_ready(renderer);
+    SDL_IOStream* io = osdl_unborrowed_io(stream);
 
     CAMLreturn(osdl_publish(handle, IMG_LoadTexture_IO(r, io, false), "IMG_LoadTexture_IO"));
 }
@@ -207,7 +207,7 @@ CAMLprim value osdl_image_animation_frame_texture(value renderer, value animatio
     CAMLlocal1(handle);
 
     handle              = osdl_new_handle(renderer);
-    SDL_Renderer*  r    = osdl_live(renderer);
+    SDL_Renderer*  r    = osdl_renderer_ready(renderer);
     IMG_Animation* anim = osdl_live(animation);
     int            i    = image_frame_index(anim, index);
 

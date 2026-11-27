@@ -563,9 +563,7 @@ let converted_events context window renderer =
   check
     (to_render_coordinates renderer canceled == canceled)
     "Touch without a window";
-  while Option.is_some (poll context) do
-    ()
-  done
+  while Option.is_some (poll context) do () done
 
 let render_events context window renderer =
   let id = Window.id window in
@@ -651,9 +649,7 @@ let gamepad_rumble context pad =
   rumble ~low:23 ~high:0 ~duration_ms:15;
   check (rumble_state () = (23, 0)) "Start a short effect";
   Timer.delay_ns 25_000_000L;
-  while Option.is_some (Event.poll context) do
-    ()
-  done;
+  while Option.is_some (Event.poll context) do () done;
   check (rumble_state () = (0, 0)) "Reading events ends an expired effect"
 
 let gamepads context =
@@ -676,9 +672,7 @@ let gamepads context =
             (not (Gamepad.has_button pad Dpad_right))
             "Unmapped gamepad button";
           (* Finish the current SDL poll cycle before changing the inputs. *)
-          while Option.is_some (Event.poll context) do
-            ()
-          done;
+          while Option.is_some (Event.poll context) do () done;
           let state pressed axis_value =
             set_gamepad_state raw_id ~axis:axis_value ~pressed;
             let rec events axis_seen button_seen =
@@ -1067,6 +1061,11 @@ let renderer_views context window =
   let frect x y w h = Frect.make ~x ~y ~w ~h in
   using Renderer.destroy (Renderer.create ~driver:"software" window)
     (fun renderer ->
+      check
+        (Renderer.gpu_device renderer = None)
+        "Software renderer has no GPU device";
+      Renderer.set_gpu_render_state renderer None;
+      invalid (fun () -> Renderer.create_gpu window);
       check (Renderer.viewport renderer = rect 0 0 32 24) "Default viewport";
       check (not (Renderer.viewport_is_set renderer)) "Automatic viewport";
       check (Renderer.clip_rect renderer = None) "No clip by default";
@@ -1693,6 +1692,7 @@ let () =
   let context = init [] in
   invalid (fun () -> Event.wait_timeout context ~timeout_ms:0);
   invalid (fun () -> Gpu.create_device context [ Spirv ]);
+  invalid (fun () -> Renderer.create_gpu_offscreen context);
   invalid (fun () -> Display.list context);
   invalid (fun () -> Touch.devices context);
   invalid (fun () -> Gamepad.list context);

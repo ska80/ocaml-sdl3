@@ -86,6 +86,27 @@ pass, call `Gpu.bind_graphics_pipeline` before drawing. Bind the vertex buffer a
 pipeline. Call `Gpu.draw_primitives` to draw without an index buffer. For indexed drawing, bind the
 index buffer and call `Gpu.draw_indexed_primitives`.
 
+An instance is one copy of the geometry in a draw. Use `~vertex_layouts` instead of `~vertex_layout`
+to split attributes across buffers or to supply data per instance. This layout reads a position from
+each vertex and an offset from each instance:
+
+```ocaml
+let layouts : Sdl3.Gpu.vertex_buffer_layout list =
+  [ { input_rate = Per_vertex;
+      layout = { stride = 8; attributes = [ { location = 0; format = Float32x2; offset = 0 } ] } };
+    { input_rate = Per_instance;
+      layout = { stride = 8; attributes = [ { location = 1; format = Float32x2; offset = 0 } ] } } ]
+
+let draw_instances pass ~positions ~offsets ~count =
+  let open Sdl3.Gpu in
+  bind_vertex_buffers pass [| (positions, 0); (offsets, 0) |];
+  draw_primitives ~instances:count pass ~vertices:3
+```
+
+The list order sets the buffer slots, starting at zero. Use `Gpu.bind_vertex_buffer ~slot` to
+replace one slot. Both binding calls take byte offsets. Use a unique attribute location across all
+slots. For indexed draws, each index must fit in every per-vertex buffer.
+
 ## Set uniforms and bind textures
 
 Use `Gpu.push_uniform_data` to copy a uniform block to a vertex or fragment slot. Pack the bytes in
@@ -95,7 +116,12 @@ slot zero again if the next pipeline uses it.
 
 Use `Gpu.create_sampled_texture` to allocate a 2D image that a shader can read. Write four bytes per
 pixel in red, green, blue, alpha order. Use `Gpu.upload_to_texture` in a copy pass to copy the
-packed pixels from an upload buffer. Use `Gpu.create_sampler` to choose nearest or linear filtering.
+packed pixels from an upload buffer. Use `Gpu.create_sampler` to choose nearest or linear filtering
+within one level.
+
+Address modes tell the GPU what to sample outside the texture. The default is `Clamp_to_edge`.  Use
+`~address_u:Repeat` to repeat along the horizontal axis. Use `Mirrored_repeat` to reverse every
+other repeat. Set `~address_v` for the vertical axis. The W axis does not affect 2D textures.
 
 After you bind the pipeline, use `Gpu.bind_samplers` to set the texture and sampler for each slot.
 Before you draw, set all slots that the shaders declare. Release textures with `Gpu.release_texture`
@@ -152,8 +178,11 @@ upload, a copy, or a render pass. SDL does not generate them in this API.
 `Gpu.upload_to_texture ~mip_level` uploads the whole level. Pack rows in the selected format with no
 padding. Align the upload offset to both four bytes and the pixel size. Use `Gpu.create_sampler
 ~max_mip_level` to let a shader read smaller levels. If you omit the limit, the sampler reads only
-level zero. SDL 3.4.20 cannot render or blit a level when halving the base size to that level would
-give zero on either axis. Uploads, copies, downloads, and sampling still work.
+level zero. By default, the sampler selects the nearest mip level. Pass `~mipmap_filter:Linear` to
+blend between adjacent levels.
+
+SDL 3.4.20 cannot render or blit a level when halving the base size to that level would give zero on
+either axis. Uploads, copies, downloads, and sampling still work.
 
 ## Copy or scale a texture region
 

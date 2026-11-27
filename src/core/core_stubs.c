@@ -1223,29 +1223,6 @@ static SDL_Texture* osdl_texture_for_renderer(value texture, value renderer) {
     return t;
 }
 
-CAMLprim value osdl_renderer_create(value driver, value window) {
-    CAMLparam2(driver, window);
-    CAMLlocal1(handle);
-
-    handle = osdl_new_handle(window);
-
-    const char*   name     = Is_long(driver) ? NULL : osdl_cstring(Some_val(driver));
-    SDL_Renderer* renderer = SDL_CreateRenderer(osdl_unattached_window(window), name);
-    CAMLreturn(osdl_publish(handle, renderer, "SDL_CreateRenderer"));
-}
-
-CAMLprim value osdl_renderer_create_software(value surface) {
-    CAMLparam1(surface);
-    CAMLlocal1(handle);
-
-    handle = osdl_new_handle(surface);
-
-    SDL_Renderer* renderer = SDL_CreateSoftwareRenderer(osdl_unlocked_surface(surface));
-    CAMLreturn(osdl_publish(handle, renderer, "SDL_CreateSoftwareRenderer"));
-}
-
-OSDL_DESTROY(osdl_renderer_destroy, SDL_Renderer, SDL_DestroyRenderer)
-
 CAMLprim value osdl_renderer_name(value renderer) {
     const char* name = SDL_GetRendererName(osdl_live(renderer));
     if (!name) osdl_fail("SDL_GetRendererName");
@@ -1300,7 +1277,7 @@ CAMLprim value osdl_renderer_current_output_size(value renderer) {
 }
 
 CAMLprim value osdl_renderer_set_vsync(value renderer, value enabled) {
-    osdl_check(SDL_SetRenderVSync(osdl_live(renderer), Bool_val(enabled) ? 1 : 0),
+    osdl_check(SDL_SetRenderVSync(osdl_renderer_ready(renderer), Bool_val(enabled) ? 1 : 0),
                "SDL_SetRenderVSync");
     return Val_unit;
 }
@@ -1312,7 +1289,7 @@ CAMLprim value osdl_renderer_vsync(value renderer) {
 }
 
 CAMLprim value osdl_renderer_set_target(value renderer, value target) {
-    SDL_Renderer* r = osdl_live(renderer);
+    SDL_Renderer* r = osdl_renderer_ready(renderer);
     SDL_Texture* t = Is_long(target) ? NULL : osdl_texture_for_renderer(Some_val(target), renderer);
 
     osdl_check(SDL_SetRenderTarget(r, t), "SDL_SetRenderTarget");
@@ -1622,22 +1599,25 @@ CAMLprim value osdl_renderer_set_draw_blend_mode(value renderer, value mode) {
     return Val_unit;
 }
 
-OSDL_ACTION(osdl_renderer_clear, SDL_RenderClear)
+CAMLprim value osdl_renderer_clear(value renderer) {
+    osdl_check(SDL_RenderClear(osdl_renderer_draw_target(renderer)), "SDL_RenderClear");
+    return Val_unit;
+}
 
 CAMLprim value osdl_renderer_fill_rect(value renderer, value rect) {
     SDL_FRect r = osdl_frect(rect);
-    osdl_check(SDL_RenderFillRect(osdl_live(renderer), &r), "SDL_RenderFillRect");
+    osdl_check(SDL_RenderFillRect(osdl_renderer_draw(renderer, false), &r), "SDL_RenderFillRect");
     return Val_unit;
 }
 
 CAMLprim value osdl_renderer_draw_rect(value renderer, value rect) {
     SDL_FRect r = osdl_frect(rect);
-    osdl_check(SDL_RenderRect(osdl_live(renderer), &r), "SDL_RenderRect");
+    osdl_check(SDL_RenderRect(osdl_renderer_draw(renderer, false), &r), "SDL_RenderRect");
     return Val_unit;
 }
 
 static value osdl_renderer_rects(value renderer, value rects, bool fill) {
-    SDL_Renderer* r     = osdl_live(renderer);
+    SDL_Renderer* r     = osdl_renderer_draw(renderer, false);
     mlsize_t      count = Wosize_val(rects);
     if (count == 0) return Val_unit;
     /* SDL can expand each filled rectangle into eight float coordinates. */
@@ -1672,7 +1652,7 @@ CAMLprim value osdl_renderer_draw_rects(value renderer, value rects) {
 }
 
 CAMLprim value osdl_renderer_draw_line(value renderer, value x1, value y1, value x2, value y2) {
-    osdl_check(SDL_RenderLine(osdl_live(renderer), osdl_float(Double_val(x1)),
+    osdl_check(SDL_RenderLine(osdl_renderer_draw(renderer, false), osdl_float(Double_val(x1)),
                               osdl_float(Double_val(y1)), osdl_float(Double_val(x2)),
                               osdl_float(Double_val(y2))),
                "SDL_RenderLine");
@@ -1705,11 +1685,11 @@ CAMLprim value osdl_renderer_read_pixels(value rect, value renderer) {
     CAMLparam2(rect, renderer);
     CAMLlocal1(handle);
 
-    /* A renderer's parent is either a window or a surface. The copy only
-     * depends on their context, not on the renderer or its target. */
-    handle = osdl_new_handle(osdl_parent(osdl_parent(renderer)));
+    /* The copy belongs to the context, not the renderer or its target. */
+    value parent = osdl_parent(renderer);
+    handle = osdl_new_handle(osdl_renderer_offscreen(renderer) ? parent : osdl_parent(parent));
 
-    SDL_Renderer* r        = osdl_live(renderer);
+    SDL_Renderer* r        = osdl_renderer_draw_target(renderer);
     bool          has_rect = Is_block(rect);
     SDL_Rect      requested;
     if (has_rect) {
@@ -1749,11 +1729,19 @@ CAMLprim value osdl_renderer_read_pixels(value rect, value renderer) {
 }
 
 CAMLprim value osdl_renderer_present(value renderer) {
-    SDL_Renderer* r = osdl_live(renderer);
-    if (SDL_GetRenderTarget(r))
+    SDL_Renderer* r         = osdl_renderer_draw_target(renderer);
+    bool          offscreen = osdl_renderer_offscreen(renderer);
+    if (!offscreen && SDL_GetRenderTarget(r))
         caml_invalid_argument("Restore the default render target before presenting");
 
-    osdl_check(SDL_RenderPresent(r), "SDL_RenderPresent");
+    /* SDL can append a draw for a shaped window. Do not apply the user's
+     * shader to that draw. Earlier draws already hold their state. */
+    value state   = Field(renderer, OSDL_RENDERER_STATE);
+    bool  restore = !offscreen && state != Val_unit;
+    if (restore) osdl_check(SDL_SetGPURenderState(r, NULL), "SDL_SetGPURenderState");
+    bool ok = SDL_RenderPresent(r);
+    if (restore) SDL_SetGPURenderState(r, osdl_cell_val(state)->ptr);
+    osdl_check(ok, "SDL_RenderPresent");
     return Val_unit;
 }
 
@@ -1773,7 +1761,7 @@ CAMLprim value osdl_texture_of_surface(value renderer, value surface) {
     handle = osdl_new_handle(renderer);
 
     SDL_Texture* texture =
-        SDL_CreateTextureFromSurface(osdl_live(renderer), osdl_unlocked_surface(surface));
+        SDL_CreateTextureFromSurface(osdl_renderer_ready(renderer), osdl_unlocked_surface(surface));
     CAMLreturn(osdl_publish(handle, texture, "SDL_CreateTextureFromSurface"));
 }
 
@@ -1781,8 +1769,8 @@ CAMLprim value osdl_texture_of_image_data(value renderer, value image) {
     CAMLparam2(renderer, image);
     CAMLlocal1(handle);
 
-    SDL_Renderer* r = osdl_live(renderer);
     handle          = osdl_new_handle(renderer);
+    SDL_Renderer* r = osdl_renderer_ready(renderer);
 
     /* Image_data.t has positive dimensions and a packed RGBA bigarray. */
     int          w = Int_val(Field(image, 0)), h = Int_val(Field(image, 1));
@@ -1803,7 +1791,7 @@ static value osdl_texture_create(value renderer, value w, value h, SDL_TextureAc
     handle = osdl_new_handle_with_ops(
         renderer, access == SDL_TEXTUREACCESS_TARGET ? &osdl_target_ops : &osdl_handle_ops);
 
-    SDL_Renderer* r     = osdl_live(renderer);
+    SDL_Renderer* r     = osdl_renderer_ready(renderer);
     int           width = osdl_positive_int(w), height = osdl_positive_int(h);
     /* Keep pixel offsets in range on renderers that use int arithmetic. */
     if (width > INT_MAX / 4 / height) caml_invalid_argument("SDL RGBA texture is too large");
@@ -1839,9 +1827,10 @@ static int osdl_rgba_pitch(value pitch, int width) {
 }
 
 CAMLprim value osdl_texture_update(value rect, value texture, value buffer, value pitch) {
-    SDL_Texture* t      = osdl_texture_unlocked(texture);
-    SDL_Rect     area   = osdl_texture_region(t, rect);
-    int          stride = osdl_rgba_pitch(pitch, area.w);
+    SDL_Texture* t = osdl_texture_unlocked(texture);
+    osdl_renderer_ready(osdl_parent(texture));
+    SDL_Rect area   = osdl_texture_region(t, rect);
+    int      stride = osdl_rgba_pitch(pitch, area.w);
     if (area.h > INT_MAX / stride) caml_invalid_argument("SDL texture upload is too large");
     if (Caml_ba_array_val(buffer)->dim[0] < stride * area.h)
         caml_invalid_argument("SDL texture upload buffer is too small");
@@ -1873,10 +1862,11 @@ CAMLprim value osdl_texture_prepare_lock(value texture) {
 }
 
 CAMLprim value osdl_texture_lock_pixels(value rect, value view) {
-    value        texture   = osdl_parent(view);
-    SDL_Texture* t         = osdl_texture_unlocked(texture);
-    SDL_Rect     area      = osdl_texture_region(t, rect);
-    size_t       row_bytes = 4 * (size_t)area.w;
+    value        texture = osdl_parent(view);
+    SDL_Texture* t       = osdl_texture_unlocked(texture);
+    osdl_renderer_ready(osdl_parent(texture));
+    SDL_Rect area      = osdl_texture_region(t, rect);
+    size_t   row_bytes = 4 * (size_t)area.w;
 
     void* pixels = NULL;
     int   pitch  = 0;
@@ -1986,19 +1976,16 @@ CAMLprim value osdl_locked_pixels_copy_from(value view, value buffer, value pitc
 }
 
 CAMLprim value osdl_texture_destroy(value texture) {
-    if (osdl_texture_can_be_target(texture)) {
-        osdl_cell* cell = osdl_cell_val(texture);
-        osdl_require_thread(osdl_cell_thread(cell));
-        SDL_Texture* t = cell->ptr;
-        if (!t) return Val_unit;
+    osdl_cell* cell = osdl_cell_val(texture);
+    osdl_require_thread(osdl_cell_thread(cell));
+    SDL_Texture* t = cell->ptr;
+    if (!t) return Val_unit;
 
-        SDL_Renderer* r = osdl_live(osdl_parent(texture));
-        if (SDL_GetRenderTarget(r) == t)
-            osdl_check(SDL_SetRenderTarget(r, NULL), "SDL_SetRenderTarget");
-    }
+    SDL_Renderer* r = osdl_renderer_ready(osdl_parent(texture));
+    if (osdl_texture_can_be_target(texture) && SDL_GetRenderTarget(r) == t)
+        osdl_check(SDL_SetRenderTarget(r, NULL), "SDL_SetRenderTarget");
 
-    SDL_Texture* t = osdl_take(texture);
-    if (t) SDL_DestroyTexture(t);
+    SDL_DestroyTexture(osdl_take(texture));
     return Val_unit;
 }
 
@@ -2041,7 +2028,7 @@ static SDL_Texture* osdl_texture_source(value texture, value renderer, SDL_Rende
 }
 
 CAMLprim value osdl_texture_draw(value src, value dst, value renderer, value texture) {
-    SDL_Renderer*    r = osdl_live(renderer);
+    SDL_Renderer*    r = osdl_renderer_draw(renderer, true);
     SDL_Texture*     t = osdl_texture_source(texture, renderer, r);
     SDL_FRect        s, d;
     const SDL_FRect* source = osdl_frect_option(src, &s);
@@ -2059,7 +2046,7 @@ static inline SDL_Vertex osdl_sprite_vertex(float x, float y, float u, float v, 
 
 CAMLprim value osdl_texture_draw_sprites(value renderer, value texture, value positions,
                                          value tints, value count) {
-    SDL_Renderer* r = osdl_live(renderer);
+    SDL_Renderer* r = osdl_renderer_draw(renderer, true);
     SDL_Texture*  t = osdl_texture_source(texture, renderer, r);
 
     mlsize_t n = osdl_nonnegative_int(count);
@@ -2216,7 +2203,7 @@ static void osdl_software_rotation_bounds(osdl_render_view view, double x, doubl
 
 CAMLprim value osdl_texture_draw_rotated(value src, value dst, value flip, value pivot,
                                          value renderer, value texture, value angle) {
-    SDL_Renderer*    r = osdl_live(renderer);
+    SDL_Renderer*    r = osdl_renderer_draw(renderer, true);
     SDL_Texture*     t = osdl_texture_source(texture, renderer, r);
     SDL_FRect        s;
     const SDL_FRect* source  = osdl_frect_option(src, &s);
@@ -2315,7 +2302,7 @@ static void osdl_affine_software_bounds(SDL_Renderer* renderer, SDL_Texture* t,
 
 CAMLprim value osdl_texture_draw_affine(value src, value renderer, value texture, value origin,
                                         value right, value down) {
-    SDL_Renderer* r   = osdl_live(renderer);
+    SDL_Renderer* r   = osdl_renderer_draw(renderer, true);
     SDL_Texture*  t   = osdl_texture_source(texture, renderer, r);
     SDL_FRect     s   = osdl_texture_copy_region(src, t);
     SDL_FPoint    p[] = {
@@ -2348,7 +2335,7 @@ static bool osdl_power_of_two(int size) {
 
 CAMLprim value osdl_texture_draw_tiled(value src, value dst, value scale, value renderer,
                                        value texture) {
-    SDL_Renderer*    r    = osdl_live(renderer);
+    SDL_Renderer*    r    = osdl_renderer_draw(renderer, true);
     SDL_Texture*     t    = osdl_texture_source(texture, renderer, r);
     SDL_FRect        s    = osdl_texture_copy_region(src, t);
     osdl_render_view view = osdl_current_view(r);
@@ -2377,7 +2364,7 @@ CAMLprim value osdl_texture_draw_tiled(value src, value dst, value scale, value 
 
 CAMLprim value osdl_texture_draw_nine_slice(value src, value dst, value scale, value renderer,
                                             value texture, value borders) {
-    SDL_Renderer*    r    = osdl_live(renderer);
+    SDL_Renderer*    r    = osdl_renderer_draw(renderer, true);
     SDL_Texture*     t    = osdl_texture_source(texture, renderer, r);
     SDL_FRect        s    = osdl_texture_copy_region(src, t);
     osdl_render_view view = osdl_current_view(r);
@@ -2624,7 +2611,7 @@ static void osdl_sprite_batch_geometry(SDL_Renderer* r, SDL_Texture* t, const os
 
 CAMLprim value osdl_sprite_batch_draw(value renderer, value texture, value positions, value storage,
                                       value length) {
-    SDL_Renderer* r = osdl_live(renderer);
+    SDL_Renderer* r = osdl_renderer_draw(renderer, true);
     SDL_Texture*  t = osdl_texture_source(texture, renderer, r);
 
     mlsize_t count = osdl_nonnegative_int(length);
@@ -2745,7 +2732,7 @@ static void osdl_geometry_draw_software(SDL_Renderer* renderer, const osdl_geome
 
 CAMLprim value osdl_renderer_draw_geometry(value texture, value indices, value renderer,
                                            value positions, value colors, value vertex_count) {
-    SDL_Renderer* r = osdl_live(renderer);
+    SDL_Renderer* r = osdl_renderer_draw(renderer, Is_block(texture));
     osdl_geometry g = {0};
     if (Is_block(texture))
         g.texture = osdl_texture_source(Field(Some_val(texture), 0), renderer, r);

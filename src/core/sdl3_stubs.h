@@ -124,10 +124,10 @@ static inline SDL_Window* osdl_unattached_window(value window) {
 
 /* Allocate before calling the SDL constructor, then publish without allocating.
  * This leaves no native resource to free if OCaml allocation fails. */
-static inline value osdl_new_cell(value parent, struct custom_operations* ops) {
+static inline value osdl_new_cell_sized(value parent, struct custom_operations* ops, size_t size) {
     CAMLparam1(parent);
     CAMLlocal1(cell);
-    cell = caml_alloc_custom(ops, sizeof(osdl_cell), 0, 1);
+    cell = caml_alloc_custom(ops, size, 0, 1);
 
     osdl_cell*   data = Data_custom_val(cell);
     SDL_ThreadID thread =
@@ -137,6 +137,10 @@ static inline value osdl_new_cell(value parent, struct custom_operations* ops) {
     memcpy(data->thread, &thread, sizeof(thread));
 
     CAMLreturn(cell);
+}
+
+static inline value osdl_new_cell(value parent, struct custom_operations* ops) {
+    return osdl_new_cell_sized(parent, ops, sizeof(osdl_cell));
 }
 
 static inline value osdl_new_handle_with_ops(value parent, struct custom_operations* ops) {
@@ -195,6 +199,53 @@ static inline void* osdl_take(value handle) {
         osdl_check(function(osdl_live(handle)), #function); \
         return Val_unit;                                    \
     }
+
+/* Renderer layout shared with the add-ons. */
+enum { GPU_DEVICE_RENDERING = 2 };
+enum {
+    OSDL_RENDERER_DEVICE = 2,
+    OSDL_RENDERER_KIND,
+    OSDL_RENDERER_STATE,
+    OSDL_RENDERER_SHADERS,
+};
+enum { OSDL_RENDERER_WINDOW, OSDL_RENDERER_SURFACE, OSDL_RENDERER_OFFSCREEN };
+
+/* Custom render state layout. Textured | Untextured is the OCaml order. */
+enum { OSDL_STATE_DRAW = 2, OSDL_STATE_SHADER, OSDL_STATE_SAMPLERS, OSDL_STATE_UNIFORMS };
+enum { OSDL_STATE_TEXTURED, OSDL_STATE_UNTEXTURED };
+
+static inline void osdl_gpu_require_no_render_pass(value device) {
+    /* SDL's debug viewport bounds belong to the device, not to a command buffer. */
+    if (Bool_val(Field(device, GPU_DEVICE_RENDERING)))
+        caml_invalid_argument("End the active render pass on this GPU device first");
+}
+
+static inline SDL_Renderer* osdl_renderer_ready(value renderer) {
+    SDL_Renderer* r      = osdl_live(renderer);
+    value         device = Field(renderer, OSDL_RENDERER_DEVICE);
+    if (device != Val_unit) osdl_gpu_require_no_render_pass(device);
+    return r;
+}
+
+static inline bool osdl_renderer_offscreen(value renderer) {
+    return Int_val(Field(renderer, OSDL_RENDERER_KIND)) == OSDL_RENDERER_OFFSCREEN;
+}
+
+static inline SDL_Renderer* osdl_renderer_draw_target(value renderer) {
+    SDL_Renderer* r = osdl_renderer_ready(renderer);
+    if (osdl_renderer_offscreen(renderer) && !SDL_GetRenderTarget(r))
+        caml_invalid_argument("Select a texture target for the offscreen renderer first");
+    return r;
+}
+
+static inline SDL_Renderer* osdl_renderer_draw(value renderer, bool textured) {
+    SDL_Renderer* r     = osdl_renderer_draw_target(renderer);
+    value         state = Field(renderer, OSDL_RENDERER_STATE);
+    if (state != Val_unit &&
+        textured != (Int_val(Field(state, OSDL_STATE_DRAW)) == OSDL_STATE_TEXTURED))
+        caml_invalid_argument("Use a GPU render state that matches the type of draw");
+    return r;
+}
 
 /* OCaml argument conversions. */
 

@@ -476,11 +476,705 @@ module Window : sig
   val restore : t -> unit
 end
 
+module Gpu : sig
+  (** SDL GPU drawing and window presentation. *)
+
+  type device
+
+  type swapchain
+  (** A GPU claim on a window. It manages the images used to present frames. *)
+
+  type command_buffer
+  (** A list of GPU operations to submit together. *)
+
+  type render_pass
+  (** A group of rendering operations that share the same target image. *)
+
+  type copy_pass
+  (** A group of GPU copy operations in a command buffer. *)
+
+  type fence
+  (** A handle that signals completion of submitted GPU work. *)
+
+  type vertex
+  type fragment
+
+  type 'stage shader
+  (** A vertex or fragment program for the GPU. *)
+
+  type _ shader_stage =
+    | Vertex : vertex shader_stage
+    | Fragment : fragment shader_stage
+
+  type graphics_pipeline
+  (** The shaders and drawing state for a render pass. *)
+
+  type index
+
+  type 'kind buffer
+  (** GPU memory for vertex data or indices. *)
+
+  type upload_buffer
+  (** Temporary memory that holds bytes to copy to the GPU. *)
+
+  type download_buffer
+  (** Temporary memory that receives bytes from the GPU. *)
+
+  type texture
+  (** An owned 2D GPU image. Its use depends on how you allocate it. *)
+
+  type texture_format =
+    | R8_unorm  (** One red byte. *)
+    | Rgba8_unorm  (** Four bytes in red, green, blue, alpha order. *)
+    | Bgra8_unorm  (** Four bytes in blue, green, red, alpha order. *)
+    | Rgba8_srgb  (** Like [Rgba8_unorm], with sRGB encoding for RGB. *)
+    | Bgra8_srgb  (** Like [Bgra8_unorm], with sRGB encoding for RGB. *)
+    | Rgba16_float  (** Four native-endian 16-bit floats in RGBA order. *)
+    | Rgb10a2_unorm
+        (** A native-endian 32-bit word. Red occupies the low 10 bits, then
+            green and blue each occupy 10 bits. Alpha occupies the high 2 bits.
+        *)
+
+  type texture_usage =
+    | Sampled  (** Read the pixels in a shader. *)
+    | Color_target  (** Draw into the texture. *)
+    | Sampled_color_target
+        (** Draw into and sample the texture in separate passes. *)
+
+  type texture_region = { texture : texture; mip_level : int; rect : Rect.t }
+  (** A rectangle in a mip level. Level zero is the full-size image. *)
+
+  type load_op =
+    | Load  (** Keep the previous pixels. Load only initialized pixels. *)
+    | Clear of Color.t
+        (** Set the whole target level to one color. Each color byte maps to a
+            component from 0 to 1 before the target format encodes it. *)
+    | Dont_care  (** The previous pixels are undefined. *)
+
+  type store_op =
+    | Store  (** Keep the pixels after the pass. *)
+    | Discard  (** The pixels are undefined after the pass. *)
+
+  type sampler
+  (** Rules for how a shader reads pixels from a texture. *)
+
+  type sampler_filter = Nearest | Linear
+
+  type sampler_address =
+    | Clamp_to_edge
+    | Repeat
+    | Mirrored_repeat
+        (** Select what to read outside one texture axis. Clamp uses the nearest
+            edge. Repeat wraps to the other edge. Mirrored repeat reverses every
+            other repeat. *)
+
+  type index_format =
+    | Uint16
+    | Uint32  (** The width of each unsigned integer in an index buffer. *)
+
+  type vertex_format =
+    | Float32
+    | Float32x2
+    | Float32x3
+    | Float32x4
+    | Unorm8x4
+        (** An attribute's data format. [Unorm8x4] maps four unsigned bytes to
+            four values in the range 0 to 1. *)
+
+  type vertex_attribute = {
+    location : int;
+    format : vertex_format;
+    offset : int;
+  }
+  (** A value read by the vertex shader. Use a unique shader input [location]
+      from 0 to 15 across all buffers in the pipeline. The byte [offset] from
+      the start of an element must be a multiple of four. *)
+
+  type vertex_layout = { stride : int; attributes : vertex_attribute list }
+  (** The layout of one vertex buffer. The [stride] is the byte distance between
+      vertices. It must be a positive multiple of four, up to 2048. Supply at
+      least one attribute. Each attribute must fit in the stride. *)
+
+  type vertex_input_rate =
+    | Per_vertex
+    | Per_instance
+        (** Advance one element for each vertex or each instance. An instance is
+            one copy of the geometry in an instanced draw. *)
+
+  type vertex_buffer_layout = {
+    layout : vertex_layout;
+    input_rate : vertex_input_rate;
+  }
+  (** Describe one buffer slot, including how draws advance through it. *)
+
+  module Blend : sig
+    type t = { color : Blend_mode.equation; alpha : Blend_mode.equation }
+    (** Combine the fragment shader output (source) with the current target
+        pixel (destination). Apply [color] to RGB and [alpha] to the alpha
+        channel. In the alpha equation, a color factor uses the corresponding
+        alpha. [Minimum] and [Maximum] compare the unscaled values, so the GPU
+        ignores their factors. *)
+
+    val straight_alpha : t
+    (** Multiply source RGB by source alpha before blending. The RGB result adds
+        that product to [destination RGB * (1 - source alpha)]. The alpha result
+        is [source alpha + destination alpha * (1 - source alpha)]. *)
+
+    val premultiplied_alpha : t
+    (** Like [straight_alpha], but the shader must output RGB already multiplied
+        by source alpha. *)
+
+    val additive : t
+    (** Add [source RGB * source alpha] to destination RGB. Preserve destination
+        alpha. *)
+
+    val modulate : t
+    (** Multiply source and destination RGB. Preserve destination alpha. *)
+
+    val multiply : t
+    (** Add [source RGB * destination RGB] to
+        [destination RGB * (1 - source alpha)], as in [Blend_mode.Mul]. Preserve
+        destination alpha. *)
+  end
+
+  type color_component = Red | Green | Blue | Alpha
+  type shader_format = Spirv | Dxbc | Dxil | Msl | Metallib
+
+  type primitive =
+    | Triangle_list  (** Separate triangles. *)
+    | Triangle_strip  (** Connected triangles. *)
+    | Line_list  (** Separate lines. *)
+    | Line_strip  (** Connected lines. *)
+    | Point_list
+        (** Points. Follow the backend's rules for writing a point size in the
+            vertex shader. *)
+
+  type present_mode = Vsync | Immediate | Mailbox
+  type composition = Sdr | Sdr_linear | Hdr_extended_linear | Hdr10
+
+  val drivers : unit -> string list
+  (** The driver names compiled into SDL. This does not check runtime support.
+      Safe on any thread. *)
+
+  val supports_shader_formats :
+    ?driver:string -> context -> shader_format list -> bool
+  (** Test whether SDL can select a driver that accepts at least one format in
+      the list. Start SDL with [Video] and pass a nonempty list. *)
+
+  val create_device :
+    ?driver:string -> ?debug:bool -> context -> shader_format list -> device
+  (** Open a GPU device. Start SDL with [Video] and list the shader formats your
+      program can provide. Pass at least one format. If you omit [driver], SDL
+      selects the driver. Set [debug] to [true] to enable SDL GPU validation. *)
+
+  val destroy_device : device -> unit
+  (** Close a device that you created. Close its renderers and release all its
+      resources first. Submit or cancel any open command buffers. For a device
+      that a renderer owns, this call raises [Invalid_argument]. Destroy its
+      owning renderer instead. *)
+
+  val driver : device -> string
+  val shader_formats : device -> shader_format list
+
+  val wait_idle : device -> unit
+  (** Wait for the device to finish its submitted work. This makes successful
+      downloads in those submissions ready to read. It does not submit any work
+      that is still recorded. *)
+
+  val claim_window : device -> Window.t -> swapchain
+  (** Claim a window that has no renderer or GPU claim. SDL starts with [Sdr]
+      and [Vsync]. The claim keeps the device and window open. *)
+
+  val release_window : swapchain -> unit
+  (** Release the claim before destroying the window or device. If a command
+      buffer holds an image from this claim, submit that buffer first. Calling
+      this again on a released claim does nothing. *)
+
+  val supports_present_mode : swapchain -> present_mode -> bool
+  val supports_composition : swapchain -> composition -> bool
+
+  val swapchain_format : swapchain -> texture_format
+  (** Return the claim's current image format. Read again after a change in
+      swapchain composition. *)
+
+  val set_swapchain_parameters :
+    swapchain -> composition:composition -> present_mode:present_mode -> unit
+  (** Set the display color format and presentation timing. If a command buffer
+      holds an image from this claim, submit that buffer first. SDL can reject
+      settings that the window does not support. *)
+
+  val create_shader :
+    device ->
+    stage:'stage shader_stage ->
+    format:shader_format ->
+    ?entrypoint:string ->
+    ?samplers:int ->
+    ?uniform_buffers:int ->
+    string ->
+    'stage shader
+  (** Create a shader from code in [format]. Pass valid code for [stage] and a
+      format the device supports. The entry point defaults to ["main"].
+
+      Declare the number of texture and sampler pairs in [samplers] (0 to 16).
+      Declare the number of uniform blocks in [uniform_buffers] (0 to 4). Both
+      counts default to zero. Use consecutive slots from zero within each group.
+      For SPIR-V, use sets 0 and 1 for vertex samplers and uniforms. Use sets 2
+      and 3 for fragment samplers and uniforms. For the other formats, follow
+      the layout in SDL's [SDL_CreateGPUShader] documentation. The binding does
+      not inspect the code. Do not use storage resources. *)
+
+  val release_shader : 'stage shader -> unit
+  (** Release the shader. Destroy any custom render states that use it first.
+      Existing pipelines can still use it. Calling this again on a released
+      shader does nothing. *)
+
+  val create_graphics_pipeline :
+    ?vertex_layout:vertex_layout ->
+    ?vertex_layouts:vertex_buffer_layout list ->
+    ?blend:Blend.t ->
+    ?color_write_mask:color_component list ->
+    device ->
+    format:texture_format ->
+    vertex:vertex shader ->
+    fragment:fragment shader ->
+    primitive:primitive ->
+    graphics_pipeline
+  (** Create a pipeline for a single color target of [format]. Both shaders must
+      belong to [device]. No window claim is needed. The pipeline uses no depth
+      test or face culling.
+
+      If the vertex shader reads attributes, pass [vertex_layouts] in slot
+      order, starting at zero. Use up to 16 slots and 16 attributes in total.
+      For one per-vertex slot, you can use [vertex_layout] instead. Do not pass
+      both. If neither is set, the pipeline has no vertex buffers.
+
+      Without [blend], fragments replace the target values. If
+      [color_write_mask] is present, draws write only the listed channels,
+      whether or not blending is enabled. An empty list writes no channels.
+      Omitting the mask writes all channels. The mask does not affect clears. *)
+
+  val create_swapchain_pipeline :
+    ?vertex_layout:vertex_layout ->
+    ?vertex_layouts:vertex_buffer_layout list ->
+    ?blend:Blend.t ->
+    ?color_write_mask:color_component list ->
+    swapchain ->
+    vertex:vertex shader ->
+    fragment:fragment shader ->
+    primitive:primitive ->
+    graphics_pipeline
+  (** Like [create_graphics_pipeline], using the claim's device and current
+      format. The pipeline can also draw into textures with that format. It does
+      not keep the claim open. If the swapchain format changes, use a matching
+      pipeline. *)
+
+  val release_graphics_pipeline : graphics_pipeline -> unit
+  (** Release the pipeline. SDL keeps any work already recorded in command
+      buffers valid. If a pass still uses this pipeline, bind another pipeline
+      before drawing again. Calling this again on a released pipeline does
+      nothing. *)
+
+  val create_vertex_buffer : device -> size:int -> vertex buffer
+  (** Allocate space for vertex data. Pass a positive byte size that is a
+      multiple of four and fits in an unsigned 32-bit integer. Upload data
+      before drawing. *)
+
+  val create_index_buffer :
+    device -> format:index_format -> size:int -> index buffer
+  (** Allocate space for vertex indices. The same byte size rules apply as for
+      [create_vertex_buffer]. Pad an odd number of 16-bit indices with two
+      bytes. Pass only the actual index count to the draw call. *)
+
+  val release_buffer : 'kind buffer -> unit
+  (** Release a vertex or index buffer. SDL keeps already recorded commands
+      valid. Calling this again on a released buffer does nothing. *)
+
+  val create_upload_buffer : device -> size:int -> upload_buffer
+  (** Allocate memory for uploads. The same byte size rules apply as for
+      [create_vertex_buffer]. *)
+
+  val write_upload_buffer : upload_buffer -> byte_buffer -> unit
+  (** Copy a nonempty bigarray to the start of the upload buffer. The array must
+      fit in the buffer. Only the bytes written by this call are valid for new
+      copies. SDL can use separate storage if a recorded copy still uses the
+      previous bytes. The bigarray can be reused after this call. *)
+
+  val release_upload_buffer : upload_buffer -> unit
+  (** Release the upload buffer. SDL keeps already recorded copies valid.
+      Calling this again on a released buffer does nothing. *)
+
+  val create_download_buffer : device -> size:int -> download_buffer
+  (** Allocate space for downloads. Pass a positive byte size that is a multiple
+      of four and fits in an unsigned 32-bit integer. Record at most one pending
+      download at a time into this buffer. *)
+
+  val read_download_buffer :
+    ?dst_offset:int -> ?pitch:int -> download_buffer -> byte_buffer -> unit
+  (** Copy the result of the last download into the bigarray. First call
+      [wait_fence] on the fence for that submission or [wait_idle] on the device
+      after submission. [fence_signaled] alone is not enough. Raise
+      [Invalid_argument] if the download is not ready or if it was canceled. If
+      submission or a wait fails, discard the result.
+
+      The bigarray's byte offset defaults to zero. Its pitch is the byte
+      distance between rows and defaults to the number of bytes in a row. For a
+      buffer download, there is one row. Only the downloaded bytes are copied.
+      Padding and other bytes in the bigarray stay unchanged. The last row does
+      not need padding in the bigarray.
+
+      This call does not wait for the GPU. Keep the bigarray free of concurrent
+      access during the copy. It does not share memory with the download buffer
+      and stays valid after you release that buffer. *)
+
+  val release_download_buffer : download_buffer -> unit
+  (** Release the buffer and discard its result. SDL keeps already recorded
+      copies valid. Release this buffer before closing the device. Calling this
+      again on a released buffer does nothing. *)
+
+  val supports_texture_format :
+    device -> format:texture_format -> usage:texture_usage -> bool
+  (** Ask SDL if the device supports this combination of format and use for a 2D
+      texture. This does not check a particular size or allocate an image. *)
+
+  val create_texture :
+    ?mip_levels:int ->
+    device ->
+    format:texture_format ->
+    usage:texture_usage ->
+    w:int ->
+    h:int ->
+    texture
+  (** Allocate a 2D texture. Width and height must be in [1, 16384]. The mip
+      level count defaults to one. It must fit the dimensions, including level
+      zero. Each successive level halves each dimension, rounds down, and stops
+      at one pixel per axis. Initialize each level before reading it. This
+      function does not generate the smaller images. Raise [Error] if the device
+      does not support the format and use. *)
+
+  val create_sampled_texture : device -> w:int -> h:int -> texture
+  (** Allocate a one-level [Rgba8_unorm] texture with [Sampled] usage. *)
+
+  val texture_format : texture -> texture_format
+  val texture_mip_levels : texture -> int
+
+  val texture_size : ?mip_level:int -> texture -> int * int
+  (** Return the size in pixels of a level. The index defaults to zero. *)
+
+  val texture_region :
+    ?mip_level:int -> ?rect:Rect.t -> texture -> texture_region
+  (** Describe a rectangle in a texture level. The index defaults to zero. If
+      you omit [rect], select the whole level. Copy, blit, and download calls
+      check the region before recording GPU work. *)
+
+  val release_texture : texture -> unit
+  (** Release the texture. End any render pass that uses it as its target and
+      destroy any custom render states that sample it first. SDL keeps already
+      recorded commands valid. Calling this again on a released texture does
+      nothing. *)
+
+  val create_sampler :
+    ?max_mip_level:int ->
+    ?mipmap_filter:sampler_filter ->
+    ?address_u:sampler_address ->
+    ?address_v:sampler_address ->
+    ?address_w:sampler_address ->
+    device ->
+    filter:sampler_filter ->
+    sampler
+  (** Create a sampler. Within a mip level, [Nearest] reads the closest pixel
+      and [Linear] blends nearby pixels. By default, [mipmap_filter] is
+      [Nearest]. Use [Linear] to blend between mip levels instead. The maximum
+      mip level index is in [0, 14] and defaults to zero. Address modes default
+      to [Clamp_to_edge]. A 2D texture uses only the U and V axes. *)
+
+  val release_sampler : sampler -> unit
+  (** Release the sampler. Destroy any custom render states that use it first.
+      SDL keeps already recorded commands valid. Calling this again on a
+      released sampler does nothing. *)
+
+  val acquire_command_buffer : device -> command_buffer
+  (** Start recording GPU work. Submit or cancel the buffer when finished. *)
+
+  val push_uniform_data :
+    command_buffer ->
+    stage:'stage shader_stage ->
+    slot:int ->
+    byte_buffer ->
+    unit
+  (** Copy values that stay constant for a draw to a uniform slot from 0 to 3.
+      The buffer's length must be 4 to 4096 bytes and a multiple of four. Pack
+      the data to match the shader's block in [std140] layout. The binding does
+      not inspect the layout.
+
+      Call this before or during a render pass. The data applies to subsequent
+      draws in this command buffer until you replace it in the same slot and
+      stage. [blit_texture] invalidates fragment slot zero. You can reuse the
+      bigarray as soon as this call returns. *)
+
+  val submit_command_buffer : command_buffer -> unit
+  (** Queue the recorded work and present any acquired window image. End any
+      open pass first. Once SDL receives the buffer, the binding closes it even
+      if SDL reports an error. *)
+
+  val submit_and_acquire_fence : command_buffer -> fence
+  (** Submit and return a fence for the work. The same rules apply as for
+      [submit_command_buffer]. Release the fence when you no longer need it. *)
+
+  val cancel_command_buffer : command_buffer -> unit
+  (** Discard recorded work. End any open pass first. If the buffer holds a
+      window image, submit it instead. Calling this on a closed buffer does
+      nothing. *)
+
+  val fence_signaled : fence -> bool
+  (** Return [true] if the GPU finished the work for this fence. Call
+      [wait_fence] before reading downloads from that work. Some drivers finish
+      the copy into the download buffer during the wait. *)
+
+  val wait_fence : fence -> unit
+  (** Wait for the GPU to finish the work for this fence. This makes the
+      downloads in its submission ready to read, even after fence release. *)
+
+  val release_fence : fence -> unit
+  (** Release the fence. Calling this again on a released fence does nothing. *)
+
+  val begin_copy_pass : command_buffer -> copy_pass
+  (** Start a pass for uploads, downloads, and copies. End any open pass on the
+      command buffer first. *)
+
+  val upload_to_buffer :
+    ?src_offset:int ->
+    ?dst_offset:int ->
+    ?cycle:bool ->
+    copy_pass ->
+    src:upload_buffer ->
+    dst:'kind buffer ->
+    size:int ->
+    unit
+  (** Record a copy from the written bytes in [src] to [dst]. Both buffers must
+      belong to the pass's device. Offsets default to zero. Each offset and the
+      positive byte size must be a multiple of four.
+
+      With [cycle:true], replace the whole destination. SDL can use separate
+      storage if a recorded command still uses the previous bytes. If you cancel
+      a buffer with a cycling upload, upload again before drawing. Without
+      cycling, the copy updates the existing storage in GPU command order. *)
+
+  val upload_to_texture :
+    ?src_offset:int ->
+    ?cycle:bool ->
+    ?mip_level:int ->
+    copy_pass ->
+    src:upload_buffer ->
+    dst:texture ->
+    unit
+  (** Replace all pixels in the selected level of [dst]. The level defaults to
+      zero. Pack the pixels in the texture's format, one row after another with
+      no padding. The byte offset defaults to zero. Align it to both four bytes
+      and the pixel size. The pixels must fit the written bytes of [src]. Both
+      resources must belong to the pass's device.
+
+      Cycling requires a one-level texture. If [cycle] is true, SDL can use
+      separate storage for the new pixels. If you cancel a cycling upload,
+      initialize the texture again before reading it. *)
+
+  val copy_texture :
+    ?cycle:bool -> copy_pass -> src:texture_region -> dst:texture_region -> unit
+  (** Copy pixels without scaling or conversion. Use two distinct textures on
+      the pass's device. The regions must fit their levels and have the same
+      size and pixel format. Cycling requires a whole one-level destination. If
+      you cancel a cycling copy, initialize the destination again before reading
+      it. *)
+
+  val download_from_buffer :
+    ?src_offset:int ->
+    ?dst_offset:int ->
+    copy_pass ->
+    src:'kind buffer ->
+    dst:download_buffer ->
+    size:int ->
+    unit
+  (** Record a copy from a vertex or index buffer into [dst]. Both buffers must
+      belong to the pass's device. Use initialized source bytes. The offsets
+      default to zero. The offsets and the positive byte size must be multiples
+      of four. The copy must fit both buffers.
+
+      You can reuse [dst] after a successful wait or cancellation. Recording a
+      new download replaces the previous result, even if you cancel the new
+      commands. Use separate download buffers for concurrent downloads. *)
+
+  val download_from_texture :
+    ?dst_offset:int ->
+    ?pitch:int ->
+    copy_pass ->
+    src:texture_region ->
+    dst:download_buffer ->
+    unit
+  (** Record a copy of an initialized texture region into [dst]. Both resources
+      must belong to the pass's device. The copy keeps the source pixel format.
+      The byte offset defaults to zero. Align it to both four bytes and the
+      pixel size.
+
+      The pitch is in bytes and defaults to the number of bytes in a row. It
+      must cover one row and be a multiple of the pixel size. Leave room in
+      [dst] for [offset + pitch * height] bytes, including any final padding.
+      Very large pitches that exceed the native row or footprint limits raise
+      [Invalid_argument]. A pitch aligned to 256 bytes and an offset aligned to
+      512 bytes avoid a temporary copy on Direct3D 12.
+
+      The same wait, cancellation, and reuse rules apply as for
+      [download_from_buffer]. *)
+
+  val end_copy_pass : copy_pass -> unit
+  (** End the copy pass. Calling this again on an ended pass does nothing. *)
+
+  val blit_texture :
+    ?filter:sampler_filter ->
+    ?flip:Surface.flip ->
+    ?cycle:bool ->
+    command_buffer ->
+    src:texture_region ->
+    dst:texture_region ->
+    load:load_op ->
+    unit
+  (** Scale a source region into a destination region. SDL can also convert the
+      pixel format. The filter defaults to [Nearest]. The source must support
+      sampling. The destination must support color targets. Use distinct
+      textures from the command buffer's device. End any pass on the buffer and
+      any render pass on the device before blitting.
+
+      If [load] is [Clear], SDL clears the whole destination level first.
+      Cycling needs [Dont_care] and a whole one-level destination. If you cancel
+      a cycling blit, initialize the destination before reading it. Neither
+      selected level can shift a base dimension down to zero. Use a copy instead
+      for such levels if the rectangles and formats match.
+
+      This call invalidates fragment uniform slot zero. Push the slot data again
+      before drawing with a pipeline that uses it. *)
+
+  val begin_render_pass :
+    ?mip_level:int ->
+    ?store:store_op ->
+    ?cycle:bool ->
+    command_buffer ->
+    target:texture ->
+    load:load_op ->
+    render_pass
+  (** Start drawing to one color target on the command buffer's device. The
+      texture must support color targets. The level defaults to zero and [store]
+      defaults to [Store]. End any pass on the buffer and any render pass on the
+      device first. The pass keeps the target open until you end it. Do not
+      sample the target in the same pass, even at another level.
+
+      Cycling needs a one-level texture and either [Clear] or [Dont_care]. If
+      you cancel a cycling pass, initialize the texture before reading it. SDL
+      cannot render a level if either base dimension shifts to zero at that
+      level. *)
+
+  val begin_swapchain_render_pass :
+    command_buffer -> swapchain -> clear:Color.t -> render_pass option
+  (** Wait for a window image and start a pass that clears it. End any pass on
+      the buffer and any render pass on the device first. The claim and buffer
+      must belong to the same device. If this returns [None], no image was
+      available and you can still cancel the buffer.
+
+      If this returns a pass, end the pass before submitting the buffer. The
+      claim stays busy until submission. Do not acquire another image in the
+      same buffer. If an SDL call fails here, the binding closes the buffer
+      before raising [Error]. It cancels the buffer if no image was acquired.
+      Otherwise, it submits the buffer to return the image to SDL. *)
+
+  val render_pass_size : render_pass -> int * int
+  (** Return the target width and height in pixels. *)
+
+  val set_viewport : render_pass -> Frect.t option -> unit
+  (** Map drawing coordinates to a rectangle in target pixels. Pass a positive
+      size and finite coordinates inside the target. [None] resets the viewport
+      to the full target. This does not change the scissor. *)
+
+  val set_scissor : render_pass -> Rect.t option -> unit
+  (** Clip draws to a rectangle in target pixels, not relative to the viewport.
+      The rectangle must have positive size and fit the target. [None] removes
+      the extra clip. Neither setting affects the pass's clear operation. *)
+
+  val bind_graphics_pipeline : render_pass -> graphics_pipeline -> unit
+  (** Bind a live pipeline that matches the pass's device and pixel format. Bind
+      the vertex buffer and sampler slots that the pipeline needs after each
+      call. Uniform data stays in the command buffer. *)
+
+  val bind_samplers :
+    ?first_slot:int ->
+    render_pass ->
+    stage:'stage shader_stage ->
+    (texture * sampler) array ->
+    unit
+  (** Bind texture and sampler pairs to consecutive slots of the current
+      pipeline's shader. [first_slot] defaults to zero. The range must fit the
+      sampler count for that stage. The resources must belong to the pass's
+      device. The textures must support sampling and cannot be the active color
+      target. An empty array does not change any slots. *)
+
+  val bind_vertex_buffer :
+    ?slot:int -> ?offset:int -> render_pass -> vertex buffer -> unit
+  (** Select a buffer for one slot of the current pipeline. The slot and byte
+      offset default to zero. The buffer must belong to the pass's device. The
+      offset must be a multiple of four and leave room for at least one element.
+      Rebind the buffer after changing the pipeline. The next draw resolves all
+      selected buffers against their current GPU storage. *)
+
+  val bind_vertex_buffers :
+    ?first_slot:int -> render_pass -> (vertex buffer * int) array -> unit
+  (** Bind consecutive slots, starting at [first_slot] (zero by default). Each
+      pair contains a buffer and its byte offset. The same rules apply as for
+      [bind_vertex_buffer]. The binding copies the pairs. It does not retain the
+      array. An empty array leaves the bindings unchanged. *)
+
+  val bind_index_buffer : ?offset:int -> render_pass -> index buffer -> unit
+  (** Select indices for later draws in this pass. The buffer must belong to the
+      pass's device. The byte offset defaults to zero and must be a multiple of
+      the index width. Leave room for at least one index. *)
+
+  val draw_primitives : ?instances:int -> render_pass -> vertices:int -> unit
+  (** Draw with the pipeline bound to this pass. Counts must be positive and no
+      greater than [4_294_967_295]. The instance count defaults to 1. Vertex and
+      instance indices start at 0. Bind a live buffer for each slot of the
+      pipeline. Each buffer must fit the requested vertices or instances for its
+      input rate. Push data for each declared uniform slot and bind each
+      declared sampler slot before drawing. The resources must still be live. *)
+
+  val draw_indexed_primitives :
+    ?instances:int -> ?first_index:int -> render_pass -> indices:int -> unit
+  (** Draw with the current pipeline and index buffer. The index and instance
+      counts have the same limits as in [draw_primitives]. [first_index] is
+      relative to the bound index buffer offset and defaults to zero. The index
+      range must fit in the buffer. Each index must fit in every per-vertex
+      slot. The binding does not inspect the index values. Per-instance slots
+      must fit the instance count. The same resource rules apply as for
+      [draw_primitives]. *)
+
+  val end_render_pass : render_pass -> unit
+  (** End the pass. Calling this again on an ended pass does nothing. *)
+
+  val clear_and_present : swapchain -> Color.t -> bool
+  (** Wait for a window image, clear it to the given color, and submit it for
+      presentation. End any render pass on the device first. Return [false] if
+      no image can be acquired, for example if the window is minimized. No
+      commands or image handles escape this call. *)
+end
+
 type +'access texture
 (** A texture handle. The type parameter marks how you can use it. *)
 
 module Renderer : sig
   type t
+
+  type gpu_render_state
+  (** A custom fragment shader and its inputs for draws on the GPU renderer. *)
+
+  type gpu_draw =
+    | Textured
+    | Untextured
+        (** Whether a draw supplies a renderer texture in sampler slot zero. *)
+
   type presentation = Stretch | Letterbox | Overscan | Integer_scale
 
   type geometry_buffer =
@@ -503,7 +1197,64 @@ module Renderer : sig
   (** Draw to the surface. Destroy the renderer before locking or destroying
       that surface. *)
 
+  val create_gpu : ?device:Gpu.device -> Window.t -> t
+  (** Create a GPU renderer for an unclaimed window. If you pass [device], the
+      renderer uses it without taking ownership. Otherwise SDL creates a device
+      that the renderer owns. End any low-level render pass on the device before
+      drawing with this renderer or making a call that can flush it. *)
+
+  val create_gpu_offscreen : ?device:Gpu.device -> context -> t
+  (** Create a GPU renderer without a window. Start SDL with [Video]. Set a
+      texture target before drawing, reading pixels, or presenting. The same
+      device rules apply as for [create_gpu]. *)
+
   val destroy : t -> unit
+  (** Destroy the renderer. Close its textures, text engines, and custom states
+      first. If the renderer owns a GPU device, also release any [Gpu] resources
+      you created on it first. *)
+
+  val gpu_device : t -> Gpu.device option
+  (** Return [None] for other renderer drivers. For the GPU renderer, return the
+      supplied device or a borrowed handle to the renderer's own device. The
+      borrowed handle stops working when you destroy its owning renderer. Do not
+      pass it to {!Gpu.destroy_device}. *)
+
+  val create_gpu_render_state :
+    ?samplers:(Gpu.texture * Gpu.sampler) array ->
+    t ->
+    draw:gpu_draw ->
+    fragment:Gpu.fragment Gpu.shader ->
+    gpu_render_state
+  (** Create a state for a GPU renderer. The shader and extra sampler pairs must
+      belong to its device. The textures must support sampling. The state keeps
+      all these resources open, but does not own them.
+
+      For [Textured], the draw binds its own texture at slot zero. Extra pairs
+      start at slot one. For [Untextured], pairs start at slot zero. Declare
+      exactly that total sampler count in the fragment shader. For SPIR-V, the
+      renderer's vertex shader provides RGBA color at location zero and, for
+      textured draws, UV at location one. For other shader formats, match the
+      corresponding SDL GPU renderer vertex outputs. The custom shader replaces
+      SDL's default fragment color processing. *)
+
+  val set_gpu_render_state : t -> gpu_render_state option -> unit
+  (** Use a state for later draws. It must belong to this renderer, match the
+      type of draw, and have data in all declared uniform slots. [None] restores
+      the default shaders. Clears do not use the state. Already queued draws
+      keep their state. *)
+
+  val set_gpu_render_state_fragment_uniforms :
+    gpu_render_state -> slot:int -> byte_buffer -> unit
+  (** Copy data into a declared fragment uniform slot. Use 4 to 4096 bytes in
+      multiples of four. Pack values for the shader's uniform layout. If some
+      queued draws use this state, SDL records them with the old data before
+      replacing it. Do not change the buffer during the call. If SDL fails to
+      add a new slot after another was set, the binding closes the state. *)
+
+  val destroy_gpu_render_state : gpu_render_state -> unit
+  (** Stop using this state if it is active and record any draws that still need
+      it. Then release the state's references to its resources. Calling this
+      again on a destroyed state does nothing. *)
 
   val name : t -> string
   (** Copy the name of the selected driver. *)
@@ -518,8 +1269,9 @@ module Renderer : sig
       when it uploads a surface. *)
 
   val output_size : t -> int * int
-  (** The output size in pixels, as reported by SDL. If you draw to a texture,
-      use [current_output_size]. *)
+  (** The default output size in pixels, as reported by SDL. An offscreen GPU
+      renderer has no default output and returns [(0, 0)]. If you draw to a
+      texture, use [current_output_size]. *)
 
   val current_output_size : t -> int * int
   (** The size of the current target, adjusted for logical presentation. *)
@@ -531,8 +1283,8 @@ module Renderer : sig
       adaptive, and positive values count display refreshes per presentation. *)
 
   val set_target : t -> [ `Target ] texture option -> unit
-  (** Draw to a texture that belongs to this renderer. Pass [None] to draw to
-      the window or surface again. *)
+  (** Draw to a texture that belongs to this renderer. Pass [None] to restore
+      the window or surface, or leave an offscreen renderer without a target. *)
 
   val set_logical_presentation : t -> (int * int * presentation) option -> unit
   (** Set a virtual width and height for the current target. Pass [None] to turn
@@ -656,8 +1408,8 @@ module Renderer : sig
       SDL. *)
 
   val present : t -> unit
-  (** Present the frame. Raise [Invalid_argument] if a texture is the current
-      target. *)
+  (** Present the frame. For an offscreen GPU renderer, submit the frame to its
+      current texture target. Other renderers must use their default target. *)
 end
 
 module Texture : sig
@@ -927,644 +1679,6 @@ module Sprite_batch : sig
       Sprites use the texture's scale and blend modes. Their tint and opacity
       replace its color and alpha modulation for this draw only. Use
       [Blend_mode.Blend] for transparency. *)
-end
-
-module Gpu : sig
-  (** SDL GPU drawing and window presentation. *)
-
-  type device
-
-  type swapchain
-  (** A GPU claim on a window. It manages the images used to present frames. *)
-
-  type command_buffer
-  (** A list of GPU operations to submit together. *)
-
-  type render_pass
-  (** A group of rendering operations that share the same target image. *)
-
-  type copy_pass
-  (** A group of GPU copy operations in a command buffer. *)
-
-  type fence
-  (** A handle that signals completion of submitted GPU work. *)
-
-  type vertex
-  type fragment
-
-  type 'stage shader
-  (** A vertex or fragment program for the GPU. *)
-
-  type _ shader_stage =
-    | Vertex : vertex shader_stage
-    | Fragment : fragment shader_stage
-
-  type graphics_pipeline
-  (** The shaders and drawing state for a render pass. *)
-
-  type index
-
-  type 'kind buffer
-  (** GPU memory for vertex data or indices. *)
-
-  type upload_buffer
-  (** Temporary memory that holds bytes to copy to the GPU. *)
-
-  type download_buffer
-  (** Temporary memory that receives bytes from the GPU. *)
-
-  type texture
-  (** An owned 2D GPU image. Its use depends on how you allocate it. *)
-
-  type texture_format =
-    | R8_unorm  (** One red byte. *)
-    | Rgba8_unorm  (** Four bytes in red, green, blue, alpha order. *)
-    | Bgra8_unorm  (** Four bytes in blue, green, red, alpha order. *)
-    | Rgba8_srgb  (** Like [Rgba8_unorm], with sRGB encoding for RGB. *)
-    | Bgra8_srgb  (** Like [Bgra8_unorm], with sRGB encoding for RGB. *)
-    | Rgba16_float  (** Four native-endian 16-bit floats in RGBA order. *)
-    | Rgb10a2_unorm
-        (** A native-endian 32-bit word. Red occupies the low 10 bits, then
-            green and blue each occupy 10 bits. Alpha occupies the high 2 bits.
-        *)
-
-  type texture_usage =
-    | Sampled  (** Read the pixels in a shader. *)
-    | Color_target  (** Draw into the texture. *)
-    | Sampled_color_target
-        (** Draw into and sample the texture in separate passes. *)
-
-  type texture_region = { texture : texture; mip_level : int; rect : Rect.t }
-  (** A rectangle in a mip level. Level zero is the full-size image. *)
-
-  type load_op =
-    | Load  (** Keep the previous pixels. Load only initialized pixels. *)
-    | Clear of Color.t
-        (** Set the whole target level to one color. Each color byte maps to a
-            component from 0 to 1 before the target format encodes it. *)
-    | Dont_care  (** The previous pixels are undefined. *)
-
-  type store_op =
-    | Store  (** Keep the pixels after the pass. *)
-    | Discard  (** The pixels are undefined after the pass. *)
-
-  type sampler
-  (** Rules for how a shader reads pixels from a texture. *)
-
-  type sampler_filter = Nearest | Linear
-
-  type index_format =
-    | Uint16
-    | Uint32  (** The width of each unsigned integer in an index buffer. *)
-
-  type vertex_format =
-    | Float32
-    | Float32x2
-    | Float32x3
-    | Float32x4
-    | Unorm8x4
-        (** An attribute's data format. [Unorm8x4] maps four unsigned bytes to
-            four values in the range 0 to 1. *)
-
-  type vertex_attribute = {
-    location : int;
-    format : vertex_format;
-    offset : int;
-  }
-  (** A value read by the vertex shader. Use a unique shader input [location]
-      from 0 to 15. The [offset] is in bytes from the start of the vertex and
-      must be a multiple of four. *)
-
-  type vertex_layout = { stride : int; attributes : vertex_attribute list }
-  (** The layout of one vertex buffer. The [stride] is the byte distance between
-      vertices. It must be a positive multiple of four, up to 2048. Supply at
-      least one attribute. Each attribute must fit in the stride. *)
-
-  module Blend : sig
-    type t = { color : Blend_mode.equation; alpha : Blend_mode.equation }
-    (** Combine the fragment shader output (source) with the current target
-        pixel (destination). Apply [color] to RGB and [alpha] to the alpha
-        channel. In the alpha equation, a color factor uses the corresponding
-        alpha. [Minimum] and [Maximum] compare the unscaled values, so the GPU
-        ignores their factors. *)
-
-    val straight_alpha : t
-    (** Multiply source RGB by source alpha before blending. The RGB result adds
-        that product to [destination RGB * (1 - source alpha)]. The alpha result
-        is [source alpha + destination alpha * (1 - source alpha)]. *)
-
-    val premultiplied_alpha : t
-    (** Like [straight_alpha], but the shader must output RGB already multiplied
-        by source alpha. *)
-
-    val additive : t
-    (** Add [source RGB * source alpha] to destination RGB. Preserve destination
-        alpha. *)
-
-    val modulate : t
-    (** Multiply source and destination RGB. Preserve destination alpha. *)
-
-    val multiply : t
-    (** Add [source RGB * destination RGB] to
-        [destination RGB * (1 - source alpha)], as in [Blend_mode.Mul]. Preserve
-        destination alpha. *)
-  end
-
-  type color_component = Red | Green | Blue | Alpha
-  type shader_format = Spirv | Dxbc | Dxil | Msl | Metallib
-
-  type primitive =
-    | Triangle_list  (** Separate triangles. *)
-    | Triangle_strip  (** Connected triangles. *)
-    | Line_list  (** Separate lines. *)
-    | Line_strip  (** Connected lines. *)
-    | Point_list
-        (** Points. Follow the backend's rules for writing a point size in the
-            vertex shader. *)
-
-  type present_mode = Vsync | Immediate | Mailbox
-  type composition = Sdr | Sdr_linear | Hdr_extended_linear | Hdr10
-
-  val drivers : unit -> string list
-  (** The driver names compiled into SDL. This does not check runtime support.
-      Safe on any thread. *)
-
-  val supports_shader_formats :
-    ?driver:string -> context -> shader_format list -> bool
-  (** Test whether SDL can select a driver that accepts at least one format in
-      the list. Start SDL with [Video] and pass a nonempty list. *)
-
-  val create_device :
-    ?driver:string -> ?debug:bool -> context -> shader_format list -> device
-  (** Open a GPU device. Start SDL with [Video] and list the shader formats your
-      program can provide. Pass at least one format. If you omit [driver], SDL
-      selects the driver. Set [debug] to [true] to enable SDL GPU validation. *)
-
-  val destroy_device : device -> unit
-  (** Close the device. Release all its resources first, including claims,
-      fences, shaders, pipelines, buffers, textures, and samplers. Submit or
-      cancel any open command buffers. *)
-
-  val driver : device -> string
-  val shader_formats : device -> shader_format list
-
-  val wait_idle : device -> unit
-  (** Wait for the device to finish its submitted work. This makes successful
-      downloads in those submissions ready to read. It does not submit any work
-      that is still recorded. *)
-
-  val claim_window : device -> Window.t -> swapchain
-  (** Claim a window that has no renderer or GPU claim. SDL starts with [Sdr]
-      and [Vsync]. The claim keeps the device and window open. *)
-
-  val release_window : swapchain -> unit
-  (** Release the claim before destroying the window or device. If a command
-      buffer holds an image from this claim, submit that buffer first. Calling
-      this again on a released claim does nothing. *)
-
-  val supports_present_mode : swapchain -> present_mode -> bool
-  val supports_composition : swapchain -> composition -> bool
-
-  val swapchain_format : swapchain -> texture_format
-  (** Return the claim's current image format. Read again after a change in
-      swapchain composition. *)
-
-  val set_swapchain_parameters :
-    swapchain -> composition:composition -> present_mode:present_mode -> unit
-  (** Set the display color format and presentation timing. If a command buffer
-      holds an image from this claim, submit that buffer first. SDL can reject
-      settings that the window does not support. *)
-
-  val create_shader :
-    device ->
-    stage:'stage shader_stage ->
-    format:shader_format ->
-    ?entrypoint:string ->
-    ?samplers:int ->
-    ?uniform_buffers:int ->
-    string ->
-    'stage shader
-  (** Create a shader from code in [format]. Pass valid code for [stage] and a
-      format the device supports. The entry point defaults to ["main"].
-
-      Declare the number of texture and sampler pairs in [samplers] (0 to 16).
-      Declare the number of uniform blocks in [uniform_buffers] (0 to 4). Both
-      counts default to zero. Use consecutive slots from zero within each group.
-      For SPIR-V, use sets 0 and 1 for vertex samplers and uniforms. Use sets 2
-      and 3 for fragment samplers and uniforms. For the other formats, follow
-      the layout in SDL's [SDL_CreateGPUShader] documentation. The binding does
-      not inspect the code. Do not use storage resources. *)
-
-  val release_shader : 'stage shader -> unit
-  (** Release the shader. Existing pipelines can still use it. Calling this
-      again on a released shader does nothing. *)
-
-  val create_graphics_pipeline :
-    ?vertex_layout:vertex_layout ->
-    ?blend:Blend.t ->
-    ?color_write_mask:color_component list ->
-    device ->
-    format:texture_format ->
-    vertex:vertex shader ->
-    fragment:fragment shader ->
-    primitive:primitive ->
-    graphics_pipeline
-  (** Create a pipeline for a single color target of [format]. Both shaders must
-      belong to [device]. No window claim is needed. If the vertex shader reads
-      attributes, pass the layout for one vertex buffer. The pipeline uses no
-      depth test or face culling.
-
-      Without [blend], fragments replace the target values. If
-      [color_write_mask] is present, draws write only the listed channels,
-      whether or not blending is enabled. An empty list writes no channels.
-      Omitting the mask writes all channels. The mask does not affect clears. *)
-
-  val create_swapchain_pipeline :
-    ?vertex_layout:vertex_layout ->
-    ?blend:Blend.t ->
-    ?color_write_mask:color_component list ->
-    swapchain ->
-    vertex:vertex shader ->
-    fragment:fragment shader ->
-    primitive:primitive ->
-    graphics_pipeline
-  (** Like [create_graphics_pipeline], using the claim's device and current
-      format. The pipeline can also draw into textures with that format. It does
-      not keep the claim open. If the swapchain format changes, use a matching
-      pipeline. *)
-
-  val release_graphics_pipeline : graphics_pipeline -> unit
-  (** Release the pipeline. SDL keeps any work already recorded in command
-      buffers valid. If a pass still uses this pipeline, bind another pipeline
-      before drawing again. Calling this again on a released pipeline does
-      nothing. *)
-
-  val create_vertex_buffer : device -> size:int -> vertex buffer
-  (** Allocate space for vertex data. Pass a positive byte size that is a
-      multiple of four and fits in an unsigned 32-bit integer. Upload data
-      before drawing. *)
-
-  val create_index_buffer :
-    device -> format:index_format -> size:int -> index buffer
-  (** Allocate space for vertex indices. The same byte size rules apply as for
-      [create_vertex_buffer]. Pad an odd number of 16-bit indices with two
-      bytes. Pass only the actual index count to the draw call. *)
-
-  val release_buffer : 'kind buffer -> unit
-  (** Release a vertex or index buffer. SDL keeps already recorded commands
-      valid. Calling this again on a released buffer does nothing. *)
-
-  val create_upload_buffer : device -> size:int -> upload_buffer
-  (** Allocate memory for uploads. The same byte size rules apply as for
-      [create_vertex_buffer]. *)
-
-  val write_upload_buffer : upload_buffer -> byte_buffer -> unit
-  (** Copy a nonempty bigarray to the start of the upload buffer. The array must
-      fit in the buffer. Only the bytes written by this call are valid for new
-      copies. SDL can use separate storage if a recorded copy still uses the
-      previous bytes. The bigarray can be reused after this call. *)
-
-  val release_upload_buffer : upload_buffer -> unit
-  (** Release the upload buffer. SDL keeps already recorded copies valid.
-      Calling this again on a released buffer does nothing. *)
-
-  val create_download_buffer : device -> size:int -> download_buffer
-  (** Allocate space for downloads. Pass a positive byte size that is a multiple
-      of four and fits in an unsigned 32-bit integer. Record at most one pending
-      download at a time into this buffer. *)
-
-  val read_download_buffer :
-    ?dst_offset:int -> ?pitch:int -> download_buffer -> byte_buffer -> unit
-  (** Copy the result of the last download into the bigarray. First call
-      [wait_fence] on the fence for that submission or [wait_idle] on the device
-      after submission. [fence_signaled] alone is not enough. Raise
-      [Invalid_argument] if the download is not ready or if it was canceled. If
-      submission or a wait fails, discard the result.
-
-      The bigarray's byte offset defaults to zero. Its pitch is the byte
-      distance between rows and defaults to the number of bytes in a row. For a
-      buffer download, there is one row. Only the downloaded bytes are copied.
-      Padding and other bytes in the bigarray stay unchanged. The last row does
-      not need padding in the bigarray.
-
-      This call does not wait for the GPU. Keep the bigarray free of concurrent
-      access during the copy. It does not share memory with the download buffer
-      and stays valid after you release that buffer. *)
-
-  val release_download_buffer : download_buffer -> unit
-  (** Release the buffer and discard its result. SDL keeps already recorded
-      copies valid. Release this buffer before closing the device. Calling this
-      again on a released buffer does nothing. *)
-
-  val supports_texture_format :
-    device -> format:texture_format -> usage:texture_usage -> bool
-  (** Ask SDL if the device supports this combination of format and use for a 2D
-      texture. This does not check a particular size or allocate an image. *)
-
-  val create_texture :
-    ?mip_levels:int ->
-    device ->
-    format:texture_format ->
-    usage:texture_usage ->
-    w:int ->
-    h:int ->
-    texture
-  (** Allocate a 2D texture. Width and height must be in [1, 16384]. The mip
-      level count defaults to one. It must fit the dimensions, including level
-      zero. Each successive level halves each dimension, rounds down, and stops
-      at one pixel per axis. Initialize each level before reading it. This
-      function does not generate the smaller images. Raise [Error] if the device
-      does not support the format and use. *)
-
-  val create_sampled_texture : device -> w:int -> h:int -> texture
-  (** Allocate a one-level [Rgba8_unorm] texture with [Sampled] usage. *)
-
-  val texture_format : texture -> texture_format
-  val texture_mip_levels : texture -> int
-
-  val texture_size : ?mip_level:int -> texture -> int * int
-  (** Return the size in pixels of a level. The index defaults to zero. *)
-
-  val texture_region :
-    ?mip_level:int -> ?rect:Rect.t -> texture -> texture_region
-  (** Describe a rectangle in a texture level. The index defaults to zero. If
-      you omit [rect], select the whole level. Copy, blit, and download calls
-      check the region before recording GPU work. *)
-
-  val release_texture : texture -> unit
-  (** Release the texture. End any render pass that uses it as its target first.
-      SDL keeps already recorded commands valid. Calling this again on a
-      released texture does nothing. *)
-
-  val create_sampler :
-    ?max_mip_level:int -> device -> filter:sampler_filter -> sampler
-  (** Create a sampler. [Nearest] reads the closest pixel. [Linear] blends
-      nearby pixels. Coordinates outside the texture use its edge pixels. The
-      maximum mip level index is in [0, 14] and defaults to zero. SDL picks the
-      nearest mip level within the limit and the texture's levels. *)
-
-  val release_sampler : sampler -> unit
-  (** Release the sampler. SDL keeps already recorded commands valid. Calling
-      this again on a released sampler does nothing. *)
-
-  val acquire_command_buffer : device -> command_buffer
-  (** Start recording GPU work. Submit or cancel the buffer when finished. *)
-
-  val push_uniform_data :
-    command_buffer ->
-    stage:'stage shader_stage ->
-    slot:int ->
-    byte_buffer ->
-    unit
-  (** Copy values that stay constant for a draw to a uniform slot from 0 to 3.
-      The buffer's length must be 4 to 4096 bytes and a multiple of four. Pack
-      the data to match the shader's block in [std140] layout. The binding does
-      not inspect the layout.
-
-      Call this before or during a render pass. The data applies to subsequent
-      draws in this command buffer until you replace it in the same slot and
-      stage. [blit_texture] invalidates fragment slot zero. You can reuse the
-      bigarray as soon as this call returns. *)
-
-  val submit_command_buffer : command_buffer -> unit
-  (** Queue the recorded work and present any acquired window image. End any
-      open pass first. Once SDL receives the buffer, the binding closes it even
-      if SDL reports an error. *)
-
-  val submit_and_acquire_fence : command_buffer -> fence
-  (** Submit and return a fence for the work. The same rules apply as for
-      [submit_command_buffer]. Release the fence when you no longer need it. *)
-
-  val cancel_command_buffer : command_buffer -> unit
-  (** Discard recorded work. End any open pass first. If the buffer holds a
-      window image, submit it instead. Calling this on a closed buffer does
-      nothing. *)
-
-  val fence_signaled : fence -> bool
-  (** Return [true] if the GPU finished the work for this fence. Call
-      [wait_fence] before reading downloads from that work. Some drivers finish
-      the copy into the download buffer during the wait. *)
-
-  val wait_fence : fence -> unit
-  (** Wait for the GPU to finish the work for this fence. This makes the
-      downloads in its submission ready to read, even after fence release. *)
-
-  val release_fence : fence -> unit
-  (** Release the fence. Calling this again on a released fence does nothing. *)
-
-  val begin_copy_pass : command_buffer -> copy_pass
-  (** Start a pass for uploads, downloads, and copies. End any open pass on the
-      command buffer first. *)
-
-  val upload_to_buffer :
-    ?src_offset:int ->
-    ?dst_offset:int ->
-    ?cycle:bool ->
-    copy_pass ->
-    src:upload_buffer ->
-    dst:'kind buffer ->
-    size:int ->
-    unit
-  (** Record a copy from the written bytes in [src] to [dst]. Both buffers must
-      belong to the pass's device. Offsets default to zero. Each offset and the
-      positive byte size must be a multiple of four.
-
-      With [cycle:true], replace the whole destination. SDL can use separate
-      storage if a recorded command still uses the previous bytes. If you cancel
-      a buffer with a cycling upload, upload again before drawing. Without
-      cycling, the copy updates the existing storage in GPU command order. *)
-
-  val upload_to_texture :
-    ?src_offset:int ->
-    ?cycle:bool ->
-    ?mip_level:int ->
-    copy_pass ->
-    src:upload_buffer ->
-    dst:texture ->
-    unit
-  (** Replace all pixels in the selected level of [dst]. The level defaults to
-      zero. Pack the pixels in the texture's format, one row after another with
-      no padding. The byte offset defaults to zero. Align it to both four bytes
-      and the pixel size. The pixels must fit the written bytes of [src]. Both
-      resources must belong to the pass's device.
-
-      Cycling requires a one-level texture. If [cycle] is true, SDL can use
-      separate storage for the new pixels. If you cancel a cycling upload,
-      initialize the texture again before reading it. *)
-
-  val copy_texture :
-    ?cycle:bool -> copy_pass -> src:texture_region -> dst:texture_region -> unit
-  (** Copy pixels without scaling or conversion. Use two distinct textures on
-      the pass's device. The regions must fit their levels and have the same
-      size and pixel format. Cycling requires a whole one-level destination. If
-      you cancel a cycling copy, initialize the destination again before reading
-      it. *)
-
-  val download_from_buffer :
-    ?src_offset:int ->
-    ?dst_offset:int ->
-    copy_pass ->
-    src:'kind buffer ->
-    dst:download_buffer ->
-    size:int ->
-    unit
-  (** Record a copy from a vertex or index buffer into [dst]. Both buffers must
-      belong to the pass's device. Use initialized source bytes. The offsets
-      default to zero. The offsets and the positive byte size must be multiples
-      of four. The copy must fit both buffers.
-
-      You can reuse [dst] after a successful wait or cancellation. Recording a
-      new download replaces the previous result, even if you cancel the new
-      commands. Use separate download buffers for concurrent downloads. *)
-
-  val download_from_texture :
-    ?dst_offset:int ->
-    ?pitch:int ->
-    copy_pass ->
-    src:texture_region ->
-    dst:download_buffer ->
-    unit
-  (** Record a copy of an initialized texture region into [dst]. Both resources
-      must belong to the pass's device. The copy keeps the source pixel format.
-      The byte offset defaults to zero. Align it to both four bytes and the
-      pixel size.
-
-      The pitch is in bytes and defaults to the number of bytes in a row. It
-      must cover one row and be a multiple of the pixel size. Leave room in
-      [dst] for [offset + pitch * height] bytes, including any final padding.
-      Very large pitches that exceed the native row or footprint limits raise
-      [Invalid_argument]. A pitch aligned to 256 bytes and an offset aligned to
-      512 bytes avoid a temporary copy on Direct3D 12.
-
-      The same wait, cancellation, and reuse rules apply as for
-      [download_from_buffer]. *)
-
-  val end_copy_pass : copy_pass -> unit
-  (** End the copy pass. Calling this again on an ended pass does nothing. *)
-
-  val blit_texture :
-    ?filter:sampler_filter ->
-    ?flip:Surface.flip ->
-    ?cycle:bool ->
-    command_buffer ->
-    src:texture_region ->
-    dst:texture_region ->
-    load:load_op ->
-    unit
-  (** Scale a source region into a destination region. SDL can also convert the
-      pixel format. The filter defaults to [Nearest]. The source must support
-      sampling. The destination must support color targets. Use distinct
-      textures from the command buffer's device. End any pass on the buffer and
-      any render pass on the device before blitting.
-
-      If [load] is [Clear], SDL clears the whole destination level first.
-      Cycling needs [Dont_care] and a whole one-level destination. If you cancel
-      a cycling blit, initialize the destination before reading it. Neither
-      selected level can shift a base dimension down to zero. Use a copy instead
-      for such levels if the rectangles and formats match.
-
-      This call invalidates fragment uniform slot zero. Push the slot data again
-      before drawing with a pipeline that uses it. *)
-
-  val begin_render_pass :
-    ?mip_level:int ->
-    ?store:store_op ->
-    ?cycle:bool ->
-    command_buffer ->
-    target:texture ->
-    load:load_op ->
-    render_pass
-  (** Start drawing to one color target on the command buffer's device. The
-      texture must support color targets. The level defaults to zero and [store]
-      defaults to [Store]. End any pass on the buffer and any render pass on the
-      device first. The pass keeps the target open until you end it. Do not
-      sample the target in the same pass, even at another level.
-
-      Cycling needs a one-level texture and either [Clear] or [Dont_care]. If
-      you cancel a cycling pass, initialize the texture before reading it. SDL
-      cannot render a level if either base dimension shifts to zero at that
-      level. *)
-
-  val begin_swapchain_render_pass :
-    command_buffer -> swapchain -> clear:Color.t -> render_pass option
-  (** Wait for a window image and start a pass that clears it. End any pass on
-      the buffer and any render pass on the device first. The claim and buffer
-      must belong to the same device. If this returns [None], no image was
-      available and you can still cancel the buffer.
-
-      If this returns a pass, end the pass before submitting the buffer. The
-      claim stays busy until submission. Do not acquire another image in the
-      same buffer. If an SDL call fails here, the binding closes the buffer
-      before raising [Error]. It cancels the buffer if no image was acquired.
-      Otherwise, it submits the buffer to return the image to SDL. *)
-
-  val render_pass_size : render_pass -> int * int
-  (** Return the target width and height in pixels. *)
-
-  val set_viewport : render_pass -> Frect.t option -> unit
-  (** Map drawing coordinates to a rectangle in target pixels. Pass a positive
-      size and finite coordinates inside the target. [None] resets the viewport
-      to the full target. This does not change the scissor. *)
-
-  val set_scissor : render_pass -> Rect.t option -> unit
-  (** Clip draws to a rectangle in target pixels, not relative to the viewport.
-      The rectangle must have positive size and fit the target. [None] removes
-      the extra clip. Neither setting affects the pass's clear operation. *)
-
-  val bind_graphics_pipeline : render_pass -> graphics_pipeline -> unit
-  (** Bind a live pipeline that matches the pass's device and pixel format. Bind
-      the vertex buffer and sampler slots that the pipeline needs after each
-      call. Uniform data stays in the command buffer. *)
-
-  val bind_samplers :
-    ?first_slot:int ->
-    render_pass ->
-    stage:'stage shader_stage ->
-    (texture * sampler) array ->
-    unit
-  (** Bind texture and sampler pairs to consecutive slots of the current
-      pipeline's shader. [first_slot] defaults to zero. The range must fit the
-      sampler count for that stage. The resources must belong to the pass's
-      device. The textures must support sampling and cannot be the active color
-      target. An empty array does not change any slots. *)
-
-  val bind_vertex_buffer : ?offset:int -> render_pass -> vertex buffer -> unit
-  (** Select the vertex data for the current pipeline. The pipeline must have a
-      vertex layout. The buffer must belong to the pass's device. The byte
-      offset defaults to zero and must be a multiple of four. Leave room for at
-      least one vertex. *)
-
-  val bind_index_buffer : ?offset:int -> render_pass -> index buffer -> unit
-  (** Select indices for later draws in this pass. The buffer must belong to the
-      pass's device. The byte offset defaults to zero and must be a multiple of
-      the index width. Leave room for at least one index. *)
-
-  val draw_primitives : ?instances:int -> render_pass -> vertices:int -> unit
-  (** Draw with the pipeline bound to this pass. Counts must be positive and no
-      greater than [4_294_967_295]. The instance count defaults to 1. Vertex and
-      instance indices start at 0. If the pipeline reads vertex data, bind a
-      live vertex buffer with room for the requested vertices. Push data for
-      each declared uniform slot and bind each declared sampler slot before
-      drawing. The textures and samplers must still be live. *)
-
-  val draw_indexed_primitives :
-    ?instances:int -> ?first_index:int -> render_pass -> indices:int -> unit
-  (** Draw with the current pipeline and index buffer. The index and instance
-      counts have the same limits as in [draw_primitives]. [first_index] is
-      relative to the bound index buffer offset and defaults to zero. The index
-      range must fit in the buffer. If the pipeline reads vertex data, bind a
-      live vertex buffer and supply indices into its vertex data. The binding
-      does not inspect the index values. The same uniform and sampler rules
-      apply as for [draw_primitives]. *)
-
-  val end_render_pass : render_pass -> unit
-  (** End the pass. Calling this again on an ended pass does nothing. *)
-
-  val clear_and_present : swapchain -> Color.t -> bool
-  (** Wait for a window image, clear it to the given color, and submit it for
-      presentation. End any render pass on the device first. Return [false] if
-      no image can be acquired, for example if the window is minimized. No
-      commands or image handles escape this call. *)
 end
 
 module Scancode : sig

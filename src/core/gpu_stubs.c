@@ -4,8 +4,6 @@
 
 /* GPU device selection. */
 
-enum { GPU_DEVICE_RENDERING = 2, GPU_DEVICE_IDLE_MARK };
-
 /* Sdl3.Gpu.shader_format constructor order. */
 static const SDL_GPUShaderFormat osdl_gpu_format_bits[] = {
     SDL_GPU_SHADERFORMAT_SPIRV, SDL_GPU_SHADERFORMAT_DXBC,     SDL_GPU_SHADERFORMAT_DXIL,
@@ -56,11 +54,9 @@ CAMLprim value osdl_gpu_supports_shader_formats(value driver, value context, val
 
 CAMLprim value osdl_gpu_create_device(value driver, value debug, value context, value formats) {
     CAMLparam4(driver, debug, context, formats);
-    CAMLlocal2(cell, handle);
+    CAMLlocal1(handle);
 
-    cell   = osdl_new_cell(context, &osdl_handle_ops);
-    handle = caml_alloc_4(0, cell, context, Val_false, Val_unit);
-
+    handle = osdl_new_gpu_device(context, true);
     osdl_gpu_require_video(context);
     SDL_GPUShaderFormat flags      = osdl_gpu_format_flags(formats);
     const char*         name       = osdl_gpu_driver_option(driver);
@@ -70,7 +66,13 @@ CAMLprim value osdl_gpu_create_device(value driver, value debug, value context, 
     CAMLreturn(osdl_publish(handle, device, "SDL_CreateGPUDevice"));
 }
 
-OSDL_DESTROY(osdl_gpu_destroy_device, SDL_GPUDevice, SDL_DestroyGPUDevice)
+CAMLprim value osdl_gpu_destroy_device(value device) {
+    if (!Bool_val(Field(device, GPU_DEVICE_OWNED)))
+        caml_invalid_argument("Destroy the renderer that owns this GPU device instead");
+    SDL_GPUDevice* ptr = osdl_take(device);
+    if (ptr) SDL_DestroyGPUDevice(ptr);
+    return Val_unit;
+}
 
 CAMLprim value osdl_gpu_driver(value device) {
     const char* name = SDL_GetGPUDeviceDriver(osdl_live(device));
@@ -501,10 +503,6 @@ static value osdl_gpu_mip_index(value level) {
     return Is_long(level) ? Val_int(0) : Some_val(level);
 }
 
-static SDL_GPUTextureUsageFlags osdl_gpu_image_usage(value texture) {
-    return Int_val(Field(texture, GPU_TEXTURE_USAGE));
-}
-
 CAMLprim value osdl_gpu_texture_format(value texture) {
     osdl_live(texture);
     return osdl_gpu_texture_format_value(osdl_gpu_image_format(texture));
@@ -532,8 +530,21 @@ static SDL_GPUFilter osdl_gpu_filter(value filter) {
     return Int_val(filter) == 0 ? SDL_GPU_FILTER_NEAREST : SDL_GPU_FILTER_LINEAR;
 }
 
-CAMLprim value osdl_gpu_create_sampler(value max_mip_level, value device, value filter) {
-    CAMLparam3(max_mip_level, device, filter);
+static SDL_GPUSamplerAddressMode osdl_gpu_sampler_address(value mode) {
+    /* Gpu.sampler_address: Clamp_to_edge | Repeat | Mirrored_repeat. */
+    static const SDL_GPUSamplerAddressMode modes[] = {
+        SDL_GPU_SAMPLERADDRESSMODE_CLAMP_TO_EDGE,
+        SDL_GPU_SAMPLERADDRESSMODE_REPEAT,
+        SDL_GPU_SAMPLERADDRESSMODE_MIRRORED_REPEAT,
+    };
+    return modes[Is_long(mode) ? 0 : Int_val(Some_val(mode))];
+}
+
+CAMLprim value osdl_gpu_create_sampler(value max_mip_level, value mipmap_filter, value address_u,
+                                       value address_v, value address_w, value device,
+                                       value filter) {
+    CAMLparam5(max_mip_level, mipmap_filter, address_u, address_v, address_w);
+    CAMLxparam2(device, filter);
     CAMLlocal1(handle);
 
     handle = osdl_new_handle(device);
@@ -547,16 +558,23 @@ CAMLprim value osdl_gpu_create_sampler(value max_mip_level, value device, value 
     SDL_GPUSamplerCreateInfo info = {
         .min_filter     = mode,
         .mag_filter     = mode,
-        .mipmap_mode    = SDL_GPU_SAMPLERMIPMAPMODE_NEAREST,
-        .address_mode_u = SDL_GPU_SAMPLERADDRESSMODE_CLAMP_TO_EDGE,
-        .address_mode_v = SDL_GPU_SAMPLERADDRESSMODE_CLAMP_TO_EDGE,
-        .address_mode_w = SDL_GPU_SAMPLERADDRESSMODE_CLAMP_TO_EDGE,
+        .mipmap_mode    = Is_block(mipmap_filter) && Int_val(Some_val(mipmap_filter)) == 1
+                            ? SDL_GPU_SAMPLERMIPMAPMODE_LINEAR
+                            : SDL_GPU_SAMPLERMIPMAPMODE_NEAREST,
+        .address_mode_u = osdl_gpu_sampler_address(address_u),
+        .address_mode_v = osdl_gpu_sampler_address(address_v),
+        .address_mode_w = osdl_gpu_sampler_address(address_w),
         .max_anisotropy = 1.0f,
         .compare_op     = SDL_GPU_COMPAREOP_NEVER,
         .max_lod        = (float)lod,
     };
     SDL_GPUSampler* sampler = SDL_CreateGPUSampler(d, &info);
     CAMLreturn(osdl_publish(handle, sampler, "SDL_CreateGPUSampler"));
+}
+
+CAMLprim value osdl_gpu_create_sampler_byte(value* argv, int argc) {
+    (void)argc;
+    return osdl_gpu_create_sampler(argv[0], argv[1], argv[2], argv[3], argv[4], argv[5], argv[6]);
 }
 
 CAMLprim value osdl_gpu_release_sampler(value sampler) {
@@ -569,15 +587,6 @@ CAMLprim value osdl_gpu_release_sampler(value sampler) {
 
 /* Sdl3.Gpu.shader_stage constructor order. */
 enum { GPU_VERTEX, GPU_FRAGMENT };
-
-enum {
-    GPU_SHADER_SAMPLERS = 2,
-    GPU_SHADER_UNIFORMS,
-    GPU_MAX_SAMPLERS      = 16,
-    GPU_MAX_UNIFORMS      = 4,
-    /* SDL's Vulkan backend uses a 4 KiB descriptor range for each uniform slot. */
-    GPU_MAX_UNIFORM_BYTES = 4096,
-};
 
 static int osdl_gpu_shader_count(value count, int max, const char* error) {
     intnat n = Is_long(count) ? 0 : Long_val(Some_val(count));
@@ -595,7 +604,10 @@ CAMLprim value osdl_gpu_create_shader(value device, value stage, value format, v
                                               "GPU shader sampler count must be in [0, 16]");
     int uniform_count = osdl_gpu_shader_count(uniforms, GPU_MAX_UNIFORMS,
                                               "GPU shader uniform buffer count must be in [0, 4]");
-    cell              = osdl_new_cell(device, &osdl_handle_ops);
+    cell              = osdl_new_cell_sized(device, &osdl_handle_ops, sizeof(osdl_gpu_shader_cell));
+    osdl_gpu_shader_cell* native = Data_custom_val(cell);
+    native->renderer_count       = 0;
+    native->deferred_release     = NULL;
     handle = caml_alloc_4(0, cell, device, Val_int(sampler_count), Val_int(uniform_count));
 
     static const SDL_GPUShaderStage stages[] = {
@@ -633,23 +645,30 @@ CAMLprim value osdl_gpu_create_shader_byte(value* argv, int argc) {
 
 CAMLprim value osdl_gpu_release_shader(value shader) {
     SDL_GPUShader* ptr = osdl_take(shader);
-    if (ptr) SDL_ReleaseGPUShader(osdl_gpu_parent_device(shader), ptr);
+    if (ptr) {
+        osdl_gpu_shader_cell* cell = (osdl_gpu_shader_cell*)osdl_cell_val(shader);
+        if (cell->renderer_count)
+            cell->deferred_release = ptr;
+        else
+            SDL_ReleaseGPUShader(osdl_gpu_parent_device(shader), ptr);
+    }
     return Val_unit;
 }
 
 enum {
     GPU_PIPELINE_FORMAT = 2,
-    GPU_PIPELINE_STRIDE,
+    GPU_PIPELINE_LAYOUTS,
     GPU_PIPELINE_VERTEX_SAMPLERS,
     GPU_PIPELINE_FRAGMENT_SAMPLERS,
     GPU_PIPELINE_UNIFORM_MASK,
     GPU_MAX_VERTEX_ATTRIBUTES = 16,
+    GPU_MAX_VERTEX_BUFFERS    = 16,
 };
 
-static Uint32 osdl_gpu_vertex_attributes(value layout, SDL_GPUVertexBufferDescription* buffer,
-                                         SDL_GPUVertexAttribute* attributes) {
-    if (Is_long(layout)) return 0;
-
+static void osdl_gpu_vertex_layout(value layout, Uint32 slot, SDL_GPUVertexInputRate rate,
+                                   SDL_GPUVertexBufferDescription* buffer,
+                                   SDL_GPUVertexAttribute* attributes, Uint32* count,
+                                   Uint32* used) {
     /* Sdl3.Gpu.vertex_format constructor order. All formats use 4-byte alignment. */
     static const struct {
         SDL_GPUVertexElementFormat format;
@@ -663,12 +682,12 @@ static Uint32 osdl_gpu_vertex_attributes(value layout, SDL_GPUVertexBufferDescri
     };
 
     /* Sdl3.Gpu.vertex_layout: stride, attributes. */
-    value  spec   = Some_val(layout);
-    Uint32 stride = osdl_gpu_aligned_size(Field(spec, 0));
+    Uint32 stride = osdl_gpu_aligned_size(Field(layout, 0));
     if (stride > 2048) caml_invalid_argument("GPU vertex stride must be at most 2048 bytes");
+    if (Field(layout, 1) == Val_emptylist)
+        caml_invalid_argument("Supply at least one GPU vertex attribute per buffer");
 
-    Uint32 count = 0, used = 0;
-    for (value list = Field(spec, 1); list != Val_emptylist; list = Field(list, 1)) {
+    for (value list = Field(layout, 1); list != Val_emptylist; list = Field(list, 1)) {
         /* Sdl3.Gpu.vertex_attribute: location, format, offset. */
         value  attr     = Field(list, 0);
         intnat location = Long_val(Field(attr, 0));
@@ -677,17 +696,48 @@ static Uint32 osdl_gpu_vertex_attributes(value layout, SDL_GPUVertexBufferDescri
         if (location < 0 || location >= GPU_MAX_VERTEX_ATTRIBUTES)
             caml_invalid_argument("GPU attribute location must be in [0, 15]");
         Uint32 bit = 1u << location;
-        if (used & bit) caml_invalid_argument("GPU attribute locations must be unique");
+        if (*used & bit) caml_invalid_argument("GPU attribute locations must be unique");
         if (offset % 4 || !osdl_gpu_range_fits(offset, formats[format].bytes, stride))
             caml_invalid_argument("Align the GPU attribute to four bytes and fit it in the stride");
-        used |= bit;
-        attributes[count++] = (SDL_GPUVertexAttribute){
-            .location = (Uint32)location, .format = formats[format].format, .offset = offset};
+        *used |= bit;
+        attributes[(*count)++] = (SDL_GPUVertexAttribute){.location    = (Uint32)location,
+                                                          .buffer_slot = slot,
+                                                          .format      = formats[format].format,
+                                                          .offset      = offset};
     }
-    if (!count) caml_invalid_argument("Supply at least one GPU vertex attribute");
-    *buffer = (SDL_GPUVertexBufferDescription){.pitch      = stride,
-                                               .input_rate = SDL_GPU_VERTEXINPUTRATE_VERTEX};
-    return count;
+    *buffer = (SDL_GPUVertexBufferDescription){.slot = slot, .pitch = stride, .input_rate = rate};
+}
+
+static SDL_GPUVertexInputState osdl_gpu_vertex_input(value layout, value layouts,
+                                                     SDL_GPUVertexBufferDescription* buffers,
+                                                     SDL_GPUVertexAttribute*         attrs) {
+    Uint32 slots = 0, count = 0, used = 0;
+    if (Is_block(layout)) {
+        if (Is_block(layouts))
+            caml_invalid_argument("Pass either vertex_layout or vertex_layouts, not both");
+        osdl_gpu_vertex_layout(Some_val(layout), 0, SDL_GPU_VERTEXINPUTRATE_VERTEX, buffers, attrs,
+                               &count, &used);
+        slots = 1;
+    } else if (Is_block(layouts)) {
+        for (value list = Some_val(layouts); list != Val_emptylist; list = Field(list, 1)) {
+            if (slots == GPU_MAX_VERTEX_BUFFERS)
+                caml_invalid_argument("Use at most 16 GPU vertex buffer slots");
+            /* Gpu.vertex_buffer_layout: layout, input_rate. */
+            value                  spec = Field(list, 0);
+            SDL_GPUVertexInputRate rate = Int_val(Field(spec, 1)) == 0
+                                            ? SDL_GPU_VERTEXINPUTRATE_VERTEX
+                                            : SDL_GPU_VERTEXINPUTRATE_INSTANCE;
+            osdl_gpu_vertex_layout(Field(spec, 0), slots, rate, &buffers[slots], attrs, &count,
+                                   &used);
+            ++slots;
+        }
+    }
+    return (SDL_GPUVertexInputState){
+        .vertex_buffer_descriptions = slots ? buffers : NULL,
+        .num_vertex_buffers         = slots,
+        .vertex_attributes          = count ? attrs : NULL,
+        .num_vertex_attributes      = count,
+    };
 }
 
 static SDL_GPUBlendFactor osdl_gpu_blend_factor(value factor, bool alpha) {
@@ -761,12 +811,25 @@ static SDL_GPUColorTargetBlendState osdl_gpu_blend_state(value blend, value writ
 }
 
 /* An unspecified native format means that owner is a window claim. */
-static value osdl_gpu_create_pipeline(value layout, value blend, value write_mask, value owner,
-                                      value vertex, value fragment, value primitive,
+static value osdl_gpu_create_pipeline(value layout, value layouts, value blend, value write_mask,
+                                      value owner, value vertex, value fragment, value primitive,
                                       SDL_GPUTextureFormat format) {
-    CAMLparam5(layout, blend, write_mask, owner, vertex);
-    CAMLxparam2(fragment, primitive);
-    CAMLlocal3(device, cell, pipeline);
+    CAMLparam5(layout, layouts, blend, write_mask, owner);
+    CAMLxparam3(vertex, fragment, primitive);
+    CAMLlocal4(device, cell, pipeline, strides);
+
+    SDL_GPUVertexBufferDescription buffers[GPU_MAX_VERTEX_BUFFERS];
+    SDL_GPUVertexAttribute         attrs[GPU_MAX_VERTEX_ATTRIBUTES];
+    SDL_GPUVertexInputState        input = osdl_gpu_vertex_input(layout, layouts, buffers, attrs);
+
+    /* Negative strides mark per-instance slots. Keep only the draw metadata. */
+    strides = caml_alloc_tuple(input.num_vertex_buffers);
+    for (Uint32 i = 0; i < input.num_vertex_buffers; ++i) {
+        int stride = (int)buffers[i].pitch;
+        Store_field(
+            strides, i,
+            Val_int(buffers[i].input_rate == SDL_GPU_VERTEXINPUTRATE_INSTANCE ? -stride : stride));
+    }
 
     bool swapchain             = format == SDL_GPU_TEXTUREFORMAT_INVALID;
     device                     = swapchain ? osdl_parent(owner) : owner;
@@ -775,9 +838,8 @@ static value osdl_gpu_create_pipeline(value layout, value blend, value write_mas
     unsigned vertex_uniforms   = (1u << Int_val(Field(vertex, GPU_SHADER_UNIFORMS))) - 1;
     unsigned fragment_uniforms = (1u << Int_val(Field(fragment, GPU_SHADER_UNIFORMS))) - 1;
     unsigned mask              = vertex_uniforms | (fragment_uniforms << GPU_MAX_UNIFORMS);
-    pipeline =
-        caml_alloc_7(0, cell, device, Val_unit, Val_int(0), Field(vertex, GPU_SHADER_SAMPLERS),
-                     Field(fragment, GPU_SHADER_SAMPLERS), Val_int(mask));
+    pipeline = caml_alloc_7(0, cell, device, Val_unit, strides, Field(vertex, GPU_SHADER_SAMPLERS),
+                            Field(fragment, GPU_SHADER_SAMPLERS), Val_int(mask));
 
     /* Sdl3.Gpu.primitive constructor order. */
     static const SDL_GPUPrimitiveType primitives[] = {
@@ -791,16 +853,11 @@ static value osdl_gpu_create_pipeline(value layout, value blend, value write_mas
     if (device != osdl_parent(vertex) || device != osdl_parent(fragment))
         caml_invalid_argument("Use shaders from the pipeline's GPU device");
 
-    SDL_GPUVertexBufferDescription vertex_buffer = {0};
-    SDL_GPUVertexAttribute         attributes[GPU_MAX_VERTEX_ATTRIBUTES];
-    Uint32 count = osdl_gpu_vertex_attributes(layout, &vertex_buffer, attributes);
-
     if (swapchain)
         format = osdl_gpu_swapchain_native_format(owner);
     else
         osdl_gpu_require_texture_format(d, format, SDL_GPU_TEXTUREUSAGE_COLOR_TARGET);
     Store_field(pipeline, GPU_PIPELINE_FORMAT, Val_int(format));
-    Store_field(pipeline, GPU_PIPELINE_STRIDE, Val_int(vertex_buffer.pitch));
 
     SDL_GPUColorTargetDescription target = {.format      = format,
                                             .blend_state = osdl_gpu_blend_state(blend, write_mask)};
@@ -808,10 +865,7 @@ static value osdl_gpu_create_pipeline(value layout, value blend, value write_mas
     SDL_GPUGraphicsPipelineCreateInfo info = {
         .vertex_shader      = vs,
         .fragment_shader    = fs,
-        .vertex_input_state = {.vertex_buffer_descriptions = count ? &vertex_buffer : NULL,
-                               .num_vertex_buffers         = count ? 1 : 0,
-                               .vertex_attributes          = count ? attributes : NULL,
-                               .num_vertex_attributes      = count},
+        .vertex_input_state = input,
         .primitive_type     = primitives[Int_val(primitive)],
         .rasterizer_state   = {.fill_mode         = SDL_GPU_FILLMODE_FILL,
                                .cull_mode         = SDL_GPU_CULLMODE_NONE,
@@ -823,30 +877,30 @@ static value osdl_gpu_create_pipeline(value layout, value blend, value write_mas
     CAMLreturn(osdl_publish(pipeline, ptr, "SDL_CreateGPUGraphicsPipeline"));
 }
 
-CAMLprim value osdl_gpu_create_graphics_pipeline(value layout, value blend, value write_mask,
-                                                 value device, value format, value vertex,
-                                                 value fragment, value primitive) {
-    return osdl_gpu_create_pipeline(layout, blend, write_mask, device, vertex, fragment, primitive,
-                                    osdl_gpu_texture_formats[Int_val(format)]);
+CAMLprim value osdl_gpu_create_graphics_pipeline(value layout, value layouts, value blend,
+                                                 value write_mask, value device, value format,
+                                                 value vertex, value fragment, value primitive) {
+    return osdl_gpu_create_pipeline(layout, layouts, blend, write_mask, device, vertex, fragment,
+                                    primitive, osdl_gpu_texture_formats[Int_val(format)]);
 }
 
 CAMLprim value osdl_gpu_create_graphics_pipeline_byte(value* argv, int argc) {
     (void)argc;
     return osdl_gpu_create_graphics_pipeline(argv[0], argv[1], argv[2], argv[3], argv[4], argv[5],
-                                             argv[6], argv[7]);
+                                             argv[6], argv[7], argv[8]);
 }
 
-CAMLprim value osdl_gpu_create_swapchain_pipeline(value layout, value blend, value write_mask,
-                                                  value claim, value vertex, value fragment,
-                                                  value primitive) {
-    return osdl_gpu_create_pipeline(layout, blend, write_mask, claim, vertex, fragment, primitive,
-                                    SDL_GPU_TEXTUREFORMAT_INVALID);
+CAMLprim value osdl_gpu_create_swapchain_pipeline(value layout, value layouts, value blend,
+                                                  value write_mask, value claim, value vertex,
+                                                  value fragment, value primitive) {
+    return osdl_gpu_create_pipeline(layout, layouts, blend, write_mask, claim, vertex, fragment,
+                                    primitive, SDL_GPU_TEXTUREFORMAT_INVALID);
 }
 
 CAMLprim value osdl_gpu_create_swapchain_pipeline_byte(value* argv, int argc) {
     (void)argc;
     return osdl_gpu_create_swapchain_pipeline(argv[0], argv[1], argv[2], argv[3], argv[4], argv[5],
-                                              argv[6]);
+                                              argv[6], argv[7]);
 }
 
 CAMLprim value osdl_gpu_release_graphics_pipeline(value pipeline) {
@@ -889,19 +943,12 @@ static value osdl_gpu_pass_device(value pass) {
     return osdl_parent(osdl_parent(pass));
 }
 
-static void osdl_gpu_require_no_render_pass(value device) {
-    /* SDL's debug viewport bounds belong to the device, not to each command buffer. */
-    if (Bool_val(Field(device, GPU_DEVICE_RENDERING)))
-        caml_invalid_argument("End the active render pass on this GPU device first");
-}
-
 CAMLprim value osdl_gpu_push_uniform_data(value buffer, value stage, value slot, value data) {
     SDL_GPUCommandBuffer* commands = osdl_live(buffer);
-    intnat                index = Long_val(slot), size = Caml_ba_array_val(data)->dim[0];
+    intnat                index    = Long_val(slot);
     if (index < 0 || index >= GPU_MAX_UNIFORMS)
         caml_invalid_argument("GPU uniform slot must be in [0, 3]");
-    if (size <= 0 || size > GPU_MAX_UNIFORM_BYTES || size % 4)
-        caml_invalid_argument("GPU uniform data must be 4 to 4096 bytes and a multiple of four");
+    intnat size = osdl_gpu_uniform_size(data);
 
     const void* bytes = Caml_ba_data_val(data);
     if (Int_val(stage) == GPU_VERTEX)
@@ -1481,17 +1528,19 @@ CAMLprim value osdl_gpu_set_scissor(value pass, value scissor) {
     return Val_unit;
 }
 
+enum { GPU_SLOT_BUFFER, GPU_SLOT_OFFSET, GPU_SLOT_AVAILABLE, GPU_SLOT_FIELDS };
+
 CAMLprim value osdl_gpu_bind_graphics_pipeline(value pass, value pipeline) {
     CAMLparam2(pass, pipeline);
-    CAMLlocal1(slots);
+    CAMLlocal2(slots, vertices);
 
     mlsize_t count = Int_val(Field(pipeline, GPU_PIPELINE_VERTEX_SAMPLERS)) +
                      Int_val(Field(pipeline, GPU_PIPELINE_FRAGMENT_SAMPLERS));
-    slots = Field(pass, GPU_PASS_SAMPLERS);
-    if (!count)
-        slots = Val_unit;
-    else if (Is_long(slots) || Wosize_val(slots) != count)
-        slots = caml_alloc(count, 0);
+    mlsize_t fields = GPU_SLOT_FIELDS * Wosize_val(Field(pipeline, GPU_PIPELINE_LAYOUTS));
+    slots           = Field(pass, GPU_PASS_SAMPLERS);
+    if (Is_long(slots) || Wosize_val(slots) != count) slots = caml_alloc_tuple(count);
+    vertices = Field(pass, GPU_PASS_VERTEX_BINDINGS);
+    if (Is_long(vertices) || Wosize_val(vertices) != fields) vertices = caml_alloc_tuple(fields);
 
     SDL_GPURenderPass*       p   = osdl_live(pass);
     SDL_GPUGraphicsPipeline* ptr = osdl_live(pipeline);
@@ -1503,7 +1552,10 @@ CAMLprim value osdl_gpu_bind_graphics_pipeline(value pass, value pipeline) {
     SDL_BindGPUGraphicsPipeline(p, ptr);
     Store_field(pass, GPU_PASS_PIPELINE, pipeline);
     /* Rebind vertex data and samplers against the current pipeline. */
-    Store_field(pass, GPU_PASS_VERTEX_BUFFER, Val_unit);
+    for (mlsize_t i = 0; i < fields; ++i)
+        Store_field(vertices, i, Val_unit);
+    Store_field(pass, GPU_PASS_VERTEX_BINDINGS, vertices);
+    Store_field(pass, GPU_PASS_VERTEX_DIRTY, Val_true);
     for (mlsize_t i = 0; i < count; ++i)
         Store_field(slots, i, Val_unit);
     Store_field(pass, GPU_PASS_SAMPLERS, slots);
@@ -1564,23 +1616,66 @@ CAMLprim value osdl_gpu_bind_samplers(value first_slot, value pass, value stage,
     return Val_unit;
 }
 
-CAMLprim value osdl_gpu_bind_vertex_buffer(value offset, value pass, value buffer) {
-    SDL_GPURenderPass* p      = osdl_live(pass);
-    SDL_GPUBuffer*     ptr    = osdl_live(buffer);
-    Uint32             stride = Int_val(Field(osdl_gpu_bound_pipeline(pass), GPU_PIPELINE_STRIDE));
-    Uint32             start  = osdl_gpu_offset(offset);
-    Uint32             size   = osdl_gpu_capacity(buffer);
-    if (osdl_gpu_pass_device(pass) != osdl_parent(buffer))
+static Uint32 osdl_gpu_check_vertex_binding(value device, value buffer, value offset, int stride) {
+    osdl_live(buffer);
+    if (osdl_parent(buffer) != device)
         caml_invalid_argument("Use a vertex buffer from the render pass's GPU device");
-    if (!stride) caml_invalid_argument("The GPU pipeline does not use a vertex buffer");
-    if (start % 4 || !osdl_gpu_range_fits(start, stride, size))
+    Uint32 start = osdl_gpu_uint32(offset, "GPU vertex buffer offset is out of range");
+    Uint32 size = osdl_gpu_capacity(buffer), pitch = (Uint32)SDL_abs(stride);
+    if (start % 4 || !osdl_gpu_range_fits(start, pitch, size))
         caml_invalid_argument(
-            "Align the vertex buffer offset to four bytes and leave room for a vertex");
+            "Align the vertex buffer offset to four bytes and leave room for one element");
+    return (size - start) / pitch;
+}
 
-    SDL_GPUBufferBinding binding = {.buffer = ptr, .offset = start};
-    SDL_BindGPUVertexBuffers(p, 0, &binding, 1);
-    Store_field(pass, GPU_PASS_VERTEX_BUFFER, buffer);
-    Store_field(pass, GPU_PASS_VERTEX_COUNT, Val_long((size - start) / stride));
+static void osdl_gpu_store_vertex_binding(value slots, mlsize_t index, value buffer, value offset,
+                                          Uint32 available) {
+    mlsize_t base = index * GPU_SLOT_FIELDS;
+    Store_field(slots, base + GPU_SLOT_BUFFER, buffer);
+    Store_field(slots, base + GPU_SLOT_OFFSET, offset);
+    Store_field(slots, base + GPU_SLOT_AVAILABLE, Val_long(available));
+}
+
+CAMLprim value osdl_gpu_bind_vertex_buffer(value slot, value offset, value pass, value buffer) {
+    osdl_live(pass);
+    value  layouts = Field(osdl_gpu_bound_pipeline(pass), GPU_PIPELINE_LAYOUTS);
+    intnat index   = Is_long(slot) ? 0 : Long_val(Some_val(slot));
+    if (index < 0 || (uintnat)index >= Wosize_val(layouts))
+        caml_invalid_argument("The vertex buffer slot is outside the GPU pipeline's layout");
+
+    value  start     = Is_long(offset) ? Val_int(0) : Some_val(offset);
+    Uint32 available = osdl_gpu_check_vertex_binding(osdl_gpu_pass_device(pass), buffer, start,
+                                                     Int_val(Field(layouts, index)));
+    osdl_gpu_store_vertex_binding(Field(pass, GPU_PASS_VERTEX_BINDINGS), index, buffer, start,
+                                  available);
+    Store_field(pass, GPU_PASS_VERTEX_DIRTY, Val_true);
+    return Val_unit;
+}
+
+CAMLprim value osdl_gpu_bind_vertex_buffers(value first_slot, value pass, value bindings) {
+    osdl_live(pass);
+    value    layouts = Field(osdl_gpu_bound_pipeline(pass), GPU_PIPELINE_LAYOUTS);
+    intnat   start   = Is_long(first_slot) ? 0 : Long_val(Some_val(first_slot));
+    mlsize_t limit = Wosize_val(layouts), count = Wosize_val(bindings);
+    if (start < 0 || (uintnat)start > limit || count > limit - (uintnat)start)
+        caml_invalid_argument("Vertex buffer bindings must fit in the GPU pipeline's layout");
+    if (!count) return Val_unit;
+
+    value  device = osdl_gpu_pass_device(pass);
+    value  pairs[GPU_MAX_VERTEX_BUFFERS];
+    Uint32 available[GPU_MAX_VERTEX_BUFFERS];
+    for (mlsize_t i = 0; i < count; ++i) {
+        value pair   = Field(bindings, i);
+        available[i] = osdl_gpu_check_vertex_binding(device, Field(pair, 0), Field(pair, 1),
+                                                     Int_val(Field(layouts, start + i)));
+        pairs[i]     = pair;
+    }
+
+    value slots = Field(pass, GPU_PASS_VERTEX_BINDINGS);
+    for (mlsize_t i = 0; i < count; ++i)
+        osdl_gpu_store_vertex_binding(slots, start + i, Field(pairs[i], 0), Field(pairs[i], 1),
+                                      available[i]);
+    Store_field(pass, GPU_PASS_VERTEX_DIRTY, Val_true);
     return Val_unit;
 }
 
@@ -1612,7 +1707,7 @@ static Uint32 osdl_gpu_draw_count(value v) {
     return n;
 }
 
-static Uint32 osdl_gpu_draw_stride(value pass) {
+static value osdl_gpu_draw_layouts(value pass) {
     value pipeline = osdl_gpu_bound_pipeline(pass);
     int   required = Int_val(Field(pipeline, GPU_PIPELINE_UNIFORM_MASK));
     if (required) {
@@ -1631,22 +1726,62 @@ static Uint32 osdl_gpu_draw_stride(value pass) {
                     "Bind a live texture and sampler to each slot before drawing");
         }
     }
-    return Int_val(Field(pipeline, GPU_PIPELINE_STRIDE));
+    return Field(pipeline, GPU_PIPELINE_LAYOUTS);
 }
 
-static void osdl_gpu_require_vertices(value pass, Uint32 stride, Uint32 count) {
-    if (!stride) return;
-    osdl_gpu_bound(pass, GPU_PASS_VERTEX_BUFFER, "Bind a live GPU vertex buffer before drawing");
-    Uint32 available = Long_val(Field(pass, GPU_PASS_VERTEX_COUNT));
-    if (count > available) caml_invalid_argument("The draw exceeds the GPU vertex buffer");
+static void osdl_gpu_draw_vertices(SDL_GPURenderPass* ptr, value pass, value layouts,
+                                   Uint32 vertices, Uint32 instances) {
+    Uint32 count = Wosize_val(layouts);
+    if (!count) return;
+
+    bool                 dirty = Bool_val(Field(pass, GPU_PASS_VERTEX_DIRTY));
+    value                slots = Field(pass, GPU_PASS_VERTEX_BINDINGS);
+    SDL_GPUBufferBinding native[GPU_MAX_VERTEX_BUFFERS];
+    for (Uint32 i = 0; i < count; ++i) {
+        mlsize_t       base   = i * GPU_SLOT_FIELDS;
+        value          buffer = Field(slots, base + GPU_SLOT_BUFFER);
+        SDL_GPUBuffer* ptr    = buffer == Val_unit ? NULL : osdl_cell_val(buffer)->ptr;
+        if (!ptr)
+            caml_invalid_argument("Bind a live vertex buffer to each GPU slot before drawing");
+        bool   instance  = Int_val(Field(layouts, i)) < 0;
+        Uint32 needed    = instance ? instances : vertices;
+        Uint32 available = Long_val(Field(slots, base + GPU_SLOT_AVAILABLE));
+        if (needed > available)
+            caml_invalid_argument(instance ? "The draw exceeds the GPU instance buffer"
+                                           : "The draw exceeds the GPU vertex buffer");
+        if (dirty)
+            native[i] = (SDL_GPUBufferBinding){
+                .buffer = ptr, .offset = Long_val(Field(slots, base + GPU_SLOT_OFFSET))};
+    }
+    if (!dirty) return;
+
+    /* SDL's backends use a dense prefix. Bind only after every slot is present.
+     * D3D12 keeps the largest prefix until the pass ends and may rebuild views
+     * of slots that this pipeline no longer reads. Replace those stale views.
+     * D3D12 also skips the stride update if no buffer or offset has changed. */
+    SDL_GPUDevice* device = osdl_cell_val(osdl_gpu_pass_device(pass))->ptr;
+    const char*    driver = SDL_GetGPUDeviceDriver(device);
+    if (driver && strcmp(driver, "direct3d12") == 0) {
+        Uint32 prefix = Int_val(Field(pass, GPU_PASS_VERTEX_PREFIX));
+        for (Uint32 i = count; i < prefix; ++i)
+            native[i] = native[0];
+        count = SDL_max(count, prefix);
+        Store_field(pass, GPU_PASS_VERTEX_PREFIX, Val_int(count));
+
+        /* SDL caches this offset. Only the final binding reaches a draw. */
+        SDL_GPUBufferBinding changed = {.buffer = native[0].buffer, .offset = native[0].offset + 1};
+        SDL_BindGPUVertexBuffers(ptr, 0, &changed, 1);
+    }
+    SDL_BindGPUVertexBuffers(ptr, 0, native, count);
+    Store_field(pass, GPU_PASS_VERTEX_DIRTY, Val_false);
 }
 
 CAMLprim value osdl_gpu_draw_primitives(value instances, value pass, value vertices) {
-    SDL_GPURenderPass* p      = osdl_live(pass);
-    Uint32             stride = osdl_gpu_draw_stride(pass);
-    Uint32             count  = osdl_gpu_draw_count(vertices);
-    Uint32             reps   = Is_long(instances) ? 1 : osdl_gpu_draw_count(Some_val(instances));
-    osdl_gpu_require_vertices(pass, stride, count);
+    SDL_GPURenderPass* p       = osdl_live(pass);
+    value              layouts = osdl_gpu_draw_layouts(pass);
+    Uint32             count   = osdl_gpu_draw_count(vertices);
+    Uint32             reps    = Is_long(instances) ? 1 : osdl_gpu_draw_count(Some_val(instances));
+    osdl_gpu_draw_vertices(p, pass, layouts, count, reps);
 
     SDL_DrawGPUPrimitives(p, count, reps, 0, 0);
     return Val_unit;
@@ -1654,15 +1789,15 @@ CAMLprim value osdl_gpu_draw_primitives(value instances, value pass, value verti
 
 CAMLprim value osdl_gpu_draw_indexed_primitives(value instances, value first_index, value pass,
                                                 value indices) {
-    SDL_GPURenderPass* p      = osdl_live(pass);
-    Uint32             stride = osdl_gpu_draw_stride(pass);
-    Uint32             count  = osdl_gpu_draw_count(indices);
-    Uint32             reps   = Is_long(instances) ? 1 : osdl_gpu_draw_count(Some_val(instances));
-    Uint32             first  = osdl_gpu_offset(first_index);
-    osdl_gpu_require_vertices(pass, stride, 1);
+    SDL_GPURenderPass* p       = osdl_live(pass);
+    value              layouts = osdl_gpu_draw_layouts(pass);
+    Uint32             count   = osdl_gpu_draw_count(indices);
+    Uint32             reps    = Is_long(instances) ? 1 : osdl_gpu_draw_count(Some_val(instances));
+    Uint32             first   = osdl_gpu_offset(first_index);
     osdl_gpu_bound(pass, GPU_PASS_INDEX_BUFFER, "Bind a live GPU index buffer before drawing");
     if (!osdl_gpu_range_fits(first, count, Long_val(Field(pass, GPU_PASS_INDEX_COUNT))))
         caml_invalid_argument("The draw exceeds the GPU index buffer");
+    osdl_gpu_draw_vertices(p, pass, layouts, 1, reps);
 
     SDL_DrawGPUIndexedPrimitives(p, count, reps, first, 0, 0);
     return Val_unit;
@@ -1680,7 +1815,7 @@ CAMLprim value osdl_gpu_end_render_pass(value pass) {
         }
         Store_field(device, GPU_DEVICE_RENDERING, Val_false);
         Store_field(pass, GPU_PASS_PIPELINE, Val_unit);
-        Store_field(pass, GPU_PASS_VERTEX_BUFFER, Val_unit);
+        Store_field(pass, GPU_PASS_VERTEX_BINDINGS, Val_unit);
         Store_field(pass, GPU_PASS_INDEX_BUFFER, Val_unit);
         Store_field(pass, GPU_PASS_SAMPLERS, Val_unit);
     }

@@ -148,7 +148,14 @@ display.
 The drawing tests use SPIR-V, a shader format that Vulkan accepts. They skip drawing on devices that
 do not accept SPIR-V. The tests read pixels to check blending, write masks, viewports, and clips.
 They also check mip uploads, copies, scaled blits, and sampling a texture in a later pass. They
-reject attempts to sample the current target or to use a pipeline with a different format.
+reject attempts to sample the current target or to use a pipeline with a different format. They also
+check separate vertex and instance buffers, per-axis sampler addressing, and blending between mip
+levels.
+
+The GPU renderer tests use supplied and renderer-owned devices. They draw with extra texture
+bindings and compare pixels before and after a uniform change. They also check queued draws after a
+state change, state destruction, and resource release. The tests use both a window and a windowless
+texture target.
 
 The readback tests use the public `Gpu` API in native code and bytecode. They check partial buffer
 and mip downloads, pitches, byte offsets, cancellation, and waits. They also check that bytes

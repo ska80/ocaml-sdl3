@@ -670,6 +670,147 @@ let mesh device claim =
       mesh_frame device claim pipeline Gpu.Uint16;
       mesh_frame device claim pipeline Gpu.Uint32)
 
+let instanced_geometry device context claim =
+  let open Gpu in
+  let attr location format offset = { location; format; offset } in
+  let layout input_rate stride attributes =
+    { layout = { stride; attributes }; input_rate }
+  in
+  let points = layout Per_vertex 8 [ attr 0 Float32x2 0 ] in
+  let colors = layout Per_vertex 4 [ attr 1 Unorm8x4 0 ] in
+  let instances =
+    layout Per_instance 8 [ attr 2 Float32 0; attr 3 Unorm8x4 4 ]
+  in
+  let layouts = [ points; colors; instances ] in
+  let@ vertex =
+    using release_shader
+      (create_shader device ~stage:Vertex ~format:Spirv
+         (shader_code "instanced.vert.spv"))
+  in
+  let@ fragment =
+    using release_shader
+      (create_shader device ~stage:Fragment ~format:Spirv
+         (shader_code "mesh.frag.spv"))
+  in
+  let pipeline ?vertex_layout vertex_layouts =
+    create_graphics_pipeline ?vertex_layout ~vertex_layouts device
+      ~format:Rgba8_unorm ~vertex ~fragment ~primitive:Triangle_list
+  in
+  invalid (fun () -> pipeline ~vertex_layout:points.layout layouts);
+  invalid (fun () -> pipeline [ points; points ]);
+  invalid (fun () -> pipeline [ layout Per_instance 8 [] ]);
+  invalid (fun () ->
+      pipeline
+        (List.init 17 (fun i -> layout Per_vertex 4 [ attr i Float32 0 ])));
+  let@ pipeline = using release_graphics_pipeline (pipeline layouts) in
+  let@ window_pipeline =
+    using release_graphics_pipeline
+      (create_swapchain_pipeline ~vertex_layouts:layouts claim ~vertex ~fragment
+         ~primitive:Triangle_list)
+  in
+  let@ small_pipeline =
+    using release_graphics_pipeline (mesh_pipeline device claim)
+  in
+  let pack_positions () =
+    let bytes = Bytes.make 52 '\000' in
+    List.iteri
+      (fun i (x, y) ->
+        Bytes.set_int32_ne bytes (4 + (8 * i)) (Int32.bits_of_float x);
+        Bytes.set_int32_ne bytes (8 + (8 * i)) (Int32.bits_of_float y))
+      [ (-0.5, -1.); (0.5, -1.); (-0.5, 1.); (0.5, -1.); (0.5, 1.); (-0.5, 1.) ];
+    bytes
+  in
+  let pack_instances () =
+    let bytes = Bytes.make 20 '\000' in
+    Bytes.set_int32_ne bytes 4 (Int32.bits_of_float (-0.5));
+    Bytes.blit_string "\255\000\000\255" 0 bytes 8 4;
+    Bytes.set_int32_ne bytes 12 (Int32.bits_of_float 0.5);
+    Bytes.blit_string "\000\255\000\255" 0 bytes 16 4;
+    bytes
+  in
+  let buffer size = using release_buffer (create_vertex_buffer device ~size) in
+  let@ points = buffer 52 in
+  let@ colors = buffer 28 in
+  let@ instances = buffer 20 in
+  let@ small = buffer 36 in
+  let@ indices =
+    using release_buffer (create_index_buffer device ~format:Uint16 ~size:12)
+  in
+  let@ target =
+    using release_texture
+      (create_texture device ~format:Rgba8_unorm ~usage:Color_target ~w:8 ~h:4)
+  in
+  let load = Clear (Color.rgb 0 0 0) in
+  submit_gpu device (fun commands ->
+      let@ src =
+        using release_upload_buffer (create_upload_buffer device ~size:52)
+      in
+      with_copy_pass commands (fun pass ->
+          let upload dst data =
+            write_upload_buffer src (packed_bytes data);
+            upload_to_buffer pass ~src ~dst ~size:(Bytes.length data)
+          in
+          upload points (pack_positions ());
+          upload colors (Bytes.make 28 '\255');
+          upload instances (pack_instances ());
+          upload small (mesh_vertices ());
+          let index_data = Bytes.make 12 '\000' in
+          for i = 0 to 5 do
+            Bytes.set_uint16_ne index_data (i * 2) i
+          done;
+          upload indices index_data));
+  let bindings = [| (points, 4); (colors, 4); (instances, 4) |] in
+  let@ other =
+    using destroy_device
+      (create_device ~driver:(driver device) context [ Spirv ])
+  in
+  let@ foreign = using release_buffer (create_vertex_buffer other ~size:32) in
+  submit_gpu device (fun commands ->
+      with_color_pass commands ~target ~load (fun pass ->
+          let draw () = draw_primitives ~instances:2 pass ~vertices:6 in
+          let indexed instances =
+            draw_indexed_primitives ~instances pass ~indices:6
+          in
+          invalid (fun () -> bind_vertex_buffers pass bindings);
+          bind_graphics_pipeline pass pipeline;
+          invalid draw;
+          bind_vertex_buffer ~slot:2 ~offset:4 pass instances;
+          invalid draw;
+          invalid (fun () -> bind_vertex_buffer ~slot:3 pass points);
+          invalid (fun () -> bind_vertex_buffer ~slot:1 ~offset:1 pass colors);
+          invalid (fun () ->
+              bind_vertex_buffer ~slot:2 ~offset:16 pass instances);
+          invalid (fun () -> bind_vertex_buffers ~first_slot:(-1) pass bindings);
+          invalid (fun () -> bind_vertex_buffers ~first_slot:1 pass bindings);
+          invalid (fun () -> bind_vertex_buffers pass [| (foreign, 0) |]);
+          bind_vertex_buffers ~first_slot:3 pass [||];
+          bind_vertex_buffers pass bindings;
+          bindings.(2) <- (foreign, 0);
+          invalid (fun () ->
+              bind_vertex_buffers pass [| (points, 44); (colors, 28) |]);
+          invalid (fun () -> draw_primitives pass ~vertices:7);
+          invalid (fun () -> draw_primitives ~instances:3 pass ~vertices:6);
+          Gc.compact ();
+          draw ();
+          bind_index_buffer pass indices;
+          invalid (fun () -> indexed 3);
+          indexed 2;
+          bind_graphics_pipeline pass pipeline;
+          invalid (fun () -> indexed 2)));
+  check
+    (image_matches device target (fun x _ ->
+         if x < 4 then Color.rgb 255 0 0 else Color.rgb 0 255 0))
+    "Instanced buffers draw red and green halves";
+  with_render_pass device claim ~clear:(Color.rgb 0 0 0) (fun _ pass ->
+      bind_graphics_pipeline pass window_pipeline;
+      bind_vertex_buffers pass [| (points, 4); (colors, 4); (instances, 4) |];
+      draw_primitives ~instances:2 pass ~vertices:6;
+      release_buffer instances;
+      invalid (fun () -> draw_primitives ~instances:2 pass ~vertices:6);
+      bind_graphics_pipeline pass small_pipeline;
+      bind_vertex_buffer pass small;
+      draw_primitives pass ~vertices:3)
+
 let blending device claim =
   let open Gpu in
   let rgba = Color.rgba in
@@ -1248,6 +1389,297 @@ let offscreen_sampling device =
     (color_target_matches device target red ~tolerance:0)
     "A later pass samples the mip rendered by an earlier pass"
 
+let sampler_modes device =
+  let open Gpu in
+  let@ source =
+    using release_texture
+      (create_texture ~mip_levels:2 device ~format:Rgba8_unorm ~usage:Sampled
+         ~w:2 ~h:2)
+  in
+  let@ target =
+    using release_texture
+      (create_texture device ~format:Rgba8_unorm ~usage:Color_target ~w:1 ~h:1)
+  in
+  let@ pipeline =
+    using release_graphics_pipeline
+      (resource_pipeline device ~format:Rgba8_unorm)
+  in
+  let@ tiled =
+    using release_sampler
+      (create_sampler ~max_mip_level:1 ~mipmap_filter:Linear ~address_u:Repeat
+         ~address_v:Mirrored_repeat ~address_w:Repeat device ~filter:Nearest)
+  in
+  let@ clamp = using release_sampler (create_sampler device ~filter:Nearest) in
+  submit_gpu device (fun commands ->
+      let@ upload =
+        using release_upload_buffer (create_upload_buffer device ~size:16)
+      in
+      with_copy_pass commands (fun pass ->
+          write_upload_buffer upload
+            (packed_bytes
+               (Bytes.of_string
+                  "\000\000\000\255\240\000\000\255\080\000\000\255\160\000\000\255"));
+          upload_to_texture pass ~src:upload ~dst:source;
+          write_upload_buffer upload
+            (packed_bytes (Bytes.of_string "\120\000\000\255"));
+          upload_to_texture ~mip_level:1 pass ~src:upload ~dst:source);
+      push_uniform_data commands ~stage:Vertex ~slot:0
+        (uniform_coordinates 1.25 1.25 0.25 0.);
+      push_uniform_data commands ~stage:Fragment ~slot:0
+        (uniform_coordinates 1.25 1.25 1.25 1.25);
+      with_color_pass commands ~target ~load:Dont_care (fun pass ->
+          bind_graphics_pipeline pass pipeline;
+          bind_samplers pass ~stage:Vertex [| (source, tiled) |];
+          bind_samplers pass ~stage:Fragment
+            [| (source, tiled); (source, clamp) |];
+          draw_primitives pass ~vertices:3));
+  (* Repeat gives U = 0.25. Mirrored repeat gives V = 0.75. The pixel is
+     red 80. At LOD 0.25, the mix with red 120 gives 90. The clamp gives 160. *)
+  check
+    (color_target_matches device target (Color.rgb 90 80 160) ~tolerance:1)
+    "Sampler address modes and linear mip filtering"
+
+let renderer_devices device context =
+  let open Gpu in
+  let@ window =
+    using Window.destroy
+      (Window.create context ~title:"GPU renderer" ~w:32 ~h:24)
+  in
+  let exercise renderer =
+    Renderer.set_draw_color renderer (Color.rgb 16 32 64);
+    Renderer.clear renderer;
+    Renderer.present renderer
+  in
+  using Renderer.destroy (Renderer.create_gpu ~device window) (fun renderer ->
+      check
+        (Option.get (Renderer.gpu_device renderer) == device)
+        "Supplied GPU device";
+      invalid (fun () -> destroy_device device);
+      invalid (fun () -> Window.destroy window);
+      invalid (fun () -> claim_window device window);
+      invalid (fun () -> Renderer.create_gpu window);
+      exercise renderer);
+  check (driver device <> "") "Supplied device survives its renderer";
+  using release_window (claim_window device window) (fun _ ->
+      invalid (fun () -> Renderer.create_gpu ~device window));
+  using Renderer.destroy (Renderer.create ~driver:"gpu" window) (fun renderer ->
+      exercise renderer;
+      let borrowed = Option.get (Renderer.gpu_device renderer) in
+      Gc.compact ();
+      check
+        (Option.get (Renderer.gpu_device renderer) == borrowed)
+        "Stable borrowed GPU handle";
+      invalid (fun () -> destroy_device borrowed);
+      Domain.join
+        (Domain.spawn (fun () ->
+             invalid (fun () -> Renderer.gpu_device renderer)));
+      using Renderer.destroy
+        (Renderer.create_gpu_offscreen ~device:borrowed context) (fun other ->
+          check
+            (Option.get (Renderer.gpu_device other) == borrowed)
+            "Share a borrowed device";
+          invalid (fun () -> Renderer.destroy renderer));
+      using release_sampler (create_sampler borrowed ~filter:Nearest) (fun _ ->
+          invalid (fun () -> Renderer.destroy renderer));
+      Renderer.destroy renderer;
+      invalid (fun () -> driver borrowed);
+      invalid (fun () -> Renderer.gpu_device renderer));
+  using Renderer.destroy (Renderer.create ~driver:"software" window)
+    (fun renderer ->
+      check
+        (Renderer.gpu_device renderer = None)
+        "Software renderer has no GPU device");
+  let capture =
+    let@ renderer =
+      using Renderer.destroy (Renderer.create_gpu_offscreen context)
+    in
+    check (Renderer.output_size renderer = (0, 0)) "No default offscreen output";
+    invalid (fun () -> Renderer.clear renderer);
+    invalid (fun () -> Renderer.read_pixels renderer);
+    invalid (fun () -> Renderer.present renderer);
+    let@ target =
+      using Texture.destroy (Texture.create_target renderer ~w:3 ~h:2)
+    in
+    Renderer.set_target renderer (Some target);
+    check
+      (Renderer.current_output_size renderer = (3, 2))
+      "Offscreen target size";
+    exercise renderer;
+    let borrowed = Option.get (Renderer.gpu_device renderer) in
+    if List.mem Spirv (shader_formats borrowed) then (
+      let@ fragment =
+        using release_shader
+          (create_shader borrowed ~stage:Fragment ~format:Spirv
+             (shader_code "mesh.frag.spv"))
+      in
+      let@ state =
+        using Renderer.destroy_gpu_render_state
+          (Renderer.create_gpu_render_state renderer ~draw:Untextured ~fragment)
+      in
+      Renderer.set_gpu_render_state renderer (Some state);
+      Renderer.fill_rect renderer (Frect.make ~x:0. ~y:0. ~w:3. ~h:2.));
+    Renderer.read_pixels renderer
+  in
+  using Surface.destroy capture (fun capture ->
+      check (Surface.size capture = (3, 2)) "Detached offscreen capture size";
+      let data = byte_buffer 24 in
+      Surface.read_rgba capture data;
+      check
+        (bytes_match data
+           (String.concat "" (List.init 6 (fun _ -> "\016\032\064\255"))))
+        "Detached offscreen capture pixels")
+
+let renderer_states device context =
+  let open Gpu in
+  let create = Renderer.create_gpu_offscreen ~device context in
+  let@ renderer = using Renderer.destroy create in
+  let@ other =
+    using Renderer.destroy (Renderer.create_gpu_offscreen ~device context)
+  in
+  let@ target =
+    using Texture.destroy (Texture.create_target renderer ~w:8 ~h:2)
+  in
+  Renderer.set_target renderer (Some target);
+  let@ image =
+    using Texture.destroy (Texture.create_streaming renderer ~w:1 ~h:1)
+  in
+  Texture.update image
+    (packed_bytes (Bytes.of_string "\200\160\120\255"))
+    ~pitch:4;
+  Texture.set_blend_mode image Blend_mode.None;
+  let@ mask = using release_texture (create_sampled_texture device ~w:1 ~h:1) in
+  let@ sampler =
+    using release_sampler (create_sampler device ~filter:Nearest)
+  in
+  submit_gpu device (fun commands ->
+      let@ upload =
+        using release_upload_buffer (create_upload_buffer device ~size:4)
+      in
+      write_upload_buffer upload
+        (packed_bytes (Bytes.of_string "\255\128\255\255"));
+      with_copy_pass commands (fun pass ->
+          upload_to_texture pass ~src:upload ~dst:mask));
+  let@ fragment =
+    using release_shader
+      (create_shader device ~stage:Fragment ~format:Spirv ~samplers:2
+         ~uniform_buffers:2
+         (shader_code "renderer_effect.frag.spv"))
+  in
+  let make ?samplers () =
+    Renderer.create_gpu_render_state ?samplers renderer ~draw:Textured ~fragment
+  in
+  let destroy = Renderer.destroy_gpu_render_state in
+  let set state = Renderer.set_gpu_render_state renderer state in
+  let uniform = Renderer.set_gpu_render_state_fragment_uniforms in
+  let region x = Frect.make ~x ~y:0. ~w:2. ~h:2. in
+  let draw x = Texture.draw ~dst:(region x) renderer image in
+  let@ no_sampling =
+    using release_texture
+      (create_texture device ~format:Rgba8_unorm ~usage:Color_target ~w:1 ~h:1)
+  in
+  invalid (fun () -> make ());
+  invalid (fun () -> make ~samplers:[| (no_sampling, sampler) |] ());
+  let@ foreign_device =
+    using destroy_device
+      (create_device ~driver:(driver device) context [ Spirv ])
+  in
+  let@ foreign =
+    using release_sampler (create_sampler foreign_device ~filter:Nearest)
+  in
+  invalid (fun () -> make ~samplers:[| (mask, foreign) |] ());
+  let@ foreign_shader =
+    using release_shader
+      (create_shader foreign_device ~stage:Fragment ~format:Spirv ~samplers:2
+         ~uniform_buffers:2
+         (shader_code "renderer_effect.frag.spv"))
+  in
+  invalid (fun () ->
+      Renderer.create_gpu_render_state
+        ~samplers:[| (mask, sampler) |]
+        renderer ~draw:Textured ~fragment:foreign_shader);
+  let pairs = [| (mask, sampler) |] in
+  let@ state = using destroy (make ~samplers:pairs ()) in
+  let@ shared =
+    using destroy
+      (Renderer.create_gpu_render_state ~samplers:pairs other ~draw:Textured
+         ~fragment)
+  in
+  pairs.(0) <- (no_sampling, foreign);
+  invalid (fun () -> Renderer.destroy renderer);
+  invalid (fun () -> release_shader fragment);
+  invalid (fun () -> release_texture mask);
+  invalid (fun () -> release_sampler sampler);
+  invalid (fun () -> Renderer.set_gpu_render_state other (Some state));
+  invalid (fun () -> set (Some state));
+  let red = uniform_coordinates 1. 0. 0. 1. in
+  let green = uniform_coordinates 0. 1. 0. 1. in
+  invalid (fun () -> uniform state ~slot:(-1) red);
+  invalid (fun () -> uniform state ~slot:2 red);
+  invalid (fun () -> uniform state ~slot:0 (byte_buffer 3));
+  uniform state ~slot:1 (uniform_coordinates 0. 0. 1. 0.);
+  invalid (fun () -> set (Some state));
+  uniform state ~slot:0 red;
+  Bigarray.Array1.blit green red;
+  set (Some state);
+  Domain.join
+    (Domain.spawn (fun () ->
+         invalid (fun () -> uniform state ~slot:0 green);
+         invalid (fun () -> set None);
+         invalid (fun () -> destroy state)));
+  Gc.compact ();
+  Renderer.set_draw_color renderer (Color.rgb 0 0 0);
+  Renderer.clear renderer;
+  invalid (fun () -> Renderer.fill_rect renderer (region 0.));
+  draw 0.;
+  using cancel_command_buffer (acquire_command_buffer device) (fun commands ->
+      with_color_pass commands ~target:no_sampling ~load:Dont_care (fun _ ->
+          invalid (fun () -> uniform state ~slot:0 green);
+          invalid (fun () -> Renderer.read_pixels renderer);
+          invalid (fun () -> Renderer.set_target renderer None);
+          invalid (fun () -> destroy state)));
+  uniform state ~slot:0 green;
+  draw 2.;
+  destroy state;
+  invalid (fun () -> set (Some state));
+  invalid (fun () -> uniform state ~slot:0 green);
+  invalid (fun () -> release_shader fragment);
+  destroy shared;
+  release_shader fragment;
+  Renderer.destroy other;
+  invalid (fun () -> make ~samplers:[| (mask, sampler) |] ());
+  draw 4.;
+  let@ fill_shader =
+    using release_shader
+      (create_shader device ~stage:Fragment ~format:Spirv ~samplers:1
+         (shader_code "renderer_fill.frag.spv"))
+  in
+  let@ fill =
+    using destroy
+      (Renderer.create_gpu_render_state
+         ~samplers:[| (mask, sampler) |]
+         renderer ~draw:Untextured ~fragment:fill_shader)
+  in
+  set (Some fill);
+  invalid (fun () -> draw 6.);
+  Renderer.set_draw_color renderer (Color.rgb 128 128 32);
+  Renderer.fill_rect renderer (region 6.);
+  set None;
+  (* The queued fill still uses this state after it is unset. *)
+  destroy fill;
+  release_shader fill_shader;
+  release_sampler sampler;
+  release_texture mask;
+  Renderer.present renderer;
+  let@ pixels = using Surface.destroy (Renderer.read_pixels renderer) in
+  let actual = byte_buffer 64 in
+  Surface.read_rgba pixels actual;
+  let row =
+    "\200\000\255\255\200\000\255\255\000\080\255\255\000\080\255\255\200\160\120\255\200\160\120\255\128\064\032\255\128\064\032\255"
+  in
+  check
+    (bytes_match ~tolerance:1 actual (row ^ row))
+    "Queued draws keep their state and their previous uniforms"
+
 let hidden_window device claim =
   let open Gpu in
   using cancel_command_buffer (acquire_command_buffer device) (fun commands ->
@@ -1281,6 +1713,7 @@ let window device context =
           if List.mem Gpu.Spirv (Gpu.shader_formats device) then (
             triangle device context claim;
             mesh device claim;
+            instanced_geometry device context claim;
             blending device claim;
             shader_resources device context claim)
           else
@@ -1318,7 +1751,10 @@ let () =
           if List.mem Gpu.Spirv (Gpu.shader_formats device) then (
             shader_checks device;
             offscreen_rendering device;
-            offscreen_sampling device);
+            offscreen_sampling device;
+            sampler_modes device;
+            renderer_states device context);
+          renderer_devices device context;
           window device context;
           Gpu.destroy_device device;
           invalid (fun () -> Gpu.wait_idle device);

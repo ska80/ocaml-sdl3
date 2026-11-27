@@ -381,10 +381,388 @@ module Window = struct
   external restore : t -> unit = "osdl_window_restore"
 end
 
+module Gpu = struct
+  type device
+  type swapchain
+  type command_buffer
+  type render_pass
+  type copy_pass
+  type fence
+  type vertex
+  type fragment
+  type 'stage shader
+  type graphics_pipeline
+  type index
+  type 'kind buffer
+  type upload_buffer
+  type download_buffer
+  type texture
+
+  type texture_format =
+    | R8_unorm
+    | Rgba8_unorm
+    | Bgra8_unorm
+    | Rgba8_srgb
+    | Bgra8_srgb
+    | Rgba16_float
+    | Rgb10a2_unorm
+
+  type texture_usage = Sampled | Color_target | Sampled_color_target
+  type texture_region = { texture : texture; mip_level : int; rect : Rect.t }
+  type load_op = Load | Clear of Color.t | Dont_care
+  type store_op = Store | Discard
+  type sampler
+  type sampler_filter = Nearest | Linear
+  type sampler_address = Clamp_to_edge | Repeat | Mirrored_repeat
+  type index_format = Uint16 | Uint32
+  type vertex_format = Float32 | Float32x2 | Float32x3 | Float32x4 | Unorm8x4
+
+  type vertex_attribute = {
+    location : int;
+    format : vertex_format;
+    offset : int;
+  }
+
+  type vertex_layout = { stride : int; attributes : vertex_attribute list }
+  type vertex_input_rate = Per_vertex | Per_instance
+
+  type vertex_buffer_layout = {
+    layout : vertex_layout;
+    input_rate : vertex_input_rate;
+  }
+
+  module Blend = struct
+    type t = { color : Blend_mode.equation; alpha : Blend_mode.equation }
+
+    let sum src dst : Blend_mode.equation = { src; dst; op = Sum }
+    let over_alpha = sum One One_minus_src_alpha
+    let keep_alpha = sum Zero One
+
+    let straight_alpha =
+      { color = sum Src_alpha One_minus_src_alpha; alpha = over_alpha }
+
+    let premultiplied_alpha = { color = over_alpha; alpha = over_alpha }
+    let additive = { color = sum Src_alpha One; alpha = keep_alpha }
+    let modulate = { color = sum Dst_color Zero; alpha = keep_alpha }
+
+    let multiply =
+      { color = sum Dst_color One_minus_src_alpha; alpha = keep_alpha }
+  end
+
+  type color_component = Red | Green | Blue | Alpha
+
+  type _ shader_stage =
+    | Vertex : vertex shader_stage
+    | Fragment : fragment shader_stage
+
+  type shader_format = Spirv | Dxbc | Dxil | Msl | Metallib
+
+  type primitive =
+    | Triangle_list
+    | Triangle_strip
+    | Line_list
+    | Line_strip
+    | Point_list
+
+  type present_mode = Vsync | Immediate | Mailbox
+  type composition = Sdr | Sdr_linear | Hdr_extended_linear | Hdr10
+
+  external drivers : unit -> string list = "osdl_gpu_drivers"
+
+  external supports_shader_formats :
+    ?driver:string -> context -> shader_format list -> bool
+    = "osdl_gpu_supports_shader_formats"
+
+  external create_device :
+    ?driver:string -> ?debug:bool -> context -> shader_format list -> device
+    = "osdl_gpu_create_device"
+
+  external destroy_device : device -> unit = "osdl_gpu_destroy_device"
+  external driver : device -> string = "osdl_gpu_driver"
+
+  external shader_formats : device -> shader_format list
+    = "osdl_gpu_shader_formats"
+
+  external wait_idle : device -> unit = "osdl_gpu_wait_idle"
+
+  external claim_window : device -> Window.t -> swapchain
+    = "osdl_gpu_claim_window"
+
+  external release_window : swapchain -> unit = "osdl_gpu_release_window"
+
+  external supports_present_mode : swapchain -> present_mode -> bool
+    = "osdl_gpu_supports_present_mode"
+
+  external supports_composition : swapchain -> composition -> bool
+    = "osdl_gpu_supports_composition"
+
+  external swapchain_format : swapchain -> texture_format
+    = "osdl_gpu_swapchain_format"
+
+  external set_swapchain_parameters :
+    swapchain -> composition:composition -> present_mode:present_mode -> unit
+    = "osdl_gpu_set_swapchain_parameters"
+
+  external create_shader :
+    device ->
+    stage:'stage shader_stage ->
+    format:shader_format ->
+    ?entrypoint:string ->
+    ?samplers:int ->
+    ?uniform_buffers:int ->
+    string ->
+    'stage shader = "osdl_gpu_create_shader_byte" "osdl_gpu_create_shader"
+
+  external release_shader : 'stage shader -> unit = "osdl_gpu_release_shader"
+
+  external create_graphics_pipeline :
+    ?vertex_layout:vertex_layout ->
+    ?vertex_layouts:vertex_buffer_layout list ->
+    ?blend:Blend.t ->
+    ?color_write_mask:color_component list ->
+    device ->
+    format:texture_format ->
+    vertex:vertex shader ->
+    fragment:fragment shader ->
+    primitive:primitive ->
+    graphics_pipeline
+    = "osdl_gpu_create_graphics_pipeline_byte"
+      "osdl_gpu_create_graphics_pipeline"
+
+  external create_swapchain_pipeline :
+    ?vertex_layout:vertex_layout ->
+    ?vertex_layouts:vertex_buffer_layout list ->
+    ?blend:Blend.t ->
+    ?color_write_mask:color_component list ->
+    swapchain ->
+    vertex:vertex shader ->
+    fragment:fragment shader ->
+    primitive:primitive ->
+    graphics_pipeline
+    = "osdl_gpu_create_swapchain_pipeline_byte"
+      "osdl_gpu_create_swapchain_pipeline"
+
+  external release_graphics_pipeline : graphics_pipeline -> unit
+    = "osdl_gpu_release_graphics_pipeline"
+
+  external create_vertex_buffer : device -> size:int -> vertex buffer
+    = "osdl_gpu_create_vertex_buffer"
+
+  external create_index_buffer :
+    device -> format:index_format -> size:int -> index buffer
+    = "osdl_gpu_create_index_buffer"
+
+  external release_buffer : 'kind buffer -> unit = "osdl_gpu_release_buffer"
+
+  external create_upload_buffer : device -> size:int -> upload_buffer
+    = "osdl_gpu_create_upload_buffer"
+
+  external write_upload_buffer : upload_buffer -> byte_buffer -> unit
+    = "osdl_gpu_write_upload_buffer"
+
+  external release_upload_buffer : upload_buffer -> unit
+    = "osdl_gpu_release_upload_buffer"
+
+  external create_download_buffer : device -> size:int -> download_buffer
+    = "osdl_gpu_create_download_buffer"
+
+  external read_download_buffer :
+    ?dst_offset:int -> ?pitch:int -> download_buffer -> byte_buffer -> unit
+    = "osdl_gpu_read_download_buffer"
+
+  external release_download_buffer : download_buffer -> unit
+    = "osdl_gpu_release_download_buffer"
+
+  external supports_texture_format :
+    device -> format:texture_format -> usage:texture_usage -> bool
+    = "osdl_gpu_supports_texture_format"
+
+  external create_texture :
+    ?mip_levels:int ->
+    device ->
+    format:texture_format ->
+    usage:texture_usage ->
+    w:int ->
+    h:int ->
+    texture = "osdl_gpu_create_texture_byte" "osdl_gpu_create_texture"
+
+  let create_sampled_texture device ~w ~h =
+    create_texture device ~format:Rgba8_unorm ~usage:Sampled ~w ~h
+
+  external texture_format : texture -> texture_format
+    = "osdl_gpu_texture_format"
+
+  external texture_mip_levels : texture -> int = "osdl_gpu_texture_mip_levels"
+
+  external texture_size : ?mip_level:int -> texture -> int * int
+    = "osdl_gpu_texture_size"
+
+  let texture_region ?(mip_level = 0) ?rect texture =
+    let rect =
+      match rect with
+      | Some rect -> rect
+      | None ->
+          let w, h = texture_size ~mip_level texture in
+          Rect.make ~x:0 ~y:0 ~w ~h
+    in
+    { texture; mip_level; rect }
+
+  external release_texture : texture -> unit = "osdl_gpu_release_texture"
+
+  external create_sampler :
+    ?max_mip_level:int ->
+    ?mipmap_filter:sampler_filter ->
+    ?address_u:sampler_address ->
+    ?address_v:sampler_address ->
+    ?address_w:sampler_address ->
+    device ->
+    filter:sampler_filter ->
+    sampler = "osdl_gpu_create_sampler_byte" "osdl_gpu_create_sampler"
+
+  external release_sampler : sampler -> unit = "osdl_gpu_release_sampler"
+
+  external acquire_command_buffer : device -> command_buffer
+    = "osdl_gpu_acquire_command_buffer"
+
+  external push_uniform_data :
+    command_buffer ->
+    stage:'stage shader_stage ->
+    slot:int ->
+    byte_buffer ->
+    unit = "osdl_gpu_push_uniform_data"
+
+  external submit_command_buffer : command_buffer -> unit
+    = "osdl_gpu_submit_command_buffer"
+
+  external submit_and_acquire_fence : command_buffer -> fence
+    = "osdl_gpu_submit_and_acquire_fence"
+
+  external cancel_command_buffer : command_buffer -> unit
+    = "osdl_gpu_cancel_command_buffer"
+
+  external fence_signaled : fence -> bool = "osdl_gpu_fence_signaled"
+  external wait_fence : fence -> unit = "osdl_gpu_wait_fence"
+  external release_fence : fence -> unit = "osdl_gpu_release_fence"
+
+  external begin_copy_pass : command_buffer -> copy_pass
+    = "osdl_gpu_begin_copy_pass"
+
+  external upload_to_buffer :
+    ?src_offset:int ->
+    ?dst_offset:int ->
+    ?cycle:bool ->
+    copy_pass ->
+    src:upload_buffer ->
+    dst:'kind buffer ->
+    size:int ->
+    unit = "osdl_gpu_upload_to_buffer_byte" "osdl_gpu_upload_to_buffer"
+
+  external upload_to_texture :
+    ?src_offset:int ->
+    ?cycle:bool ->
+    ?mip_level:int ->
+    copy_pass ->
+    src:upload_buffer ->
+    dst:texture ->
+    unit = "osdl_gpu_upload_to_texture_byte" "osdl_gpu_upload_to_texture"
+
+  external copy_texture :
+    ?cycle:bool -> copy_pass -> src:texture_region -> dst:texture_region -> unit
+    = "osdl_gpu_copy_texture"
+
+  external download_from_buffer :
+    ?src_offset:int ->
+    ?dst_offset:int ->
+    copy_pass ->
+    src:'kind buffer ->
+    dst:download_buffer ->
+    size:int ->
+    unit = "osdl_gpu_download_from_buffer_byte" "osdl_gpu_download_from_buffer"
+
+  external download_from_texture :
+    ?dst_offset:int ->
+    ?pitch:int ->
+    copy_pass ->
+    src:texture_region ->
+    dst:download_buffer ->
+    unit = "osdl_gpu_download_from_texture"
+
+  external end_copy_pass : copy_pass -> unit = "osdl_gpu_end_copy_pass"
+
+  external blit_texture :
+    ?filter:sampler_filter ->
+    ?flip:Surface.flip ->
+    ?cycle:bool ->
+    command_buffer ->
+    src:texture_region ->
+    dst:texture_region ->
+    load:load_op ->
+    unit = "osdl_gpu_blit_texture_byte" "osdl_gpu_blit_texture"
+
+  external begin_render_pass :
+    ?mip_level:int ->
+    ?store:store_op ->
+    ?cycle:bool ->
+    command_buffer ->
+    target:texture ->
+    load:load_op ->
+    render_pass = "osdl_gpu_begin_render_pass_byte" "osdl_gpu_begin_render_pass"
+
+  external begin_swapchain_render_pass :
+    command_buffer -> swapchain -> clear:Color.t -> render_pass option
+    = "osdl_gpu_begin_swapchain_render_pass"
+
+  external render_pass_size : render_pass -> int * int
+    = "osdl_gpu_render_pass_size"
+
+  external set_viewport : render_pass -> Frect.t option -> unit
+    = "osdl_gpu_set_viewport"
+
+  external set_scissor : render_pass -> Rect.t option -> unit
+    = "osdl_gpu_set_scissor"
+
+  external bind_graphics_pipeline : render_pass -> graphics_pipeline -> unit
+    = "osdl_gpu_bind_graphics_pipeline"
+
+  external bind_samplers :
+    ?first_slot:int ->
+    render_pass ->
+    stage:'stage shader_stage ->
+    (texture * sampler) array ->
+    unit = "osdl_gpu_bind_samplers"
+
+  external bind_vertex_buffer :
+    ?slot:int -> ?offset:int -> render_pass -> vertex buffer -> unit
+    = "osdl_gpu_bind_vertex_buffer"
+
+  external bind_vertex_buffers :
+    ?first_slot:int -> render_pass -> (vertex buffer * int) array -> unit
+    = "osdl_gpu_bind_vertex_buffers"
+
+  external bind_index_buffer :
+    ?offset:int -> render_pass -> index buffer -> unit
+    = "osdl_gpu_bind_index_buffer"
+
+  external draw_primitives :
+    ?instances:int -> render_pass -> vertices:int -> unit
+    = "osdl_gpu_draw_primitives"
+
+  external draw_indexed_primitives :
+    ?instances:int -> ?first_index:int -> render_pass -> indices:int -> unit
+    = "osdl_gpu_draw_indexed_primitives"
+
+  external end_render_pass : render_pass -> unit = "osdl_gpu_end_render_pass"
+
+  external clear_and_present : swapchain -> Color.t -> bool
+    = "osdl_gpu_clear_and_present"
+end
+
 type +'access texture
 
 module Renderer = struct
   type t
+  type gpu_render_state
+  type gpu_draw = Textured | Untextured
   type presentation = Stretch | Letterbox | Overscan | Integer_scale
 
   type geometry_buffer =
@@ -396,7 +774,33 @@ module Renderer = struct
   external drivers : unit -> string list = "osdl_renderer_drivers"
   external create : ?driver:string -> Window.t -> t = "osdl_renderer_create"
   external create_software : Surface.t -> t = "osdl_renderer_create_software"
+
+  external create_gpu : ?device:Gpu.device -> Window.t -> t
+    = "osdl_renderer_create_gpu"
+
+  external create_gpu_offscreen : ?device:Gpu.device -> context -> t
+    = "osdl_renderer_create_gpu_offscreen"
+
   external destroy : t -> unit = "osdl_renderer_destroy"
+  external gpu_device : t -> Gpu.device option = "osdl_renderer_gpu_device"
+
+  external create_gpu_render_state :
+    ?samplers:(Gpu.texture * Gpu.sampler) array ->
+    t ->
+    draw:gpu_draw ->
+    fragment:Gpu.fragment Gpu.shader ->
+    gpu_render_state = "osdl_renderer_create_gpu_render_state"
+
+  external set_gpu_render_state : t -> gpu_render_state option -> unit
+    = "osdl_renderer_set_gpu_render_state"
+
+  external set_gpu_render_state_fragment_uniforms :
+    gpu_render_state -> slot:int -> byte_buffer -> unit
+    = "osdl_renderer_set_gpu_render_state_fragment_uniforms"
+
+  external destroy_gpu_render_state : gpu_render_state -> unit
+    = "osdl_renderer_destroy_gpu_render_state"
+
   external name : t -> string = "osdl_renderer_name"
   external max_texture_size : t -> int option = "osdl_renderer_max_texture_size"
   external texture_formats : t -> string list = "osdl_renderer_texture_formats"
@@ -669,363 +1073,6 @@ module Sprite_batch = struct
 
   let draw renderer texture batch =
     submit renderer texture batch.positions batch.sprites batch.length
-end
-
-module Gpu = struct
-  type device
-  type swapchain
-  type command_buffer
-  type render_pass
-  type copy_pass
-  type fence
-  type vertex
-  type fragment
-  type 'stage shader
-  type graphics_pipeline
-  type index
-  type 'kind buffer
-  type upload_buffer
-  type download_buffer
-  type texture
-
-  type texture_format =
-    | R8_unorm
-    | Rgba8_unorm
-    | Bgra8_unorm
-    | Rgba8_srgb
-    | Bgra8_srgb
-    | Rgba16_float
-    | Rgb10a2_unorm
-
-  type texture_usage = Sampled | Color_target | Sampled_color_target
-  type texture_region = { texture : texture; mip_level : int; rect : Rect.t }
-  type load_op = Load | Clear of Color.t | Dont_care
-  type store_op = Store | Discard
-  type sampler
-  type sampler_filter = Nearest | Linear
-  type index_format = Uint16 | Uint32
-  type vertex_format = Float32 | Float32x2 | Float32x3 | Float32x4 | Unorm8x4
-
-  type vertex_attribute = {
-    location : int;
-    format : vertex_format;
-    offset : int;
-  }
-
-  type vertex_layout = { stride : int; attributes : vertex_attribute list }
-
-  module Blend = struct
-    type t = { color : Blend_mode.equation; alpha : Blend_mode.equation }
-
-    let sum src dst : Blend_mode.equation = { src; dst; op = Sum }
-    let over_alpha = sum One One_minus_src_alpha
-    let keep_alpha = sum Zero One
-
-    let straight_alpha =
-      { color = sum Src_alpha One_minus_src_alpha; alpha = over_alpha }
-
-    let premultiplied_alpha = { color = over_alpha; alpha = over_alpha }
-    let additive = { color = sum Src_alpha One; alpha = keep_alpha }
-    let modulate = { color = sum Dst_color Zero; alpha = keep_alpha }
-
-    let multiply =
-      { color = sum Dst_color One_minus_src_alpha; alpha = keep_alpha }
-  end
-
-  type color_component = Red | Green | Blue | Alpha
-
-  type _ shader_stage =
-    | Vertex : vertex shader_stage
-    | Fragment : fragment shader_stage
-
-  type shader_format = Spirv | Dxbc | Dxil | Msl | Metallib
-
-  type primitive =
-    | Triangle_list
-    | Triangle_strip
-    | Line_list
-    | Line_strip
-    | Point_list
-
-  type present_mode = Vsync | Immediate | Mailbox
-  type composition = Sdr | Sdr_linear | Hdr_extended_linear | Hdr10
-
-  external drivers : unit -> string list = "osdl_gpu_drivers"
-
-  external supports_shader_formats :
-    ?driver:string -> context -> shader_format list -> bool
-    = "osdl_gpu_supports_shader_formats"
-
-  external create_device :
-    ?driver:string -> ?debug:bool -> context -> shader_format list -> device
-    = "osdl_gpu_create_device"
-
-  external destroy_device : device -> unit = "osdl_gpu_destroy_device"
-  external driver : device -> string = "osdl_gpu_driver"
-
-  external shader_formats : device -> shader_format list
-    = "osdl_gpu_shader_formats"
-
-  external wait_idle : device -> unit = "osdl_gpu_wait_idle"
-
-  external claim_window : device -> Window.t -> swapchain
-    = "osdl_gpu_claim_window"
-
-  external release_window : swapchain -> unit = "osdl_gpu_release_window"
-
-  external supports_present_mode : swapchain -> present_mode -> bool
-    = "osdl_gpu_supports_present_mode"
-
-  external supports_composition : swapchain -> composition -> bool
-    = "osdl_gpu_supports_composition"
-
-  external swapchain_format : swapchain -> texture_format
-    = "osdl_gpu_swapchain_format"
-
-  external set_swapchain_parameters :
-    swapchain -> composition:composition -> present_mode:present_mode -> unit
-    = "osdl_gpu_set_swapchain_parameters"
-
-  external create_shader :
-    device ->
-    stage:'stage shader_stage ->
-    format:shader_format ->
-    ?entrypoint:string ->
-    ?samplers:int ->
-    ?uniform_buffers:int ->
-    string ->
-    'stage shader = "osdl_gpu_create_shader_byte" "osdl_gpu_create_shader"
-
-  external release_shader : 'stage shader -> unit = "osdl_gpu_release_shader"
-
-  external create_graphics_pipeline :
-    ?vertex_layout:vertex_layout ->
-    ?blend:Blend.t ->
-    ?color_write_mask:color_component list ->
-    device ->
-    format:texture_format ->
-    vertex:vertex shader ->
-    fragment:fragment shader ->
-    primitive:primitive ->
-    graphics_pipeline
-    = "osdl_gpu_create_graphics_pipeline_byte"
-      "osdl_gpu_create_graphics_pipeline"
-
-  external create_swapchain_pipeline :
-    ?vertex_layout:vertex_layout ->
-    ?blend:Blend.t ->
-    ?color_write_mask:color_component list ->
-    swapchain ->
-    vertex:vertex shader ->
-    fragment:fragment shader ->
-    primitive:primitive ->
-    graphics_pipeline
-    = "osdl_gpu_create_swapchain_pipeline_byte"
-      "osdl_gpu_create_swapchain_pipeline"
-
-  external release_graphics_pipeline : graphics_pipeline -> unit
-    = "osdl_gpu_release_graphics_pipeline"
-
-  external create_vertex_buffer : device -> size:int -> vertex buffer
-    = "osdl_gpu_create_vertex_buffer"
-
-  external create_index_buffer :
-    device -> format:index_format -> size:int -> index buffer
-    = "osdl_gpu_create_index_buffer"
-
-  external release_buffer : 'kind buffer -> unit = "osdl_gpu_release_buffer"
-
-  external create_upload_buffer : device -> size:int -> upload_buffer
-    = "osdl_gpu_create_upload_buffer"
-
-  external write_upload_buffer : upload_buffer -> byte_buffer -> unit
-    = "osdl_gpu_write_upload_buffer"
-
-  external release_upload_buffer : upload_buffer -> unit
-    = "osdl_gpu_release_upload_buffer"
-
-  external create_download_buffer : device -> size:int -> download_buffer
-    = "osdl_gpu_create_download_buffer"
-
-  external read_download_buffer :
-    ?dst_offset:int -> ?pitch:int -> download_buffer -> byte_buffer -> unit
-    = "osdl_gpu_read_download_buffer"
-
-  external release_download_buffer : download_buffer -> unit
-    = "osdl_gpu_release_download_buffer"
-
-  external supports_texture_format :
-    device -> format:texture_format -> usage:texture_usage -> bool
-    = "osdl_gpu_supports_texture_format"
-
-  external create_texture :
-    ?mip_levels:int ->
-    device ->
-    format:texture_format ->
-    usage:texture_usage ->
-    w:int ->
-    h:int ->
-    texture = "osdl_gpu_create_texture_byte" "osdl_gpu_create_texture"
-
-  let create_sampled_texture device ~w ~h =
-    create_texture device ~format:Rgba8_unorm ~usage:Sampled ~w ~h
-
-  external texture_format : texture -> texture_format
-    = "osdl_gpu_texture_format"
-
-  external texture_mip_levels : texture -> int = "osdl_gpu_texture_mip_levels"
-
-  external texture_size : ?mip_level:int -> texture -> int * int
-    = "osdl_gpu_texture_size"
-
-  let texture_region ?(mip_level = 0) ?rect texture =
-    let rect =
-      match rect with
-      | Some rect -> rect
-      | None ->
-          let w, h = texture_size ~mip_level texture in
-          Rect.make ~x:0 ~y:0 ~w ~h
-    in
-    { texture; mip_level; rect }
-
-  external release_texture : texture -> unit = "osdl_gpu_release_texture"
-
-  external create_sampler :
-    ?max_mip_level:int -> device -> filter:sampler_filter -> sampler
-    = "osdl_gpu_create_sampler"
-
-  external release_sampler : sampler -> unit = "osdl_gpu_release_sampler"
-
-  external acquire_command_buffer : device -> command_buffer
-    = "osdl_gpu_acquire_command_buffer"
-
-  external push_uniform_data :
-    command_buffer ->
-    stage:'stage shader_stage ->
-    slot:int ->
-    byte_buffer ->
-    unit = "osdl_gpu_push_uniform_data"
-
-  external submit_command_buffer : command_buffer -> unit
-    = "osdl_gpu_submit_command_buffer"
-
-  external submit_and_acquire_fence : command_buffer -> fence
-    = "osdl_gpu_submit_and_acquire_fence"
-
-  external cancel_command_buffer : command_buffer -> unit
-    = "osdl_gpu_cancel_command_buffer"
-
-  external fence_signaled : fence -> bool = "osdl_gpu_fence_signaled"
-  external wait_fence : fence -> unit = "osdl_gpu_wait_fence"
-  external release_fence : fence -> unit = "osdl_gpu_release_fence"
-
-  external begin_copy_pass : command_buffer -> copy_pass
-    = "osdl_gpu_begin_copy_pass"
-
-  external upload_to_buffer :
-    ?src_offset:int ->
-    ?dst_offset:int ->
-    ?cycle:bool ->
-    copy_pass ->
-    src:upload_buffer ->
-    dst:'kind buffer ->
-    size:int ->
-    unit = "osdl_gpu_upload_to_buffer_byte" "osdl_gpu_upload_to_buffer"
-
-  external upload_to_texture :
-    ?src_offset:int ->
-    ?cycle:bool ->
-    ?mip_level:int ->
-    copy_pass ->
-    src:upload_buffer ->
-    dst:texture ->
-    unit = "osdl_gpu_upload_to_texture_byte" "osdl_gpu_upload_to_texture"
-
-  external copy_texture :
-    ?cycle:bool -> copy_pass -> src:texture_region -> dst:texture_region -> unit
-    = "osdl_gpu_copy_texture"
-
-  external download_from_buffer :
-    ?src_offset:int ->
-    ?dst_offset:int ->
-    copy_pass ->
-    src:'kind buffer ->
-    dst:download_buffer ->
-    size:int ->
-    unit = "osdl_gpu_download_from_buffer_byte" "osdl_gpu_download_from_buffer"
-
-  external download_from_texture :
-    ?dst_offset:int ->
-    ?pitch:int ->
-    copy_pass ->
-    src:texture_region ->
-    dst:download_buffer ->
-    unit = "osdl_gpu_download_from_texture"
-
-  external end_copy_pass : copy_pass -> unit = "osdl_gpu_end_copy_pass"
-
-  external blit_texture :
-    ?filter:sampler_filter ->
-    ?flip:Surface.flip ->
-    ?cycle:bool ->
-    command_buffer ->
-    src:texture_region ->
-    dst:texture_region ->
-    load:load_op ->
-    unit = "osdl_gpu_blit_texture_byte" "osdl_gpu_blit_texture"
-
-  external begin_render_pass :
-    ?mip_level:int ->
-    ?store:store_op ->
-    ?cycle:bool ->
-    command_buffer ->
-    target:texture ->
-    load:load_op ->
-    render_pass = "osdl_gpu_begin_render_pass_byte" "osdl_gpu_begin_render_pass"
-
-  external begin_swapchain_render_pass :
-    command_buffer -> swapchain -> clear:Color.t -> render_pass option
-    = "osdl_gpu_begin_swapchain_render_pass"
-
-  external render_pass_size : render_pass -> int * int
-    = "osdl_gpu_render_pass_size"
-
-  external set_viewport : render_pass -> Frect.t option -> unit
-    = "osdl_gpu_set_viewport"
-
-  external set_scissor : render_pass -> Rect.t option -> unit
-    = "osdl_gpu_set_scissor"
-
-  external bind_graphics_pipeline : render_pass -> graphics_pipeline -> unit
-    = "osdl_gpu_bind_graphics_pipeline"
-
-  external bind_samplers :
-    ?first_slot:int ->
-    render_pass ->
-    stage:'stage shader_stage ->
-    (texture * sampler) array ->
-    unit = "osdl_gpu_bind_samplers"
-
-  external bind_vertex_buffer :
-    ?offset:int -> render_pass -> vertex buffer -> unit
-    = "osdl_gpu_bind_vertex_buffer"
-
-  external bind_index_buffer :
-    ?offset:int -> render_pass -> index buffer -> unit
-    = "osdl_gpu_bind_index_buffer"
-
-  external draw_primitives :
-    ?instances:int -> render_pass -> vertices:int -> unit
-    = "osdl_gpu_draw_primitives"
-
-  external draw_indexed_primitives :
-    ?instances:int -> ?first_index:int -> render_pass -> indices:int -> unit
-    = "osdl_gpu_draw_indexed_primitives"
-
-  external end_render_pass : render_pass -> unit = "osdl_gpu_end_render_pass"
-
-  external clear_and_present : swapchain -> Color.t -> bool
-    = "osdl_gpu_clear_and_present"
 end
 
 module Scancode = struct

@@ -3,6 +3,40 @@
 
 #include "sdl3_stubs.h"
 
+/* Internal GPU device and shader layouts. */
+enum { GPU_DEVICE_IDLE_MARK = GPU_DEVICE_RENDERING + 1, GPU_DEVICE_OWNED };
+
+static inline value osdl_new_gpu_device(value parent, bool owned) {
+    CAMLparam1(parent);
+    CAMLlocal1(cell);
+
+    cell = osdl_new_cell(parent, &osdl_handle_ops);
+    CAMLreturn(caml_alloc_5(0, cell, parent, Val_false, Val_unit, Val_bool(owned)));
+}
+
+enum {
+    GPU_SHADER_SAMPLERS = 2,
+    GPU_SHADER_UNIFORMS,
+    GPU_MAX_SAMPLERS      = 16,
+    GPU_MAX_UNIFORMS      = 4,
+    /* SDL's Vulkan backend uses a 4 KiB descriptor range for each uniform slot. */
+    GPU_MAX_UNIFORM_BYTES = 4096,
+};
+
+typedef struct {
+    osdl_cell      cell;
+    /* The GPU renderer's pipeline cache uses the native shader address as a key. */
+    size_t         renderer_count;
+    SDL_GPUShader* deferred_release;
+} osdl_gpu_shader_cell;
+
+static inline intnat osdl_gpu_uniform_size(value data) {
+    intnat size = Caml_ba_array_val(data)->dim[0];
+    if (size <= 0 || size > GPU_MAX_UNIFORM_BYTES || size % 4)
+        caml_invalid_argument("GPU uniform data must be 4 to 4096 bytes and a multiple of four");
+    return size;
+}
+
 /* Internal GPU texture layout. */
 enum {
     GPU_TEXTURE_WIDTH = 2,
@@ -33,12 +67,17 @@ static inline SDL_GPUTextureFormat osdl_gpu_image_format(value texture) {
     return Int_val(Field(texture, GPU_TEXTURE_FORMAT));
 }
 
+static inline SDL_GPUTextureUsageFlags osdl_gpu_image_usage(value texture) {
+    return Int_val(Field(texture, GPU_TEXTURE_USAGE));
+}
+
 /* Internal render pass layout. */
 enum {
     GPU_PASS_FORMAT = 2,
     GPU_PASS_PIPELINE,
-    GPU_PASS_VERTEX_BUFFER,
-    GPU_PASS_VERTEX_COUNT,
+    GPU_PASS_VERTEX_BINDINGS,
+    GPU_PASS_VERTEX_DIRTY,
+    GPU_PASS_VERTEX_PREFIX,
     GPU_PASS_INDEX_BUFFER,
     GPU_PASS_INDEX_COUNT,
     GPU_PASS_SAMPLERS,

@@ -4,7 +4,7 @@
  (install_c_headers sdl3_stubs)
  (foreign_stubs
   (language c)
-  (names core_stubs event_stubs gpu_stubs io_stubs)
+  (names core_stubs event_stubs gpu_stubs io_stubs renderer_stubs)
   (flags
    (:standard
     (:include c_flags.sexp))))

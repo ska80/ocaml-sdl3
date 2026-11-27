@@ -16,6 +16,63 @@ limit. It does not mean that any size will work. If allocation fails, try a smal
 other formats when it uploads a surface. VSync aligns frame presentation with the display
 refresh. Use `Renderer.vsync` to get the current setting.
 
+## Use the GPU renderer
+
+Use `Renderer.create_gpu window` for SDL's `gpu` driver. SDL creates a device that the renderer
+owns. Use `Renderer.create_gpu ~device window` if you already have a `Gpu.device`. Destroy the
+renderer before you destroy the device you supplied.
+
+`Renderer.gpu_device renderer` returns `Some device` for the `gpu` driver and `None` for other
+renderers. It also works with `Renderer.create ~driver:"gpu"`. Use the returned device to create
+shaders and other `Gpu` resources. If the renderer owns the device, destroy those resources before
+closing the renderer. Do not call `Gpu.destroy_device` on a borrowed device.
+
+For drawing without a window, use `Renderer.create_gpu_offscreen context`. Select a target from
+`Texture.create_target` before you draw. Call `Renderer.present` with that target still selected to
+submit the frame. You can use `Renderer.read_pixels` to copy the result to a surface.
+
+End any low-level `Gpu` render pass on the device before you draw or flush renderer work. If a
+renderer draw samples pixels from a low-level upload or pass, submit that work before the draw.
+
+### Apply a fragment effect
+
+A custom render state supplies a fragment shader and its inputs for later draws. Create the fragment
+shader on the renderer's device. For SPIR-V, read vertex color at location 0 and texture coordinates
+at location 1 for a textured draw. Match SDL's GPU renderer vertex outputs if you use another shader
+format. The custom shader replaces SDL's default color processing.
+
+For `Textured`, the renderer binds the drawn texture in slot 0. Extra texture and sampler pairs use
+slots 1 and up. For `Untextured`, the extra pairs start in slot 0. In both cases, declare the total
+in `Gpu.create_shader ~samplers`. In SPIR-V, samplers use descriptor set 2 and uniform blocks use
+set 3. A uniform block contains parameters that stay constant during a draw.
+
+This example uses a fragment shader with two samplers and one uniform block. Pass a ready-to-read
+`Gpu.texture` as `mask` and the packed bytes for the uniform block as `uniforms`:
+
+```ocaml
+open Sdl3
+
+let draw_effect renderer ~fragment ~image ~mask ~sampler ~uniforms =
+  let state =
+    Renderer.create_gpu_render_state renderer ~draw:Textured ~fragment
+      ~samplers:[| (mask, sampler) |]
+  in
+  Fun.protect
+    ~finally:(fun () -> Renderer.destroy_gpu_render_state state)
+    (fun () ->
+      Renderer.set_gpu_render_state_fragment_uniforms state ~slot:0 uniforms;
+      Renderer.set_gpu_render_state renderer (Some state);
+      Texture.draw renderer image)
+```
+
+For repeated draws, reuse the state. Set all declared uniform blocks before you first select it.
+Use `Renderer.set_gpu_render_state renderer None` to restore normal drawing. It does not change
+queued draws. If you update uniforms, SDL records earlier draws with the old data first.
+
+Destroy the state before releasing its shader, textures, or samplers. If the state is active,
+destroying it also restores normal drawing. SDL keeps a cache of pipelines built for its shaders.
+The binding keeps the underlying shader until the last renderer that used it closes.
+
 ## Update textures
 
 A streaming texture accepts repeated pixel uploads. Create one with `Texture.create_streaming`.  Use
@@ -35,8 +92,10 @@ texture. You cannot use the locked view after the function exits.
 
 A render target is where the renderer draws. Use `Texture.create_target` to create a texture you can
 draw to. Select it with `Renderer.set_target renderer (Some target)`. Clear it before you draw into
-it. Before you draw the texture to the window or present the frame, restore the default render
-target with `Renderer.set_target renderer None`.
+it. Select a different target before you draw the texture itself.
+
+For other renderers, restore the default target with `Renderer.set_target renderer None` before you
+present. For an offscreen GPU renderer, keep a texture target selected when you present.
 
 ## Draw in part of a target
 

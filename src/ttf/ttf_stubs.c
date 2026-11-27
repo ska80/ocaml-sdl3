@@ -461,7 +461,7 @@ CAMLprim value osdl_ttf_engine_create_renderer(value context, value renderer) {
 
     handle = osdl_new_attached_handle(context, renderer);
     osdl_live(context);
-    SDL_Renderer* r = osdl_live(renderer);
+    SDL_Renderer* r = osdl_renderer_ready(renderer);
 
     TTF_TextEngine* engine = TTF_CreateRendererTextEngine(r);
     osdl_publish(handle, engine, "TTF_CreateRendererTextEngine");
@@ -470,10 +470,13 @@ CAMLprim value osdl_ttf_engine_create_renderer(value context, value renderer) {
 }
 
 CAMLprim value osdl_ttf_engine_destroy(value engine) {
-    TTF_TextEngine* ptr = osdl_take(engine);
-    if (!ptr) return Val_unit;
+    osdl_cell* cell = osdl_cell_val(engine);
+    osdl_require_thread(osdl_cell_thread(cell));
+    if (!cell->ptr) return Val_unit;
 
     value renderer = osdl_attachment(engine);
+    if (renderer != Val_unit) osdl_renderer_ready(renderer);
+    TTF_TextEngine* ptr = osdl_take(engine);
     if (renderer == Val_unit) {
         TTF_DestroySurfaceTextEngine(ptr);
     } else {
@@ -622,13 +625,24 @@ CAMLprim value osdl_ttf_text_script(value text) {
     return ttf_script_value(TTF_GetTextScript(osdl_live(text)));
 }
 
+/* A layout query can update the renderer engine's glyph textures. */
+static TTF_Text* ttf_text_for_layout(value text) {
+    TTF_Text* ptr      = osdl_live(text);
+    value     renderer = osdl_attachment(osdl_parent(text));
+    if (renderer != Val_unit) osdl_renderer_ready(renderer);
+    return ptr;
+}
+
 CAMLprim value osdl_ttf_text_size(value text) {
     int w, h;
-    osdl_check(TTF_GetTextSize(osdl_live(text), &w, &h), "TTF_GetTextSize");
+    osdl_check(TTF_GetTextSize(ttf_text_for_layout(text), &w, &h), "TTF_GetTextSize");
     return osdl_int_pair(w, h);
 }
 
-OSDL_ACTION(osdl_ttf_text_update, TTF_UpdateText)
+CAMLprim value osdl_ttf_text_update(value text) {
+    osdl_check(TTF_UpdateText(ttf_text_for_layout(text)), "TTF_UpdateText");
+    return Val_unit;
+}
 
 /* Text layout queries return copies, never references into SDL_ttf. */
 
@@ -653,7 +667,7 @@ static value ttf_substring_value(TTF_SubString sub) {
 }
 
 CAMLprim value osdl_ttf_text_substring_at(value text, value offset) {
-    TTF_Text* ptr   = osdl_live(text);
+    TTF_Text* ptr   = ttf_text_for_layout(text);
     int       bytes = ttf_text_bytes(ptr), start = osdl_nonnegative_int(offset);
     ttf_check_byte_range(bytes, start, 0);
 
@@ -670,7 +684,7 @@ CAMLprim value osdl_ttf_text_substring_bounds(value text, value offset, value le
     CAMLparam3(text, offset, length);
     CAMLlocal2(rect, results);
 
-    TTF_Text* ptr   = osdl_live(text);
+    TTF_Text* ptr   = ttf_text_for_layout(text);
     int       bytes = ttf_text_bytes(ptr);
     int       start = osdl_nonnegative_int(offset), count = osdl_nonnegative_int(length);
     ttf_check_byte_range(bytes, start, count);
@@ -706,7 +720,7 @@ CAMLprim value osdl_ttf_text_substring_bounds(value text, value offset, value le
 }
 
 CAMLprim value osdl_ttf_text_hit_test(value text, value x, value y) {
-    TTF_Text* ptr = osdl_live(text);
+    TTF_Text* ptr = ttf_text_for_layout(text);
     int       px = osdl_int(x), py = osdl_int(y);
     /* SDL weights one axis by 100 and adds both distances in an int. Leave
      * room for line ends and glyph bearings beyond the reported text size. */
@@ -747,8 +761,9 @@ CAMLprim value osdl_ttf_text_draw_surface(value text, value surface, value x, va
 
 CAMLprim value osdl_ttf_text_draw_renderer(value text, value x, value y) {
     TTF_Text* ptr = osdl_live(text);
-    float     dx  = osdl_float(Double_val(x));
-    float     dy  = osdl_float(Double_val(y));
+    osdl_renderer_draw(osdl_attachment(osdl_parent(text)), true);
+    float dx = osdl_float(Double_val(x));
+    float dy = osdl_float(Double_val(y));
 
     osdl_check(TTF_DrawRendererText(ptr, dx, dy), "TTF_DrawRendererText");
     return Val_unit;

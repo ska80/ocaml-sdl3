@@ -36,6 +36,8 @@
 - [x] GPU offscreen render passes, pipelines for a selected format, mip levels, viewports, scissors,
       and texture copies and blits.
 - [x] GPU buffer and texture readback into bigarrays, with region, pitch, and offset selection.
+- [x] Separate GPU vertex and instance buffers, per-axis sampler addressing, and mip filtering.
+- [x] GPU 2D renderers, borrowed devices, and custom fragment states with extra textures.
 - [x] Aurora Tunnel example with GPU mesh copies, a color texture, and interactive animation.
 - [x] Music Player example with file drops, mixer titles, GPU text, and an FFTW spectrum.
 - [x] Image loading from a file or memory, texture loading, and PNG and JPEG output.
@@ -77,6 +79,12 @@ SDL3_mixer 3.2.4, and SDL3_ttf 3.2.2.
 - [ ] Recheck render passes and blits on the smallest levels of rectangular GPU textures after an
       SDL update. SDL 3.4.20 can calculate a zero width or height instead of one. The binding
       rejects those levels for rendering and blitting but still allows uploads and copies.
+- [ ] Recheck vertex buffer binding on Direct3D 12 after an SDL update. SDL 3.4.20 keeps unused
+      slots and does not rebuild buffer views when only the stride changes. The binding replaces
+      unused slots and forces a new view when it binds vertex data for another pipeline.
+- [ ] Recheck custom render state uniform allocation after an SDL update. SDL 3.4.20 can invalidate
+      the uniform array if allocation of a new slot fails. The binding closes a state that fails
+      this way without calling SDL's destructor. The native allocation can leak on that path.
 
 ## SDL_mixer compatibility follow-ups
 
